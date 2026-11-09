@@ -35,6 +35,54 @@ pub fn floored_mod(a: Value, b: Value) -> Option<Value> {
     }
 }
 
+/// Truncating division (C and npiet): rounds toward zero.
+pub fn truncating_div(a: Value, b: Value) -> Option<Value> {
+    if b == 0 || (a == Value::MIN && b == -1) {
+        return None;
+    }
+    Some(a / b)
+}
+
+/// Truncating modulo (C and npiet): the result has the sign of the dividend.
+pub fn truncating_mod(a: Value, b: Value) -> Option<Value> {
+    if b == 0 {
+        return None;
+    }
+    if a == Value::MIN && b == -1 {
+        return Some(0);
+    }
+    Some(a % b)
+}
+
+/// How division and modulo round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Division {
+    /// Floor toward negative infinity (the clarified specification, Python).
+    #[default]
+    Floored,
+    /// Truncate toward zero (C and npiet).
+    Truncating,
+}
+
+impl Division {
+    /// Divides with the selected rounding; `None` means the command is ignored.
+    pub fn divide(self, a: Value, b: Value) -> Option<Value> {
+        match self {
+            Division::Floored => floored_div(a, b),
+            Division::Truncating => truncating_div(a, b),
+        }
+    }
+
+    /// Takes the modulo with the selected rounding; `None` means the command is
+    /// ignored.
+    pub fn modulo(self, a: Value, b: Value) -> Option<Value> {
+        match self {
+            Division::Floored => floored_mod(a, b),
+            Division::Truncating => truncating_mod(a, b),
+        }
+    }
+}
+
 /// `1` if the value is zero, else `0`.
 pub const fn not(value: Value) -> Value {
     if value == 0 { 1 } else { 0 }
@@ -70,6 +118,35 @@ mod tests {
         assert_eq!(floored_mod(-7, -3), Some(-1));
         assert_eq!(floored_mod(1, 0), None);
         assert_eq!(floored_mod(Value::MIN, -1), Some(0));
+    }
+
+    #[test]
+    fn truncating_division_matches_c() {
+        assert_eq!(truncating_div(7, 3), Some(2));
+        assert_eq!(truncating_div(-7, 3), Some(-2));
+        assert_eq!(truncating_div(7, -3), Some(-2));
+        assert_eq!(truncating_div(-7, -3), Some(2));
+        assert_eq!(truncating_div(1, 0), None);
+        assert_eq!(truncating_div(Value::MIN, -1), None);
+    }
+
+    #[test]
+    fn truncating_modulo_matches_c() {
+        assert_eq!(truncating_mod(5, 3), Some(2));
+        assert_eq!(truncating_mod(-7, 3), Some(-1));
+        assert_eq!(truncating_mod(7, -3), Some(1));
+        assert_eq!(truncating_mod(-7, -3), Some(-1));
+        assert_eq!(truncating_mod(1, 0), None);
+        assert_eq!(truncating_mod(Value::MIN, -1), Some(0));
+    }
+
+    #[test]
+    fn the_mode_selects_the_rounding() {
+        assert_eq!(Division::Floored.divide(-7, 3), Some(-3));
+        assert_eq!(Division::Truncating.divide(-7, 3), Some(-2));
+        assert_eq!(Division::Floored.modulo(-7, 3), Some(2));
+        assert_eq!(Division::Truncating.modulo(-7, 3), Some(-1));
+        assert_eq!(Division::default(), Division::Floored);
     }
 
     #[test]

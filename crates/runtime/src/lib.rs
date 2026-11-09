@@ -8,7 +8,9 @@ mod stack;
 /// The value type the interpreter and compiled code use.
 pub type Value = i64;
 
-pub use arithmetic::{floored_div, floored_mod, greater, not};
+pub use arithmetic::{
+    Division, floored_div, floored_mod, greater, not, truncating_div, truncating_mod,
+};
 pub use io::{BufferIo, Input, Io, Output};
 pub use stack::Stack;
 

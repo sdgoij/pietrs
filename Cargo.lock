@@ -76,6 +76,7 @@ version = "0.1.0"
 dependencies = [
  "canvas",
  "codegen",
+ "runtime",
  "tempfile",
  "thiserror",
 ]

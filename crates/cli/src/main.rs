@@ -22,6 +22,21 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum DivisionArg {
+    Floored,
+    Truncating,
+}
+
+impl From<DivisionArg> for runtime::Division {
+    fn from(value: DivisionArg) -> Self {
+        match value {
+            DivisionArg::Floored => runtime::Division::Floored,
+            DivisionArg::Truncating => runtime::Division::Truncating,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Load the image and report the grid, blocks, and start state.
@@ -58,6 +73,9 @@ struct TraceArgs {
     /// Stop after this many transitions.
     #[arg(long, default_value_t = 100_000)]
     max_steps: u64,
+    /// How division and modulo round.
+    #[arg(long, value_enum, default_value = "floored")]
+    division: DivisionArg,
 }
 
 #[derive(Debug, Args)]
@@ -70,6 +88,9 @@ struct RunArgs {
     /// Read program input from this file instead of an empty stream.
     #[arg(long)]
     input: Option<PathBuf>,
+    /// How division and modulo round.
+    #[arg(long, value_enum, default_value = "floored")]
+    division: DivisionArg,
 }
 
 #[derive(Debug, Args)]
@@ -82,6 +103,9 @@ struct BuildArgs {
     /// Stop after this many transitions (baked into the executable).
     #[arg(long)]
     max_steps: Option<u64>,
+    /// How division and modulo round.
+    #[arg(long, value_enum, default_value = "floored")]
+    division: DivisionArg,
     /// Link with this C compiler instead of probing for one.
     #[arg(long)]
     linker: Option<String>,
@@ -94,6 +118,9 @@ struct SelftestArgs {
     /// Stop each path after this many transitions.
     #[arg(long, default_value_t = 100_000)]
     max_steps: u64,
+    /// How division and modulo round.
+    #[arg(long, value_enum, default_value = "floored")]
+    division: DivisionArg,
     /// Link with this C compiler instead of probing for one.
     #[arg(long)]
     linker: Option<String>,
@@ -187,6 +214,7 @@ fn trace(args: &TraceArgs) -> Result<(), Error> {
     let mut io = BufferIo::new("");
     let options = Options {
         max_steps: Some(args.max_steps),
+        division: args.division.into(),
         ..Options::default()
     };
     let (result, trace) = run_traced(&blocks, &mut io, &options)?;
@@ -222,6 +250,7 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
     let mut io = BufferIo::new(input);
     let options = Options {
         max_steps: args.max_steps,
+        division: args.division.into(),
         ..Options::default()
     };
     let result = run(&blocks, &mut io, &options)?;
@@ -251,7 +280,12 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
     let mut failures = 0usize;
     for path in &cases {
         let name = case_name(path);
-        match check_case(path, args.max_steps, linker.as_deref()) {
+        match check_case(
+            path,
+            args.max_steps,
+            args.division.into(),
+            linker.as_deref(),
+        ) {
             Ok(()) => println!("PASS: {name}"),
             Err(reason) => {
                 failures += 1;
@@ -330,7 +364,12 @@ fn case_max_steps(path: &Path) -> Option<u64> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-fn check_case(path: &Path, max_steps: u64, linker: Option<&str>) -> Result<(), String> {
+fn check_case(
+    path: &Path,
+    max_steps: u64,
+    division: runtime::Division,
+    linker: Option<&str>,
+) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
     let blocks = Blocks::partition(grid);
@@ -339,6 +378,7 @@ fn check_case(path: &Path, max_steps: u64, linker: Option<&str>) -> Result<(), S
 
     let options = Options {
         max_steps: Some(max_steps),
+        division,
         ..Options::default()
     };
     let mut interpreted_io = BufferIo::new(input.as_str());
@@ -348,6 +388,7 @@ fn check_case(path: &Path, max_steps: u64, linker: Option<&str>) -> Result<(), S
     let jit_options = codegen::Options {
         stack_capacity: 1 << 20,
         max_steps: Some(max_steps),
+        division,
     };
     let mut jit_io = BufferIo::new(input.as_str());
     let jit =
@@ -391,6 +432,7 @@ fn check_case(path: &Path, max_steps: u64, linker: Option<&str>) -> Result<(), S
             &blocks,
             &input,
             max_steps,
+            division,
             linker,
             interpreted_output,
             interpreted.reason,
@@ -403,6 +445,7 @@ fn check_aot(
     blocks: &Blocks,
     input: &str,
     max_steps: u64,
+    division: runtime::Division,
     linker: &str,
     interpreted_output: &str,
     reason: ExitReason,
@@ -411,7 +454,7 @@ fn check_aot(
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(blocks, &executable, Some(max_steps), Some(linker))
+    aot::build(blocks, &executable, Some(max_steps), division, Some(linker))
         .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_executable(&executable, input, Duration::from_secs(10))?;
     if run.stdout != interpreted_output.as_bytes() {
@@ -483,7 +526,13 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
             .clone()
             .unwrap_or_else(|| default_output(&args.image.image)),
     );
-    aot::build(&blocks, &output, args.max_steps, args.linker.as_deref())?;
+    aot::build(
+        &blocks,
+        &output,
+        args.max_steps,
+        args.division.into(),
+        args.linker.as_deref(),
+    )?;
     Ok(())
 }
 

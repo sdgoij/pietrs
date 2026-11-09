@@ -4,7 +4,7 @@
 use canvas::{Blocks, CodelGrid, Color, Hue, Lightness};
 use codegen::{ExitReason as JitExit, Options as JitOptions, run as run_jit};
 use interp::{ExitReason as InterpExit, Options as InterpOptions, run as run_interp};
-use runtime::BufferIo;
+use runtime::{BufferIo, Division};
 use tessera::{Command, command};
 
 fn blocks(codels: Vec<Color>, width: u32) -> Blocks {
@@ -63,12 +63,22 @@ fn row(commands: &[Command]) -> Blocks {
 
 /// Runs both paths and asserts they agree, returning the output.
 fn assert_paths_agree_on(blocks: &Blocks, input: &str, max_steps: u64) -> String {
+    assert_paths_agree_on_with(blocks, input, max_steps, Division::Floored)
+}
+
+fn assert_paths_agree_on_with(
+    blocks: &Blocks,
+    input: &str,
+    max_steps: u64,
+    division: Division,
+) -> String {
     let mut interpreter_io = BufferIo::new(input);
     let interpreter = run_interp(
         blocks,
         &mut interpreter_io,
         &InterpOptions {
             max_steps: Some(max_steps),
+            division,
             ..InterpOptions::default()
         },
     )
@@ -81,6 +91,7 @@ fn assert_paths_agree_on(blocks: &Blocks, input: &str, max_steps: u64) -> String
         &JitOptions {
             stack_capacity: 1 << 20,
             max_steps: Some(max_steps),
+            division,
         },
     )
     .unwrap();
@@ -102,6 +113,38 @@ fn assert_paths_agree(blocks: &Blocks, max_steps: u64) {
 
 fn assert_row_agrees(commands: &[Command], input: &str) -> String {
     assert_paths_agree_on(&row(commands), input, commands.len() as u64)
+}
+
+#[test]
+fn truncating_division_agrees() {
+    let divide = [
+        Command::InNumber,
+        Command::InNumber,
+        Command::Divide,
+        Command::OutNumber,
+    ];
+    let modulo = [
+        Command::InNumber,
+        Command::InNumber,
+        Command::Modulo,
+        Command::OutNumber,
+    ];
+    assert_eq!(
+        assert_paths_agree_on_with(&row(&divide), "-7 3", 4, Division::Truncating),
+        "-2"
+    );
+    assert_eq!(
+        assert_paths_agree_on_with(&row(&modulo), "-7 3", 4, Division::Truncating),
+        "-1"
+    );
+    assert_eq!(
+        assert_paths_agree_on_with(&row(&divide), "-7 3", 4, Division::Floored),
+        "-3"
+    );
+    assert_eq!(
+        assert_paths_agree_on_with(&row(&modulo), "-7 3", 4, Division::Floored),
+        "2"
+    );
 }
 
 #[test]

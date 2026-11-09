@@ -31,8 +31,9 @@ committed.
 npiet is not the specification. `pietrs` follows the clarified 2018 spec where
 they differ, and records each deviation here.
 
-- Division and modulo: npiet truncates toward zero; `pietrs` floors
-  (Python `//`, `%`).
+- Division and modulo: npiet truncates toward zero; `pietrs` floors by default
+  (Python `//`, `%`). Run conformance with `--division truncating` (the gate
+  default) to compare the same rounding.
 - Divide/modulo by zero: npiet consumes both operands and pushes `99999999`;
   `pietrs` consumes both operands and pushes nothing.
 - Integers: npiet uses C `long`, which is 32-bit on Windows; `pietrs` uses

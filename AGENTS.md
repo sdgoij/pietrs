@@ -221,7 +221,8 @@ journal; do not gate on a machine-dependent number.
   (`dangermouse.net/esoteric/piet.html`), `npiet`-compatible where the two
   disagree. Every deviation is recorded in `.agents/notes/`.
 - Integers are `i64` in v1. `pointer`/`switch` use `rem_euclid`; division and
-  modulo are floored (Python `//` and `%`); `MIN / -1` and divide-by-zero are
+  modulo are floored (Python `//` and `%`) by default, and `--division
+  truncating` selects C/npiet rounding; `MIN / -1` and divide-by-zero are
   handled, not traps.
 - An underflowing operation is ignored. An empty stack makes `pointer` and
   `switch` behave as index 0.

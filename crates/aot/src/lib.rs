@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 use canvas::Blocks;
+use runtime::Division;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -27,9 +28,10 @@ pub fn build(
     blocks: &Blocks,
     output: &Path,
     max_steps: Option<u64>,
+    division: Division,
     linker: Option<&str>,
 ) -> Result<(), Error> {
-    let object = codegen::emit_object(blocks)?;
+    let object = codegen::emit_object(blocks, division)?;
     let directory = tempfile::tempdir()?;
     let object_path = directory.path().join("piet.o");
     let source_path = directory.path().join("piet_host.c");

@@ -32,6 +32,21 @@ enum Task {
     E2e(E2eArgs),
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum DivisionArg {
+    Floored,
+    Truncating,
+}
+
+impl From<DivisionArg> for runtime::Division {
+    fn from(value: DivisionArg) -> Self {
+        match value {
+            DivisionArg::Floored => runtime::Division::Floored,
+            DivisionArg::Truncating => runtime::Division::Truncating,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 struct ConformanceArgs {
     /// A PNG case, or a directory of `.png` cases; a sibling `.in` supplies input.
@@ -45,6 +60,9 @@ struct ConformanceArgs {
     /// Kill a path that runs longer than this.
     #[arg(long, default_value_t = 10_000)]
     timeout_ms: u64,
+    /// How division and modulo round; npiet truncates toward zero.
+    #[arg(long, value_enum, default_value = "truncating")]
+    division: DivisionArg,
 }
 
 #[derive(Debug, Args)]
@@ -57,6 +75,9 @@ struct E2eArgs {
     /// Kill a case that runs longer than this.
     #[arg(long, default_value_t = 10_000)]
     timeout_ms: u64,
+    /// How division and modulo round.
+    #[arg(long, value_enum, default_value = "floored")]
+    division: DivisionArg,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -207,6 +228,7 @@ fn check_case(
     let max_steps = case_max_steps(path).unwrap_or(args.max_steps);
     let options = Options {
         max_steps: Some(max_steps),
+        division: args.division.into(),
         ..Options::default()
     };
     let mut io = BufferIo::new(input.as_str());
@@ -268,7 +290,7 @@ fn e2e(args: &E2eArgs) -> Result<bool, Error> {
             || "?".to_owned(),
             |name| name.to_string_lossy().into_owned(),
         );
-        match check_e2e(case, Some(&linker), args.timeout_ms) {
+        match check_e2e(case, Some(&linker), args.timeout_ms, args.division.into()) {
             Ok(()) => println!("OK: {name}"),
             Err(reason) => {
                 failures += 1;
@@ -295,7 +317,12 @@ fn case_directories(root: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(cases)
 }
 
-fn check_e2e(case: &Path, linker: Option<&str>, timeout_ms: u64) -> Result<(), String> {
+fn check_e2e(
+    case: &Path,
+    linker: Option<&str>,
+    timeout_ms: u64,
+    division: runtime::Division,
+) -> Result<(), String> {
     let image = case.join("program.png");
     let bytes = std::fs::read(&image)
         .map_err(|error| format!("cannot read {}: {error}", image.display()))?;
@@ -324,7 +351,7 @@ fn check_e2e(case: &Path, linker: Option<&str>, timeout_ms: u64) -> Result<(), S
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(&blocks, &executable, max_steps, linker)
+    aot::build(&blocks, &executable, max_steps, division, linker)
         .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_with_timeout(
         &mut Command::new(&executable),

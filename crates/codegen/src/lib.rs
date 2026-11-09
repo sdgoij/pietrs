@@ -22,7 +22,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use runtime::{BufferIo, Input, Output};
+use runtime::{BufferIo, Division, Input, Output};
 use tessera::{Command, Edge, State, StateGraph};
 
 const REASON_TERMINATED: u32 = 0;
@@ -34,6 +34,7 @@ const REASON_OVERFLOW: u32 = 2;
 pub struct Options {
     pub stack_capacity: usize,
     pub max_steps: Option<u64>,
+    pub division: Division,
 }
 
 impl Default for Options {
@@ -41,6 +42,7 @@ impl Default for Options {
         Self {
             stack_capacity: 1 << 20,
             max_steps: None,
+            division: Division::Floored,
         }
     }
 }
@@ -135,6 +137,7 @@ struct Program<'a> {
     host_ids: &'a HostIds,
     signature: Signature,
     frontend_config: TargetFrontendConfig,
+    division: Division,
 }
 
 /// The values every command emitter needs: the context pointer, the stack
@@ -198,6 +201,7 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
         host_ids: &host_ids,
         signature,
         frontend_config,
+        division: options.division,
     };
     define_main(&mut module, main_id, &program)?;
     module
@@ -223,7 +227,7 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
 /// The object calls the host symbols `piet_out_char`, `piet_out_number`,
 /// `piet_in_char`, `piet_in_number`, and `piet_roll`, which the linker must
 /// provide.
-pub fn emit_object(blocks: &Blocks) -> Result<Vec<u8>, Error> {
+pub fn emit_object(blocks: &Blocks, division: Division) -> Result<Vec<u8>, Error> {
     if std::mem::size_of::<usize>() != 8 {
         return Err(Error::UnsupportedTarget);
     }
@@ -244,6 +248,7 @@ pub fn emit_object(blocks: &Blocks) -> Result<Vec<u8>, Error> {
         host_ids: &host_ids,
         signature,
         frontend_config,
+        division,
     };
     define_main(&mut module, main_id, &program)?;
     module
@@ -393,7 +398,13 @@ fn define_main<M: Module>(
             .block(state.block)
             .map_or(0, |block| block.size() as i64);
         bump_steps(&mut builder, frame.ctx, frame.offsets);
-        emit_command(&mut builder, &lowering, &edges, block_size);
+        emit_command(
+            &mut builder,
+            &lowering,
+            &edges,
+            block_size,
+            program.division,
+        );
     }
 
     builder.switch_to_block(overflow_block);
@@ -416,6 +427,7 @@ fn emit_command(
     lowering: &Lowering<'_>,
     edges: &[&Edge],
     block_size: i64,
+    division: Division,
 ) {
     let frame = lowering.frame;
     let successor = lowering.state_blocks[&edges[0].to];
@@ -444,8 +456,8 @@ fn emit_command(
                 builder.ins().imul(a, b)
             });
         }
-        Some(Command::Divide) => emit_divmod(builder, frame, successor, true),
-        Some(Command::Modulo) => emit_divmod(builder, frame, successor, false),
+        Some(Command::Divide) => emit_divmod(builder, frame, successor, true, division),
+        Some(Command::Modulo) => emit_divmod(builder, frame, successor, false, division),
         Some(Command::Not) => emit_not(builder, frame, successor),
         Some(Command::Greater) => {
             emit_binary(builder, frame, successor, |builder, a, b| {
@@ -531,7 +543,13 @@ fn emit_binary(
     builder.ins().jump(successor, &[]);
 }
 
-fn emit_divmod(builder: &mut FunctionBuilder, frame: Frame<'_>, successor: Block, division: bool) {
+fn emit_divmod(
+    builder: &mut FunctionBuilder,
+    frame: Frame<'_>,
+    successor: Block,
+    divide: bool,
+    mode: Division,
+) {
     let sp = load_field(builder, frame.ctx, types::I64, frame.offsets.sp);
     let short = builder.ins().icmp_imm_s(IntCC::SignedLessThan, sp, 2);
     let operation_block = builder.create_block();
@@ -548,21 +566,25 @@ fn emit_divmod(builder: &mut FunctionBuilder, frame: Frame<'_>, successor: Block
     let negative_one = builder.ins().icmp_imm_s(IntCC::Equal, b, -1);
     let overflow = builder.ins().band(minimum, negative_one);
 
-    if division {
+    if divide {
         // `MIN / -1` overflows and a zero divisor has no quotient. In both cases
         // the command consumes its operands and pushes nothing, like the
-        // interpreter's `floored_div` returning `None`.
+        // interpreter's `Division::divide` returning `None`.
         let skip = builder.ins().bor(zero, overflow);
         let consume = builder.create_block();
         let compute = builder.create_block();
         builder.ins().brif(skip, consume, &[], compute, &[]);
         builder.switch_to_block(compute);
 
-        let remainder = builder.ins().srem(a, b);
-        let adjust = adjust_floored(builder, remainder, b);
         let quotient = builder.ins().sdiv(a, b);
-        let adjusted = builder.ins().iadd_imm_s(quotient, -1);
-        let result = builder.ins().select(adjust, adjusted, quotient);
+        let result = if mode == Division::Floored {
+            let remainder = builder.ins().srem(a, b);
+            let adjust = adjust_floored(builder, remainder, b);
+            let adjusted = builder.ins().iadd_imm_s(quotient, -1);
+            builder.ins().select(adjust, adjusted, quotient)
+        } else {
+            quotient
+        };
         store_binary_result(builder, frame, second, top, result);
         builder.ins().jump(successor, &[]);
 
@@ -583,10 +605,14 @@ fn emit_divmod(builder: &mut FunctionBuilder, frame: Frame<'_>, successor: Block
     builder.ins().brif(overflow, zero_result, &[], compute, &[]);
 
     builder.switch_to_block(compute);
-    let remainder = builder.ins().srem(a, b);
-    let adjust = adjust_floored(builder, remainder, b);
-    let adjusted = builder.ins().iadd(remainder, b);
-    let result = builder.ins().select(adjust, adjusted, remainder);
+    let result = if mode == Division::Floored {
+        let remainder = builder.ins().srem(a, b);
+        let adjust = adjust_floored(builder, remainder, b);
+        let adjusted = builder.ins().iadd(remainder, b);
+        builder.ins().select(adjust, adjusted, remainder)
+    } else {
+        builder.ins().srem(a, b)
+    };
     store_binary_result(builder, frame, second, top, result);
     builder.ins().jump(successor, &[]);
 
@@ -967,7 +993,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let object = emit_object(&blocks).unwrap();
+        let object = emit_object(&blocks, Division::Floored).unwrap();
         assert!(!object.is_empty());
     }
 }

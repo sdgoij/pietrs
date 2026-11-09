@@ -2,7 +2,7 @@
 //! The reference interpreter: walk the tessellation flow and apply commands.
 
 use canvas::Blocks;
-use runtime::{Io, Stack, Value, floored_div, floored_mod, greater, not};
+use runtime::{Division, Io, Stack, Value, greater, not};
 use tessera::{Chooser, Command, Direction, Exit, Start, State, start};
 
 /// How the interpreter bounds a run.
@@ -10,6 +10,7 @@ use tessera::{Chooser, Command, Direction, Exit, Start, State, start};
 pub struct Options {
     pub stack_capacity: usize,
     pub max_steps: Option<u64>,
+    pub division: Division,
 }
 
 impl Default for Options {
@@ -17,6 +18,7 @@ impl Default for Options {
         Self {
             stack_capacity: 1 << 20,
             max_steps: None,
+            division: Division::Floored,
         }
     }
 }
@@ -126,7 +128,15 @@ fn run_inner(
                 let block_size = blocks
                     .block(state.block)
                     .map_or(0, |block| block.size() as Value);
-                let (dp, cc) = execute(command, block_size, dp, cc, &mut stack, io)?;
+                let (dp, cc) = execute_with(
+                    command,
+                    block_size,
+                    dp,
+                    cc,
+                    &mut stack,
+                    io,
+                    options.division,
+                )?;
                 state = State {
                     block: target,
                     dp,
@@ -138,13 +148,14 @@ fn run_inner(
     }
 }
 
-fn execute(
+fn execute_with(
     command: Option<Command>,
     block_size: Value,
     dp: Direction,
     cc: Chooser,
     stack: &mut Stack,
     io: &mut dyn Io,
+    division: Division,
 ) -> Result<(Direction, Chooser), Error> {
     let Some(command) = command else {
         return Ok((dp, cc));
@@ -157,8 +168,8 @@ fn execute(
         Command::Add => binary(stack, |a, b| Some(a.wrapping_add(b)))?,
         Command::Subtract => binary(stack, |a, b| Some(a.wrapping_sub(b)))?,
         Command::Multiply => binary(stack, |a, b| Some(a.wrapping_mul(b)))?,
-        Command::Divide => binary(stack, floored_div)?,
-        Command::Modulo => binary(stack, floored_mod)?,
+        Command::Divide => binary(stack, |a, b| division.divide(a, b))?,
+        Command::Modulo => binary(stack, |a, b| division.modulo(a, b))?,
         Command::Not => {
             if let Some(value) = stack.pop() {
                 stack.push(not(value))?;
@@ -207,6 +218,18 @@ fn execute(
         }
     }
     Ok((dp, cc))
+}
+
+#[cfg(test)]
+fn execute(
+    command: Option<Command>,
+    block_size: Value,
+    dp: Direction,
+    cc: Chooser,
+    stack: &mut Stack,
+    io: &mut dyn Io,
+) -> Result<(Direction, Chooser), Error> {
+    execute_with(command, block_size, dp, cc, stack, io, Division::Floored)
 }
 
 fn binary(
@@ -423,6 +446,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stack.as_slice(), &[42]);
+    }
+
+    #[test]
+    fn truncating_division_is_selectable() {
+        let (mut stack, mut io) = context();
+        stack.push(-7).unwrap();
+        stack.push(3).unwrap();
+        execute_with(
+            Some(Command::Divide),
+            0,
+            Direction::Right,
+            Chooser::Left,
+            &mut stack,
+            &mut io,
+            Division::Truncating,
+        )
+        .unwrap();
+        assert_eq!(stack.as_slice(), &[-2]);
     }
 
     #[test]

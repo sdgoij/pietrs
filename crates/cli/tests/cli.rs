@@ -2,7 +2,7 @@
 //! End-to-end tests for the `pietrs` binary.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
@@ -329,6 +329,57 @@ fn selftest_runs_the_checked_in_corpus() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for name in ["hello", "subtract", "roll", "single", "white", "pointer"] {
         assert!(stdout.contains(&format!("PASS: {name}")), "{stdout}");
+    }
+}
+
+#[test]
+fn the_division_flag_selects_the_rounding() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, BLUE_DARK, CYAN_LIGHT]
+        .into_iter()
+        .flatten()
+        .collect();
+    let image = write_png(&dir, "divide.png", 5, 1, &rgba);
+    let input = dir.path().join("divide.in");
+    std::fs::write(&input, "-7 3").unwrap();
+
+    for (mode, expected) in [("floored", "-3"), ("truncating", "-2")] {
+        let run = pietrs()
+            .args([
+                "run",
+                image.to_str().unwrap(),
+                "--input",
+                input.to_str().unwrap(),
+                "--max-steps",
+                "4",
+                "--division",
+                mode,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), expected, "{mode}");
+    }
+
+    for (mode, expected) in [("floored", "-3"), ("truncating", "-2")] {
+        let output = dir.path().join(format!("divide-{mode}"));
+        run_ok(pietrs().args([
+            "build",
+            image.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--max-steps",
+            "4",
+            "--division",
+            mode,
+        ]));
+        let executable = dir
+            .path()
+            .join(format!("divide-{mode}{}", std::env::consts::EXE_SUFFIX));
+        let run = Command::new(&executable)
+            .stdin(Stdio::from(std::fs::File::open(&input).unwrap()))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), expected, "{mode}");
     }
 }
 
