@@ -18,13 +18,13 @@ committed.
 
 ## Invocation
 
-- Convert the PNG fixture to PPM (`P6`, maxval 255); the vendored build has no
-  libpng support.
+- Write the decoded codel grid to PPM (`P6`, maxval 255, one pixel per codel)
+  and pass `-cs 1`; the vendored build has no libpng support.
 - Pass `-q` so npiet does not print its input prompt.
 - Bound the run with `-e <steps>` and treat the timeout as a verdict.
-- Compare stdout, stderr diagnostics that matter, and exit status against
-  `interp`. Report the missing `cc` by name when the gate is expected to run;
-  never turn a missing tool into a silent pass.
+- Compare stdout and the step-limit state against `interp`. Report a missing
+  `cc`/`gcc`/`clang`, a wrong npiet version, a nonzero exit, or a timeout by
+  name; never turn a missing tool into a silent pass.
 
 ## Known deviations
 

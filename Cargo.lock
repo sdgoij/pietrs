@@ -1132,6 +1132,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "clap",
+ "interp",
+ "png",
+ "runtime",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "zlib-rs"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
