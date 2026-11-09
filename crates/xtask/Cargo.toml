@@ -11,6 +11,7 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+aot.workspace = true
 canvas.workspace = true
 clap.workspace = true
 interp.workspace = true

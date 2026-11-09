@@ -10,10 +10,11 @@ returns a relocatable object. The object:
   `piet_in_number`, and `piet_roll`;
 - reads and writes only the shared `Context` prefix.
 
-`pietrs build` compiles `crates/cli/src/aot.c` with the emitted object and
+The `aot` crate compiles `crates/aot/src/aot.c` with the emitted object and
 links both with `cc`, `gcc`, or `clang`. The C shim provides `main`, the host
 functions, and the stack allocation. No Rust static library or Cargo target
 path is involved, so the link step is the same on every host with a C compiler.
+`pietrs build`, `pietrs selftest`, and `xtask e2e` all call `aot::build`.
 
 The step limit is passed as `-DPIET_AOT_MAX_STEPS=UINT64_C(n)`; the shim's
 `#ifndef` default keeps the file valid C when opened on its own. The link uses
@@ -45,8 +46,9 @@ pointer back to recover the in-memory `BufferIo`.
 ## Testing
 
 `pietrs selftest` runs every case through `interp`, the JIT, and, when a C
-compiler is available, the linked executable. The build tests cover push,
-input plus arithmetic, roll, UTF-8 round-tripping, and the missing-linker
-diagnostic. The C shim is a third implementation of the host semantics, so any
-new command must add an AOT case; differential agreement is the only proof that
-the three paths stay together.
+compiler is available, the linked executable. `xtask e2e` builds each case,
+runs it with a timeout, and compares `expected.stdout` and `expected.exit`.
+The build tests cover push, input plus arithmetic, roll, UTF-8 round-tripping,
+and the missing-linker diagnostic. The C shim is a third implementation of the
+host semantics, so any new command must add an AOT case; differential agreement
+is the only proof that the three paths stay together.

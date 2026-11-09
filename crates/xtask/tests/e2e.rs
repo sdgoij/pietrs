@@ -1,0 +1,87 @@
+#![allow(clippy::unwrap_used)]
+//! End-to-end tests for the build, link, and run gate.
+
+use std::path::Path;
+use std::process::Command;
+
+use tempfile::TempDir;
+
+const RED: [u8; 4] = [255, 0, 0, 255];
+const BLUE_LIGHT: [u8; 4] = [192, 192, 255, 255];
+const GREEN_DARK: [u8; 4] = [0, 192, 0, 255];
+const CYAN_LIGHT: [u8; 4] = [192, 255, 255, 255];
+const GREEN_NORMAL: [u8; 4] = [0, 255, 0, 255];
+
+fn xtask() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_xtask"))
+}
+
+fn png_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(rgba).unwrap();
+    }
+    out
+}
+
+fn write_case(directory: &Path, expected_stdout: &str) {
+    let case = directory.join("subtract");
+    std::fs::create_dir_all(&case).unwrap();
+    let rgba: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, CYAN_LIGHT, GREEN_NORMAL]
+        .into_iter()
+        .flatten()
+        .collect();
+    std::fs::write(case.join("program.png"), png_bytes(5, 1, &rgba)).unwrap();
+    std::fs::write(case.join("stdin"), "10 3").unwrap();
+    std::fs::write(case.join("max_steps"), "4").unwrap();
+    std::fs::write(case.join("expected.stdout"), expected_stdout).unwrap();
+    std::fs::write(case.join("expected.exit"), "1").unwrap();
+}
+
+#[test]
+fn e2e_compares_the_executable_with_its_goldens() {
+    let directory = TempDir::new().unwrap();
+    write_case(directory.path(), "7");
+
+    let output = xtask()
+        .args(["e2e", directory.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(stdout.contains("OK: subtract"), "{stdout}");
+}
+
+#[test]
+fn e2e_reports_a_mismatch() {
+    let directory = TempDir::new().unwrap();
+    write_case(directory.path(), "8");
+
+    let output = xtask()
+        .args(["e2e", directory.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success());
+    assert!(stdout.contains("FAIL: subtract"), "{stdout}");
+    assert!(stdout.contains("stdout differs"), "{stdout}");
+}
+
+#[test]
+fn e2e_names_an_empty_corpus() {
+    let directory = TempDir::new().unwrap();
+    let output = xtask()
+        .args(["e2e", directory.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no case directories"));
+}

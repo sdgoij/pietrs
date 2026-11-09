@@ -23,6 +23,8 @@ struct Cli {
 enum Task {
     /// Compare the interpreter against the npiet oracle.
     Conformance(ConformanceArgs),
+    /// Build and run every case, comparing it with its goldens.
+    E2e(E2eArgs),
 }
 
 #[derive(Debug, Args)]
@@ -40,6 +42,18 @@ struct ConformanceArgs {
     timeout_ms: u64,
 }
 
+#[derive(Debug, Args)]
+struct E2eArgs {
+    /// A corpus; each case directory holds `program.png` and its goldens.
+    corpus: PathBuf,
+    /// Use this C compiler instead of probing for one.
+    #[arg(long)]
+    linker: Option<String>,
+    /// Kill a case that runs longer than this.
+    #[arg(long, default_value_t = 10_000)]
+    timeout_ms: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error("{0}")]
@@ -50,6 +64,9 @@ enum Error {
 
     #[error("no .png cases in {0}")]
     NoCases(PathBuf),
+
+    #[error("no case directories in {0}")]
+    NoCaseDirectories(PathBuf),
 
     #[error("the vendored npiet source is missing: {0}")]
     MissingSource(PathBuf),
@@ -73,6 +90,7 @@ enum Error {
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Task::Conformance(args) => conformance(&args),
+        Task::E2e(args) => e2e(&args),
     };
     match result {
         Ok(failed) => {
@@ -197,6 +215,120 @@ fn check_case(
         (ExitReason::Terminated, true) => {
             Err("npiet hit the step limit but interp terminated".to_owned())
         }
+    }
+}
+
+fn e2e(args: &E2eArgs) -> Result<bool, Error> {
+    let cases = case_directories(&args.corpus)?;
+    if cases.is_empty() {
+        return Err(Error::NoCaseDirectories(args.corpus.clone()));
+    }
+    let Some(linker) = aot::find_linker(args.linker.as_deref()) else {
+        return Err(Error::NoCompiler("cc, gcc, clang".to_owned()));
+    };
+
+    let mut failures = 0usize;
+    for case in &cases {
+        let name = case.file_name().map_or_else(
+            || "?".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        match check_e2e(case, Some(&linker), args.timeout_ms) {
+            Ok(()) => println!("OK: {name}"),
+            Err(reason) => {
+                failures += 1;
+                println!("FAIL: {name}: {reason}");
+            }
+        }
+    }
+    eprintln!("{} cases, {failures} failed", cases.len());
+    Ok(failures > 0)
+}
+
+fn case_directories(root: &Path) -> Result<Vec<PathBuf>, Error> {
+    if root.join("program.png").is_file() {
+        return Ok(vec![root.to_path_buf()]);
+    }
+    let mut cases = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            cases.push(path);
+        }
+    }
+    cases.sort();
+    Ok(cases)
+}
+
+fn check_e2e(case: &Path, linker: Option<&str>, timeout_ms: u64) -> Result<(), String> {
+    let image = case.join("program.png");
+    let bytes = std::fs::read(&image)
+        .map_err(|error| format!("cannot read {}: {error}", image.display()))?;
+    let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
+    let blocks = Blocks::partition(grid);
+    let input = read_text_if_present(case.join("stdin"))?.unwrap_or_default();
+    let expected_stdout = std::fs::read(case.join("expected.stdout"))
+        .map_err(|error| format!("cannot read expected.stdout: {error}"))?;
+    let expected_exit = read_text_if_present(case.join("expected.exit"))?
+        .map(|text| {
+            text.trim()
+                .parse::<i32>()
+                .map_err(|error| format!("invalid expected.exit: {error}"))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let max_steps = read_text_if_present(case.join("max_steps"))?
+        .map(|text| {
+            text.trim()
+                .parse::<u64>()
+                .map_err(|error| format!("invalid max_steps: {error}"))
+        })
+        .transpose()?;
+
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let executable = directory
+        .path()
+        .join(format!("case{}", std::env::consts::EXE_SUFFIX));
+    aot::build(&blocks, &executable, max_steps, linker)
+        .map_err(|error| format!("cannot build the executable: {error}"))?;
+    let run = run_with_timeout(
+        &mut Command::new(&executable),
+        &input,
+        Duration::from_millis(timeout_ms),
+    )
+    .map_err(|error| error.to_string())?;
+    if run.timed_out {
+        return Err(format!("timed out after {timeout_ms}ms"));
+    }
+    if run.stdout != expected_stdout {
+        let first = run
+            .stdout
+            .iter()
+            .zip(expected_stdout.iter())
+            .take_while(|(actual, expected)| actual == expected)
+            .count();
+        return Err(format!(
+            "stdout differs at byte {first} (got {} bytes, expected {} bytes)",
+            run.stdout.len(),
+            expected_stdout.len()
+        ));
+    }
+    let Some(status) = run.status else {
+        return Err("the executable did not report an exit status".to_owned());
+    };
+    if status.code() != Some(expected_exit) {
+        return Err(format!(
+            "exit status {status:?} != expected {expected_exit}"
+        ));
+    }
+    Ok(())
+}
+
+fn read_text_if_present(path: PathBuf) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", path.display())),
     }
 }
 

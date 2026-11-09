@@ -118,16 +118,10 @@ enum Error {
     Write(#[from] std::io::Error),
 
     #[error(transparent)]
-    Codegen(#[from] codegen::Error),
+    Aot(#[from] aot::Error),
 
     #[error("no .png cases in {0}")]
     NoCases(PathBuf),
-
-    #[error("no C compiler found: tried {0}")]
-    NoLinker(String),
-
-    #[error("linking with {linker} failed: {message}")]
-    Link { linker: String, message: String },
 }
 
 fn main() -> ExitCode {
@@ -249,7 +243,7 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
         return Err(Error::NoCases(args.corpus.clone()));
     }
 
-    let linker = find_linker(args.linker.as_deref());
+    let linker = aot::find_linker(args.linker.as_deref());
     if linker.is_none() {
         eprintln!("pietrs: no C compiler found (tried cc, gcc, clang); the AOT path is skipped");
     }
@@ -274,21 +268,6 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
     } else {
         ExitCode::FAILURE
     })
-}
-
-fn find_linker(explicit: Option<&str>) -> Option<String> {
-    match explicit {
-        Some(name) => Some(name.to_owned()),
-        None => ["cc", "gcc", "clang"]
-            .into_iter()
-            .find(|name| {
-                Command::new(name)
-                    .arg("--version")
-                    .output()
-                    .is_ok_and(|run| run.status.success())
-            })
-            .map(str::to_owned),
-    }
 }
 
 fn cases_in(directory: &Path) -> Result<Vec<PathBuf>, Error> {
@@ -394,7 +373,7 @@ fn check_aot(
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    build_executable(blocks, &executable, Some(max_steps), Some(linker))
+    aot::build(blocks, &executable, Some(max_steps), Some(linker))
         .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_executable(&executable, input, Duration::from_secs(10))?;
     if run.stdout != interpreted_output.as_bytes() {
@@ -466,7 +445,8 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
             .clone()
             .unwrap_or_else(|| default_output(&args.image.image)),
     );
-    build_executable(&blocks, &output, args.max_steps, args.linker.as_deref())
+    aot::build(&blocks, &output, args.max_steps, args.linker.as_deref())?;
+    Ok(())
 }
 
 fn default_output(image: &Path) -> PathBuf {
@@ -481,60 +461,4 @@ fn executable_path(mut path: PathBuf) -> PathBuf {
         path.set_extension(&suffix[1..]);
     }
     path
-}
-
-fn build_executable(
-    blocks: &Blocks,
-    output: &Path,
-    max_steps: Option<u64>,
-    linker: Option<&str>,
-) -> Result<(), Error> {
-    let object = codegen::emit_object(blocks)?;
-    let directory = tempfile::tempdir()?;
-    let object_path = directory.path().join("piet.o");
-    let source_path = directory.path().join("piet_host.c");
-    std::fs::write(&object_path, object)?;
-    let max_steps = max_steps.unwrap_or(u64::MAX);
-    std::fs::write(&source_path, include_str!("aot.c"))?;
-    link(linker, &source_path, &object_path, output, max_steps)
-}
-
-fn link(
-    linker: Option<&str>,
-    source: &Path,
-    object: &Path,
-    output: &Path,
-    max_steps: u64,
-) -> Result<(), Error> {
-    let candidates: Vec<&str> = match linker {
-        Some(name) => vec![name],
-        None => vec!["cc", "gcc", "clang"],
-    };
-    let define = format!("-DPIET_AOT_MAX_STEPS=UINT64_C({max_steps})");
-    let mut missing = Vec::new();
-    for compiler in candidates {
-        let result = Command::new(compiler)
-            .arg("-O2")
-            .arg("-Wall")
-            .arg("-Wextra")
-            .arg("-Werror")
-            .arg(&define)
-            .arg("-o")
-            .arg(output)
-            .arg(source)
-            .arg(object)
-            .output();
-        match result {
-            Ok(run) if run.status.success() => return Ok(()),
-            Ok(run) => {
-                return Err(Error::Link {
-                    linker: compiler.to_owned(),
-                    message: String::from_utf8_lossy(&run.stderr).into_owned(),
-                });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing.push(compiler),
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(Error::NoLinker(missing.join(", ")))
 }

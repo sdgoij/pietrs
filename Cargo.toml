@@ -6,6 +6,7 @@ members = [
     "crates/runtime",
     "crates/interp",
     "crates/codegen",
+    "crates/aot",
     "crates/cli",
     "crates/xtask",
 ]
@@ -23,6 +24,7 @@ tessera = { path = "crates/tessera" }
 runtime = { path = "crates/runtime" }
 interp = { path = "crates/interp" }
 codegen = { path = "crates/codegen" }
+aot = { path = "crates/aot" }
 
 cranelift-codegen = "0.137"
 cranelift-frontend = "0.137"
