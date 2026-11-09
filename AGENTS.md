@@ -33,7 +33,7 @@ a case.
 2. Add or update a test that fails without it. A change without a failing-first
    test is not done. Prove the test is not vacuous: revert the change (or mutate
    the branch) and watch the new test fail, then restore.
-3. Run the gates.
+3. Refresh editor diagnostics project-wide, then run the gates.
 4. Commit when everything is green. Commit green, tested changes without asking.
 5. Stop and ask only when a decision, a spec ambiguity, or a missing environment
    genuinely blocks progress.
@@ -50,6 +50,10 @@ be run.
 
 These commands are the contract. When a `Justfile` lands, `just gate` runs them
 in this order; if the two ever disagree, CI is the truth.
+
+Before the first command, refresh editor diagnostics project-wide. A diagnostic
+is a failure just like a compiler warning, in every language the project uses:
+Rust, C, and any fixture tooling. It is cheap; the build is not.
 
 ```sh
 # 1. Formatting and whitespace.
