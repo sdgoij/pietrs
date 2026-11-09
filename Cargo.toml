@@ -5,6 +5,7 @@ members = [
     "crates/tessera",
     "crates/runtime",
     "crates/interp",
+    "crates/codegen",
     "crates/cli",
 ]
 
@@ -20,6 +21,13 @@ canvas = { path = "crates/canvas" }
 tessera = { path = "crates/tessera" }
 runtime = { path = "crates/runtime" }
 interp = { path = "crates/interp" }
+codegen = { path = "crates/codegen" }
+
+cranelift-codegen = "0.137"
+cranelift-frontend = "0.137"
+cranelift-jit = "0.137"
+cranelift-module = "0.137"
+cranelift-native = "0.137"
 
 clap = { version = "4", features = ["derive"] }
 png = "0.18"
