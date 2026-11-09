@@ -152,3 +152,33 @@ fn a_malformed_png_is_a_diagnostic() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("PNG decoding failed"));
 }
+
+#[test]
+fn selftest_compares_the_interpreter_and_the_jit() {
+    let dir = TempDir::new().unwrap();
+    let mut rgba = Vec::new();
+    for _ in 0..65 {
+        rgba.extend_from_slice(&RED);
+    }
+    rgba.extend_from_slice(&RED_DARK);
+    rgba.extend_from_slice(&MAGENTA);
+    write_png(&dir, "a.png", 67, 1, &rgba);
+    write_png(&dir, "single.png", 1, 1, &RED);
+
+    let output =
+        run_ok(pietrs().args(["selftest", dir.path().to_str().unwrap(), "--max-steps", "2"]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS: a"), "{stdout}");
+    assert!(stdout.contains("PASS: single"), "{stdout}");
+}
+
+#[test]
+fn selftest_without_cases_is_a_diagnostic() {
+    let dir = TempDir::new().unwrap();
+    let output = pietrs()
+        .args(["selftest", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no .png cases"));
+}

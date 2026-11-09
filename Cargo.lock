@@ -230,6 +230,7 @@ version = "0.1.0"
 dependencies = [
  "canvas",
  "clap",
+ "codegen",
  "interp",
  "png",
  "runtime",
