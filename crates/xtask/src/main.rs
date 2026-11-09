@@ -1,7 +1,10 @@
 //! Developer tasks: the external conformance gate.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use canvas::{Blocks, CodelGrid, Point};
@@ -11,6 +14,8 @@ use runtime::BufferIo;
 
 /// The npiet release the vendored source and the gate expect.
 const EXPECTED_NPIET: &str = "v1.3h";
+
+static BUILD_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask", about = "Developer tasks for pietrs")]
@@ -123,10 +128,7 @@ fn conformance(args: &ConformanceArgs) -> Result<bool, Error> {
     let temporary = tempfile::tempdir()?;
     let mut failures = 0usize;
     for case in &cases {
-        let name = case.file_stem().map_or_else(
-            || "?".to_owned(),
-            |stem| stem.to_string_lossy().into_owned(),
-        );
+        let name = case_name(case);
         match check_case(case, &npiet, temporary.path(), args) {
             Ok(()) => println!("OK: {name}"),
             Err(reason) => {
@@ -146,12 +148,44 @@ fn cases(input: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut cases = Vec::new();
     for entry in std::fs::read_dir(input)? {
         let path = entry?.path();
-        if is_png(&path) {
+        if path.is_dir() {
+            let program = path.join("program.png");
+            if program.is_file() {
+                cases.push(program);
+            }
+        } else if is_png(&path) {
             cases.push(path);
         }
     }
     cases.sort();
     Ok(cases)
+}
+
+fn case_name(path: &Path) -> String {
+    if is_case_program(path) {
+        return path.parent().and_then(Path::file_name).map_or_else(
+            || "?".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+    }
+    path.file_stem().map_or_else(
+        || "?".to_owned(),
+        |stem| stem.to_string_lossy().into_owned(),
+    )
+}
+
+fn is_case_program(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy() == "program.png")
+}
+
+fn case_max_steps(path: &Path) -> Option<u64> {
+    let path = if is_case_program(path) {
+        path.with_file_name("max_steps")
+    } else {
+        path.with_extension("max_steps")
+    };
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
 fn is_png(path: &Path) -> bool {
@@ -170,8 +204,9 @@ fn check_case(
     let blocks = Blocks::partition(grid);
     let input = read_input(path)?;
 
+    let max_steps = case_max_steps(path).unwrap_or(args.max_steps);
     let options = Options {
-        max_steps: Some(args.max_steps),
+        max_steps: Some(max_steps),
         ..Options::default()
     };
     let mut io = BufferIo::new(input.as_str());
@@ -182,8 +217,8 @@ fn check_case(
 
     let mut command = Command::new(npiet);
     command.arg("-q").arg("-cs").arg("1");
-    if args.max_steps > 0 {
-        command.arg("-e").arg(args.max_steps.to_string());
+    if max_steps > 0 {
+        command.arg("-e").arg(max_steps.to_string());
     }
     command.arg(&ppm);
     let run = run_with_timeout(&mut command, &input, Duration::from_millis(args.timeout_ms))
@@ -333,10 +368,15 @@ fn read_text_if_present(path: PathBuf) -> Result<Option<String>, String> {
 }
 
 fn read_input(path: &Path) -> Result<String, String> {
-    match std::fs::read_to_string(path.with_extension("in")) {
+    let input_path = if is_case_program(path) {
+        path.with_file_name("stdin")
+    } else {
+        path.with_extension("in")
+    };
+    match std::fs::read_to_string(&input_path) {
         Ok(input) => Ok(input),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(format!("cannot read {}: {error}", input_path.display())),
     }
 }
 
@@ -369,12 +409,24 @@ fn build_npiet(workspace: &Path) -> Result<PathBuf, Error> {
     if !source.is_file() {
         return Err(Error::MissingSource(source));
     }
+    let bytes = std::fs::read(&source)?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let digest = hasher.finish();
+    let suffix = std::env::consts::EXE_SUFFIX;
     let directory = workspace.join("target/npiet");
     std::fs::create_dir_all(&directory)?;
-    let suffix = std::env::consts::EXE_SUFFIX;
-    let output = directory.join(format!("npiet{suffix}"));
-    let temporary = directory.join(format!("npiet.tmp{}{suffix}", std::process::id()));
+    let output = directory.join(format!("npiet-{digest:016x}{suffix}"));
+    if output.is_file() {
+        return Ok(output);
+    }
 
+    let unique = BUILD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(
+        "npiet.tmp{}.{}{suffix}",
+        std::process::id(),
+        unique
+    ));
     let mut missing = Vec::new();
     for compiler in ["cc", "gcc", "clang"] {
         match Command::new(compiler)
@@ -385,8 +437,15 @@ fn build_npiet(workspace: &Path) -> Result<PathBuf, Error> {
             .status()
         {
             Ok(status) if status.success() => {
-                std::fs::rename(&temporary, &output)?;
-                return Ok(output);
+                return match std::fs::rename(&temporary, &output) {
+                    Ok(()) => Ok(output),
+                    // Another process won the build; its binary is equivalent.
+                    Err(_) if output.is_file() => {
+                        let _ = std::fs::remove_file(&temporary);
+                        Ok(output)
+                    }
+                    Err(error) => Err(error.into()),
+                };
             }
             Ok(status) => {
                 return Err(Error::Build {

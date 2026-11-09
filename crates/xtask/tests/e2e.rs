@@ -76,6 +76,24 @@ fn e2e_reports_a_mismatch() {
 }
 
 #[test]
+fn e2e_runs_the_checked_in_corpus() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let output = xtask()
+        .args(["e2e", corpus.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    for name in ["hello", "subtract", "roll", "single", "white", "pointer"] {
+        assert!(stdout.contains(&format!("OK: {name}")), "{stdout}");
+    }
+}
+
+#[test]
 fn e2e_names_an_empty_corpus() {
     let directory = TempDir::new().unwrap();
     let output = xtask()

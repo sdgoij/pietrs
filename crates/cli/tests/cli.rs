@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 //! End-to-end tests for the `pietrs` binary.
 
+use std::path::Path;
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
@@ -319,6 +320,16 @@ fn a_built_executable_round_trips_utf8() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), "λ");
+}
+
+#[test]
+fn selftest_runs_the_checked_in_corpus() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../xtask/fixtures");
+    let output = run_ok(pietrs().args(["selftest", corpus.to_str().unwrap()]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for name in ["hello", "subtract", "roll", "single", "white", "pointer"] {
+        assert!(stdout.contains(&format!("PASS: {name}")), "{stdout}");
+    }
 }
 
 #[test]

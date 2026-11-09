@@ -250,10 +250,7 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
 
     let mut failures = 0usize;
     for path in &cases {
-        let name = path.file_stem().map_or_else(
-            || "?".to_owned(),
-            |stem| stem.to_string_lossy().into_owned(),
-        );
+        let name = case_name(path);
         match check_case(path, args.max_steps, linker.as_deref()) {
             Ok(()) => println!("PASS: {name}"),
             Err(reason) => {
@@ -282,7 +279,12 @@ fn cases_in(directory: &Path) -> Result<Vec<PathBuf>, Error> {
             source,
         })?;
         let path = entry.path();
-        if path
+        if path.is_dir() {
+            let program = path.join("program.png");
+            if program.is_file() {
+                cases.push(program);
+            }
+        } else if path
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
         {
@@ -293,11 +295,47 @@ fn cases_in(directory: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(cases)
 }
 
+fn case_name(path: &Path) -> String {
+    if is_case_program(path) {
+        return path.parent().and_then(Path::file_name).map_or_else(
+            || "?".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+    }
+    path.file_stem().map_or_else(
+        || "?".to_owned(),
+        |stem| stem.to_string_lossy().into_owned(),
+    )
+}
+
+fn is_case_program(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy() == "program.png")
+}
+
+fn case_input_path(path: &Path) -> PathBuf {
+    if is_case_program(path) {
+        path.with_file_name("stdin")
+    } else {
+        path.with_extension("in")
+    }
+}
+
+fn case_max_steps(path: &Path) -> Option<u64> {
+    let path = if is_case_program(path) {
+        path.with_file_name("max_steps")
+    } else {
+        path.with_extension("max_steps")
+    };
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
 fn check_case(path: &Path, max_steps: u64, linker: Option<&str>) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
     let blocks = Blocks::partition(grid);
-    let input = std::fs::read_to_string(path.with_extension("in")).unwrap_or_default();
+    let max_steps = case_max_steps(path).unwrap_or(max_steps);
+    let input = std::fs::read_to_string(case_input_path(path)).unwrap_or_default();
 
     let options = Options {
         max_steps: Some(max_steps),

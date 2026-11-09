@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 //! End-to-end tests for the conformance gate.
 
+use std::path::Path;
 use std::process::Command;
 
 use tempfile::TempDir;
@@ -84,6 +85,24 @@ fn conformance_agrees_on_input_and_arithmetic() {
         "stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(stdout.contains("OK: subtract"), "{stdout}");
+}
+
+#[test]
+fn conformance_agrees_with_the_checked_in_corpus() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let output = xtask()
+        .args(["conformance", corpus.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    for name in ["hello", "subtract", "roll", "single", "white", "pointer"] {
+        assert!(stdout.contains(&format!("OK: {name}")), "{stdout}");
+    }
 }
 
 #[test]
