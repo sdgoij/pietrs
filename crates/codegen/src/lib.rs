@@ -1,8 +1,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-//! The Cranelift JIT: lower the reachable state graph to one native function.
+//! The Cranelift lowering: one native function for the reachable state graph.
 //!
+//! [`run`] executes it in-process through the JIT; [`emit_object`] writes a
+//! relocatable object that a C linker can turn into a standalone executable.
 //! Each `(block, DP, CC)` state becomes a basic block. The value stack lives in
-//! the host context; `pointer` and `switch` choose their successor from the
+//! the shared context; `pointer` and `switch` choose their successor from the
 //! popped value, and the remaining commands are straight-line IR. Host calls
 //! handle I/O and `roll`; the stack itself is inline.
 
@@ -19,6 +21,7 @@ use cranelift_codegen::settings;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use runtime::{BufferIo, Input, Output};
 use tessera::{Command, Edge, State, StateGraph};
 
@@ -63,27 +66,48 @@ pub enum Error {
     #[error("cranelift: {0}")]
     Cranelift(String),
 
-    #[error("the JIT requires a 64-bit host")]
+    #[error("the compiler requires a 64-bit host")]
     UnsupportedTarget,
 }
 
+/// The ABI the generated code and the C AOT shim share.
 #[repr(C)]
-struct JitContext {
-    stack: Vec<i64>,
-    capacity: usize,
-    sp: usize,
+struct Context {
+    stack: *mut i64,
+    capacity: u64,
+    sp: u64,
     steps: u64,
     max_steps: u64,
     reason: u32,
+}
+
+/// The JIT's context: the shared ABI first, then the in-memory I/O.
+#[repr(C)]
+struct JitContext {
+    context: Context,
     io: *mut BufferIo,
 }
 
 struct Offsets {
+    stack: i32,
     capacity: i32,
     sp: i32,
     steps: i32,
     max_steps: i32,
     reason: i32,
+}
+
+impl Offsets {
+    fn new() -> Self {
+        Self {
+            stack: offset_of!(Context, stack) as i32,
+            capacity: offset_of!(Context, capacity) as i32,
+            sp: offset_of!(Context, sp) as i32,
+            steps: offset_of!(Context, steps) as i32,
+            max_steps: offset_of!(Context, max_steps) as i32,
+            reason: offset_of!(Context, reason) as i32,
+        }
+    }
 }
 
 struct HostIds {
@@ -105,7 +129,7 @@ struct HostRefs {
 /// The whole-function lowering inputs that do not change between states.
 struct Program<'a> {
     graph: &'a StateGraph,
-    start: State,
+    start: Option<State>,
     blocks: &'a Blocks,
     offsets: &'a Offsets,
     host_ids: &'a HostIds,
@@ -144,54 +168,35 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
         });
     };
 
-    let offsets = Offsets {
-        capacity: offset_of!(JitContext, capacity) as i32,
-        sp: offset_of!(JitContext, sp) as i32,
-        steps: offset_of!(JitContext, steps) as i32,
-        max_steps: offset_of!(JitContext, max_steps) as i32,
-        reason: offset_of!(JitContext, reason) as i32,
-    };
+    let offsets = Offsets::new();
+    let mut stack = vec![0i64; options.stack_capacity];
     let mut context = JitContext {
-        stack: vec![0; options.stack_capacity],
-        capacity: options.stack_capacity,
-        sp: 0,
-        steps: 0,
-        max_steps: options.max_steps.unwrap_or(u64::MAX),
-        reason: REASON_TERMINATED,
+        context: Context {
+            stack: stack.as_mut_ptr(),
+            capacity: options.stack_capacity as u64,
+            sp: 0,
+            steps: 0,
+            max_steps: options.max_steps.unwrap_or(u64::MAX),
+            reason: REASON_TERMINATED,
+        },
         io: io as *mut BufferIo,
     };
 
     let mut module = build_module()?;
-    let main_signature = {
-        let mut signature = module.make_signature();
-        signature.params.push(AbiParam::new(types::I64));
-        signature.params.push(AbiParam::new(types::I64));
-        signature
-    };
-    let host_signature = {
-        let mut signature = module.make_signature();
-        signature.params.push(AbiParam::new(types::I64));
-        signature
-    };
+    let signature = pointer_signature(&mut module);
     let frontend_config = module.target_config();
     let main_id = module
-        .declare_function("piet_main", Linkage::Export, &main_signature)
+        .declare_function("piet_main", Linkage::Export, &signature)
         .map_err(|error| Error::Cranelift(error.to_string()))?;
-    let host_ids = HostIds {
-        out_char: declare_host(&mut module, "piet_out_char", &host_signature)?,
-        out_number: declare_host(&mut module, "piet_out_number", &host_signature)?,
-        in_char: declare_host(&mut module, "piet_in_char", &host_signature)?,
-        in_number: declare_host(&mut module, "piet_in_number", &host_signature)?,
-        roll: declare_host(&mut module, "piet_roll", &host_signature)?,
-    };
+    let host_ids = declare_hosts(&mut module, &signature)?;
 
     let program = Program {
         graph: &graph,
-        start,
+        start: Some(start),
         blocks,
         offsets: &offsets,
         host_ids: &host_ids,
-        signature: main_signature,
+        signature,
         frontend_config,
     };
     define_main(&mut module, main_id, &program)?;
@@ -200,28 +205,88 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
         .map_err(|error| Error::Cranelift(error.to_string()))?;
 
     let code = module.get_finalized_function(main_id);
-    let main: extern "C" fn(*mut JitContext, *mut i64) = unsafe { std::mem::transmute(code) };
-    let stack = context.stack.as_mut_ptr();
-    main(&mut context, stack);
+    let main: extern "C" fn(*mut Context) = unsafe { std::mem::transmute(code) };
+    main(&mut context.context);
 
     Ok(Run {
-        reason: match context.reason {
+        reason: match context.context.reason {
             REASON_STEP_LIMIT => ExitReason::StepLimit,
             REASON_OVERFLOW => ExitReason::StackOverflow,
             _ => ExitReason::Terminated,
         },
-        steps: context.steps,
+        steps: context.context.steps,
     })
 }
 
-fn declare_host(
-    module: &mut JITModule,
+/// Emits the program as a relocatable object exporting `piet_main`.
+///
+/// The object calls the host symbols `piet_out_char`, `piet_out_number`,
+/// `piet_in_char`, `piet_in_number`, and `piet_roll`, which the linker must
+/// provide.
+pub fn emit_object(blocks: &Blocks) -> Result<Vec<u8>, Error> {
+    if std::mem::size_of::<usize>() != 8 {
+        return Err(Error::UnsupportedTarget);
+    }
+    let graph = StateGraph::build(blocks);
+    let offsets = Offsets::new();
+    let mut module = build_object_module()?;
+    let signature = pointer_signature(&mut module);
+    let frontend_config = module.target_config();
+    let main_id = module
+        .declare_function("piet_main", Linkage::Export, &signature)
+        .map_err(|error| Error::Cranelift(error.to_string()))?;
+    let host_ids = declare_hosts(&mut module, &signature)?;
+    let program = Program {
+        graph: &graph,
+        start: graph.start(),
+        blocks,
+        offsets: &offsets,
+        host_ids: &host_ids,
+        signature,
+        frontend_config,
+    };
+    define_main(&mut module, main_id, &program)?;
+    module
+        .finish()
+        .emit()
+        .map_err(|error| Error::Cranelift(error.to_string()))
+}
+
+fn declare_hosts<M: Module>(module: &mut M, signature: &Signature) -> Result<HostIds, Error> {
+    Ok(HostIds {
+        out_char: declare_host(module, "piet_out_char", signature)?,
+        out_number: declare_host(module, "piet_out_number", signature)?,
+        in_char: declare_host(module, "piet_in_char", signature)?,
+        in_number: declare_host(module, "piet_in_number", signature)?,
+        roll: declare_host(module, "piet_roll", signature)?,
+    })
+}
+
+fn declare_host<M: Module>(
+    module: &mut M,
     name: &str,
     signature: &Signature,
 ) -> Result<FuncId, Error> {
     module
         .declare_function(name, Linkage::Import, signature)
         .map_err(|error| Error::Cranelift(error.to_string()))
+}
+
+fn pointer_signature<M: Module>(module: &mut M) -> Signature {
+    let mut signature = module.make_signature();
+    signature.params.push(AbiParam::new(types::I64));
+    signature
+}
+
+fn build_object_module() -> Result<ObjectModule, Error> {
+    let isa_builder =
+        cranelift_native::builder().map_err(|error| Error::Cranelift(error.to_string()))?;
+    let isa = isa_builder
+        .finish(settings::Flags::new(settings::builder()))
+        .map_err(|error| Error::Cranelift(error.to_string()))?;
+    let builder = ObjectBuilder::new(isa, "pietrs", default_libcall_names())
+        .map_err(|error| Error::Cranelift(error.to_string()))?;
+    Ok(ObjectModule::new(builder))
 }
 
 fn build_module() -> Result<JITModule, Error> {
@@ -239,8 +304,8 @@ fn build_module() -> Result<JITModule, Error> {
     Ok(JITModule::new(builder))
 }
 
-fn define_main(
-    module: &mut JITModule,
+fn define_main<M: Module>(
+    module: &mut M,
     main_id: FuncId,
     program: &Program<'_>,
 ) -> Result<(), Error> {
@@ -268,8 +333,15 @@ fn define_main(
     builder.switch_to_block(entry);
     let params = builder.block_params(entry);
     let ctx_ptr = params[0];
-    let stack_ptr = params[1];
-    builder.ins().jump(state_blocks[&program.start], &[]);
+    let stack_ptr = load_field(&mut builder, ctx_ptr, types::I64, program.offsets.stack);
+    match program.start {
+        Some(start) => {
+            builder.ins().jump(state_blocks[&start], &[]);
+        }
+        None => {
+            builder.ins().return_(&[]);
+        }
+    }
 
     let lowering = Lowering {
         state_blocks: &state_blocks,
@@ -330,6 +402,9 @@ fn define_main(
     builder.ins().return_(&[]);
     builder.seal_all_blocks();
     builder.finalize(program.frontend_config);
+    context
+        .verify(module.isa())
+        .map_err(|error| Error::Cranelift(error.to_string()))?;
     module
         .define_function(main_id, &mut context)
         .map_err(|error| Error::Cranelift(error.to_string()))?;
@@ -686,24 +761,26 @@ fn store_field(builder: &mut FunctionBuilder, base: Value, value: Value, offset:
 }
 
 fn push(ctx: &mut JitContext, value: i64) {
-    if ctx.sp < ctx.capacity {
-        ctx.stack[ctx.sp] = value;
-        ctx.sp += 1;
+    if ctx.context.sp < ctx.context.capacity {
+        // SAFETY: the context's stack points at a buffer of `capacity` values.
+        unsafe { *ctx.context.stack.add(ctx.context.sp as usize) = value };
+        ctx.context.sp += 1;
     } else {
-        ctx.reason = REASON_OVERFLOW;
+        ctx.context.reason = REASON_OVERFLOW;
     }
 }
 
 fn pop(ctx: &mut JitContext) -> Option<i64> {
-    if ctx.sp == 0 {
+    if ctx.context.sp == 0 {
         return None;
     }
-    ctx.sp -= 1;
-    Some(ctx.stack[ctx.sp])
+    ctx.context.sp -= 1;
+    // SAFETY: the context's stack points at a buffer of `capacity` values.
+    Some(unsafe { *ctx.context.stack.add(ctx.context.sp as usize) })
 }
 
 fn pop_two(ctx: &mut JitContext) -> Option<(i64, i64)> {
-    if ctx.sp < 2 {
+    if ctx.context.sp < 2 {
         return None;
     }
     let top = pop(ctx)?;
@@ -718,16 +795,21 @@ fn roll(ctx: &mut JitContext, depth: i64, rolls: i64) {
     let Ok(depth) = usize::try_from(depth) else {
         return;
     };
-    if depth > ctx.sp || depth <= 1 {
+    if depth > ctx.context.sp as usize || depth <= 1 {
         return;
     }
-    let start = ctx.sp - depth;
+    let start = ctx.context.sp as usize - depth;
     let shift = rolls.rem_euclid(depth as i64) as usize;
-    ctx.stack[start..ctx.sp].rotate_right(shift);
+    // SAFETY: the context's stack points at a buffer of `capacity` values and
+    // `start..sp` is within it.
+    let values = unsafe { std::slice::from_raw_parts_mut(ctx.context.stack.add(start), depth) };
+    values.rotate_right(shift);
 }
 
-extern "C" fn piet_out_char(ctx: *mut JitContext) {
-    let ctx = unsafe { &mut *ctx };
+extern "C" fn piet_out_char(context: *mut Context) {
+    // SAFETY: `context` points at the first field of the `JitContext` built by
+    // `run`; the generated code only sees the shared prefix.
+    let ctx = unsafe { &mut *(context as *mut JitContext) };
     if let Some(value) = pop(ctx)
         && let Ok(code) = u32::try_from(value)
         && let Some(character) = char::from_u32(code)
@@ -737,16 +819,16 @@ extern "C" fn piet_out_char(ctx: *mut JitContext) {
     }
 }
 
-extern "C" fn piet_out_number(ctx: *mut JitContext) {
-    let ctx = unsafe { &mut *ctx };
+extern "C" fn piet_out_number(context: *mut Context) {
+    let ctx = unsafe { &mut *(context as *mut JitContext) };
     if let Some(value) = pop(ctx) {
         let io = unsafe { &mut *ctx.io };
         io.write_number(value);
     }
 }
 
-extern "C" fn piet_in_char(ctx: *mut JitContext) {
-    let ctx = unsafe { &mut *ctx };
+extern "C" fn piet_in_char(context: *mut Context) {
+    let ctx = unsafe { &mut *(context as *mut JitContext) };
     let character = {
         let io = unsafe { &mut *ctx.io };
         io.read_char()
@@ -756,8 +838,8 @@ extern "C" fn piet_in_char(ctx: *mut JitContext) {
     }
 }
 
-extern "C" fn piet_in_number(ctx: *mut JitContext) {
-    let ctx = unsafe { &mut *ctx };
+extern "C" fn piet_in_number(context: *mut Context) {
+    let ctx = unsafe { &mut *(context as *mut JitContext) };
     let value = {
         let io = unsafe { &mut *ctx.io };
         io.read_number()
@@ -767,8 +849,8 @@ extern "C" fn piet_in_number(ctx: *mut JitContext) {
     }
 }
 
-extern "C" fn piet_roll(ctx: *mut JitContext) {
-    let ctx = unsafe { &mut *ctx };
+extern "C" fn piet_roll(context: *mut Context) {
+    let ctx = unsafe { &mut *(context as *mut JitContext) };
     if let Some((depth, rolls)) = pop_two(ctx) {
         roll(ctx, depth, rolls);
     }
@@ -778,33 +860,43 @@ extern "C" fn piet_roll(ctx: *mut JitContext) {
 mod tests {
     use super::*;
 
-    fn context(capacity: usize) -> JitContext {
-        JitContext {
-            stack: vec![0; capacity],
-            capacity,
-            sp: 0,
-            steps: 0,
-            max_steps: u64::MAX,
-            reason: REASON_TERMINATED,
+    fn context(capacity: usize) -> (Vec<i64>, JitContext) {
+        let mut stack = vec![0i64; capacity];
+        let ctx = JitContext {
+            context: Context {
+                stack: stack.as_mut_ptr(),
+                capacity: capacity as u64,
+                sp: 0,
+                steps: 0,
+                max_steps: u64::MAX,
+                reason: REASON_TERMINATED,
+            },
             io: std::ptr::null_mut(),
-        }
+        };
+        (stack, ctx)
     }
 
-    fn filled(values: &[i64]) -> JitContext {
-        let mut ctx = context(values.len() + 4);
+    fn filled(values: &[i64]) -> (Vec<i64>, JitContext) {
+        let (stack, mut ctx) = context(values.len() + 4);
         for &value in values {
             push(&mut ctx, value);
         }
-        ctx
+        (stack, ctx)
+    }
+
+    fn slice(ctx: &JitContext) -> &[i64] {
+        // SAFETY: the context's stack points at a buffer of `capacity` values
+        // and `sp` never exceeds it.
+        unsafe { std::slice::from_raw_parts(ctx.context.stack, ctx.context.sp as usize) }
     }
 
     #[test]
     fn push_and_pop_walk_the_stack() {
-        let mut ctx = context(2);
+        let (_stack, mut ctx) = context(2);
         assert_eq!(pop(&mut ctx), None);
         push(&mut ctx, 1);
         push(&mut ctx, 2);
-        assert_eq!(ctx.stack[..ctx.sp], [1, 2]);
+        assert_eq!(slice(&ctx), [1, 2]);
         assert_eq!(pop(&mut ctx), Some(2));
         assert_eq!(pop(&mut ctx), Some(1));
         assert_eq!(pop(&mut ctx), None);
@@ -812,42 +904,70 @@ mod tests {
 
     #[test]
     fn a_full_stack_reports_overflow() {
-        let mut ctx = context(1);
+        let (_stack, mut ctx) = context(1);
         push(&mut ctx, 1);
         push(&mut ctx, 2);
-        assert_eq!(ctx.sp, 1);
-        assert_eq!(ctx.reason, REASON_OVERFLOW);
+        assert_eq!(ctx.context.sp, 1);
+        assert_eq!(ctx.context.reason, REASON_OVERFLOW);
     }
 
     #[test]
     fn pop_two_returns_second_then_top() {
-        let mut ctx = filled(&[1, 2, 3]);
+        let (_stack, mut ctx) = filled(&[1, 2, 3]);
         assert_eq!(pop_two(&mut ctx), Some((2, 3)));
-        assert_eq!(ctx.stack[..ctx.sp], [1]);
+        assert_eq!(slice(&ctx), [1]);
         assert_eq!(pop_two(&mut ctx), None);
     }
 
     #[test]
     fn roll_matches_the_runtime_stack() {
-        let mut ctx = filled(&[1, 2, 3]);
+        let (_stack, mut ctx) = filled(&[1, 2, 3]);
         roll(&mut ctx, 3, 1);
-        assert_eq!(ctx.stack[..ctx.sp], [3, 1, 2]);
+        assert_eq!(slice(&ctx), [3, 1, 2]);
 
-        let mut ctx = filled(&[1, 2, 3]);
+        let (_stack, mut ctx) = filled(&[1, 2, 3]);
         roll(&mut ctx, 3, -1);
-        assert_eq!(ctx.stack[..ctx.sp], [2, 3, 1]);
+        assert_eq!(slice(&ctx), [2, 3, 1]);
 
-        let mut ctx = filled(&[1, 2, 3]);
+        let (_stack, mut ctx) = filled(&[1, 2, 3]);
         roll(&mut ctx, 3, 4);
-        assert_eq!(ctx.stack[..ctx.sp], [3, 1, 2]);
+        assert_eq!(slice(&ctx), [3, 1, 2]);
     }
 
     #[test]
     fn an_invalid_roll_leaves_the_stack_alone() {
         for depth in [-1, 0, 1, 4] {
-            let mut ctx = filled(&[1, 2, 3]);
+            let (_stack, mut ctx) = filled(&[1, 2, 3]);
             roll(&mut ctx, depth, 1);
-            assert_eq!(ctx.stack[..ctx.sp], [1, 2, 3], "depth {depth}");
+            assert_eq!(slice(&ctx), [1, 2, 3], "depth {depth}");
         }
+    }
+
+    #[test]
+    fn the_context_layout_matches_the_c_shim() {
+        assert_eq!(std::mem::size_of::<Context>(), 48);
+        assert_eq!(offset_of!(Context, stack), 0);
+        assert_eq!(offset_of!(Context, capacity), 8);
+        assert_eq!(offset_of!(Context, sp), 16);
+        assert_eq!(offset_of!(Context, steps), 24);
+        assert_eq!(offset_of!(Context, max_steps), 32);
+        assert_eq!(offset_of!(Context, reason), 40);
+    }
+
+    #[test]
+    fn the_object_is_not_empty() {
+        let blocks = canvas::Blocks::partition(
+            canvas::CodelGrid::from_colors(
+                1,
+                1,
+                vec![canvas::Color::chromatic(
+                    canvas::Hue::Red,
+                    canvas::Lightness::Normal,
+                )],
+            )
+            .unwrap(),
+        );
+        let object = emit_object(&blocks).unwrap();
+        assert!(!object.is_empty());
     }
 }

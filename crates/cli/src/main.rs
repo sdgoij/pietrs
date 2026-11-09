@@ -1,8 +1,9 @@
-//! The `pietrs` command line: check, trace, and run a Piet image.
+//! The `pietrs` command line: check, trace, run, build, and selftest a Piet image.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 use canvas::{Blocks, CodelGrid};
 use clap::{Args, Parser, Subcommand};
@@ -29,6 +30,8 @@ enum Commands {
     Trace(TraceArgs),
     /// Run the interpreter and print the program's output.
     Run(RunArgs),
+    /// Emit and link a standalone executable.
+    Build(BuildArgs),
     /// Run every corpus case through each execution path and compare them.
     Selftest(SelftestArgs),
 }
@@ -70,12 +73,30 @@ struct RunArgs {
 }
 
 #[derive(Debug, Args)]
+struct BuildArgs {
+    #[command(flatten)]
+    image: ImageArgs,
+    /// Where to write the executable.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Stop after this many transitions (baked into the executable).
+    #[arg(long)]
+    max_steps: Option<u64>,
+    /// Link with this C compiler instead of probing for one.
+    #[arg(long)]
+    linker: Option<String>,
+}
+
+#[derive(Debug, Args)]
 struct SelftestArgs {
     /// Directory of `.png` cases; a sibling `.in` file supplies input.
     corpus: PathBuf,
     /// Stop each path after this many transitions.
     #[arg(long, default_value_t = 100_000)]
     max_steps: u64,
+    /// Link with this C compiler instead of probing for one.
+    #[arg(long)]
+    linker: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,8 +117,17 @@ enum Error {
     #[error("cannot write stdout: {0}")]
     Write(#[from] std::io::Error),
 
+    #[error(transparent)]
+    Codegen(#[from] codegen::Error),
+
     #[error("no .png cases in {0}")]
     NoCases(PathBuf),
+
+    #[error("no C compiler found: tried {0}")]
+    NoLinker(String),
+
+    #[error("linking with {linker} failed: {message}")]
+    Link { linker: String, message: String },
 }
 
 fn main() -> ExitCode {
@@ -105,6 +135,7 @@ fn main() -> ExitCode {
         Commands::Check(args) => check(&args).map(|()| ExitCode::SUCCESS),
         Commands::Trace(args) => trace(&args).map(|()| ExitCode::SUCCESS),
         Commands::Run(args) => run_program(&args),
+        Commands::Build(args) => build_program(&args).map(|()| ExitCode::SUCCESS),
         Commands::Selftest(args) => selftest(&args),
     };
     match result {
@@ -218,13 +249,18 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
         return Err(Error::NoCases(args.corpus.clone()));
     }
 
+    let linker = find_linker(args.linker.as_deref());
+    if linker.is_none() {
+        eprintln!("pietrs: no C compiler found (tried cc, gcc, clang); the AOT path is skipped");
+    }
+
     let mut failures = 0usize;
     for path in &cases {
         let name = path.file_stem().map_or_else(
             || "?".to_owned(),
             |stem| stem.to_string_lossy().into_owned(),
         );
-        match check_case(path, args.max_steps) {
+        match check_case(path, args.max_steps, linker.as_deref()) {
             Ok(()) => println!("PASS: {name}"),
             Err(reason) => {
                 failures += 1;
@@ -238,6 +274,21 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn find_linker(explicit: Option<&str>) -> Option<String> {
+    match explicit {
+        Some(name) => Some(name.to_owned()),
+        None => ["cc", "gcc", "clang"]
+            .into_iter()
+            .find(|name| {
+                Command::new(name)
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|run| run.status.success())
+            })
+            .map(str::to_owned),
+    }
 }
 
 fn cases_in(directory: &Path) -> Result<Vec<PathBuf>, Error> {
@@ -263,7 +314,7 @@ fn cases_in(directory: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(cases)
 }
 
-fn check_case(path: &Path, max_steps: u64) -> Result<(), String> {
+fn check_case(path: &Path, max_steps: u64, linker: Option<&str>) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
     let blocks = Blocks::partition(grid);
@@ -307,10 +358,173 @@ fn check_case(path: &Path, max_steps: u64) -> Result<(), String> {
     }
     match (interpreted.reason, jit.reason) {
         (ExitReason::Terminated, codegen::ExitReason::Terminated)
-        | (ExitReason::StepLimit, codegen::ExitReason::StepLimit) => Ok(()),
-        (_, codegen::ExitReason::StackOverflow) => Err("the jit overflowed the stack".to_owned()),
-        (interpreted, jit) => Err(format!(
-            "reasons differ: interp {interpreted:?}, jit {jit:?}"
-        )),
+        | (ExitReason::StepLimit, codegen::ExitReason::StepLimit) => {}
+        (_, codegen::ExitReason::StackOverflow) => {
+            return Err("the jit overflowed the stack".to_owned());
+        }
+        (interpreted, jit) => {
+            return Err(format!(
+                "reasons differ: interp {interpreted:?}, jit {jit:?}"
+            ));
+        }
     }
+
+    if let Some(linker) = linker {
+        check_aot(
+            &blocks,
+            &input,
+            max_steps,
+            linker,
+            interpreted_output,
+            interpreted.reason,
+        )?;
+    }
+    Ok(())
+}
+
+fn check_aot(
+    blocks: &Blocks,
+    input: &str,
+    max_steps: u64,
+    linker: &str,
+    interpreted_output: &str,
+    reason: ExitReason,
+) -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let executable = directory
+        .path()
+        .join(format!("case{}", std::env::consts::EXE_SUFFIX));
+    build_executable(blocks, &executable, Some(max_steps), Some(linker))
+        .map_err(|error| format!("cannot build the executable: {error}"))?;
+    let run = run_executable(&executable, input, Duration::from_secs(10))?;
+    if run.stdout != interpreted_output.as_bytes() {
+        return Err(format!(
+            "AOT stdout differs (interp {} bytes, AOT {} bytes)",
+            interpreted_output.len(),
+            run.stdout.len()
+        ));
+    }
+    match (reason, run.status.success()) {
+        (ExitReason::Terminated, true) | (ExitReason::StepLimit, false) => Ok(()),
+        (ExitReason::Terminated, false) => {
+            Err("the AOT executable failed but interp terminated".to_owned())
+        }
+        (ExitReason::StepLimit, true) => {
+            Err("the AOT executable terminated but interp hit the step limit".to_owned())
+        }
+    }
+}
+
+fn run_executable(
+    executable: &Path,
+    input: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let stdin_path = directory.path().join("stdin");
+    let stdout_path = directory.path().join("stdout");
+    let stderr_path = directory.path().join("stderr");
+    std::fs::write(&stdin_path, input).map_err(|error| error.to_string())?;
+    let mut child = Command::new(executable)
+        .stdin(Stdio::from(
+            std::fs::File::open(&stdin_path).map_err(|error| error.to_string())?,
+        ))
+        .stdout(Stdio::from(
+            std::fs::File::create(&stdout_path).map_err(|error| error.to_string())?,
+        ))
+        .stderr(Stdio::from(
+            std::fs::File::create(&stderr_path).map_err(|error| error.to_string())?,
+        ))
+        .spawn()
+        .map_err(|error| error.to_string())?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().map_err(|error| error.to_string())? {
+            Some(status) => {
+                return Ok(std::process::Output {
+                    status,
+                    stdout: std::fs::read(&stdout_path).map_err(|error| error.to_string())?,
+                    stderr: std::fs::read(&stderr_path).map_err(|error| error.to_string())?,
+                });
+            }
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("the AOT executable timed out after {timeout:?}"));
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+fn build_program(args: &BuildArgs) -> Result<(), Error> {
+    let grid = load(&args.image)?;
+    let blocks = Blocks::partition(grid);
+    let output = executable_path(
+        args.output
+            .clone()
+            .unwrap_or_else(|| default_output(&args.image.image)),
+    );
+    build_executable(&blocks, &output, args.max_steps, args.linker.as_deref())
+}
+
+fn default_output(image: &Path) -> PathBuf {
+    image
+        .file_stem()
+        .map_or_else(|| PathBuf::from("a.out"), PathBuf::from)
+}
+
+fn executable_path(mut path: PathBuf) -> PathBuf {
+    let suffix = std::env::consts::EXE_SUFFIX;
+    if !suffix.is_empty() && path.extension().is_none() {
+        path.set_extension(&suffix[1..]);
+    }
+    path
+}
+
+fn build_executable(
+    blocks: &Blocks,
+    output: &Path,
+    max_steps: Option<u64>,
+    linker: Option<&str>,
+) -> Result<(), Error> {
+    let object = codegen::emit_object(blocks)?;
+    let directory = tempfile::tempdir()?;
+    let object_path = directory.path().join("piet.o");
+    let source_path = directory.path().join("piet_host.c");
+    std::fs::write(&object_path, object)?;
+    let max_steps = max_steps.unwrap_or(u64::MAX);
+    let source = include_str!("aot.c").replace("@MAX_STEPS@", &format!("UINT64_C({max_steps})"));
+    std::fs::write(&source_path, source)?;
+    link(linker, &source_path, &object_path, output)
+}
+
+fn link(linker: Option<&str>, source: &Path, object: &Path, output: &Path) -> Result<(), Error> {
+    let candidates: Vec<&str> = match linker {
+        Some(name) => vec![name],
+        None => vec!["cc", "gcc", "clang"],
+    };
+    let mut missing = Vec::new();
+    for compiler in candidates {
+        let result = Command::new(compiler)
+            .arg("-O2")
+            .arg("-o")
+            .arg(output)
+            .arg(source)
+            .arg(object)
+            .output();
+        match result {
+            Ok(run) if run.status.success() => return Ok(()),
+            Ok(run) => {
+                return Err(Error::Link {
+                    linker: compiler.to_owned(),
+                    message: String::from_utf8_lossy(&run.stderr).into_owned(),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing.push(compiler),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(Error::NoLinker(missing.join(", ")))
 }

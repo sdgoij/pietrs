@@ -11,6 +11,12 @@ const GREEN: [u8; 4] = [0, 255, 0, 255];
 const BLUE: [u8; 4] = [0, 0, 255, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 const WHITE: [u8; 4] = [255, 255, 255, 255];
+const BLUE_LIGHT: [u8; 4] = [192, 192, 255, 255];
+const GREEN_DARK: [u8; 4] = [0, 192, 0, 255];
+const CYAN_LIGHT: [u8; 4] = [192, 255, 255, 255];
+const GREEN_NORMAL: [u8; 4] = [0, 255, 0, 255];
+const RED_LIGHT: [u8; 4] = [255, 192, 192, 255];
+const BLUE_DARK: [u8; 4] = [0, 0, 192, 255];
 
 fn pietrs() -> Command {
     Command::new(env!("CARGO_BIN_EXE_pietrs"))
@@ -154,7 +160,7 @@ fn a_malformed_png_is_a_diagnostic() {
 }
 
 #[test]
-fn selftest_compares_the_interpreter_and_the_jit() {
+fn selftest_compares_every_path() {
     let dir = TempDir::new().unwrap();
     let mut rgba = Vec::new();
     for _ in 0..65 {
@@ -164,12 +170,19 @@ fn selftest_compares_the_interpreter_and_the_jit() {
     rgba.extend_from_slice(&MAGENTA);
     write_png(&dir, "a.png", 67, 1, &rgba);
     write_png(&dir, "single.png", 1, 1, &RED);
+    let subtract: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, CYAN_LIGHT, GREEN_NORMAL]
+        .into_iter()
+        .flatten()
+        .collect();
+    write_png(&dir, "subtract.png", 5, 1, &subtract);
+    std::fs::write(dir.path().join("subtract.in"), "10 3").unwrap();
 
     let output =
-        run_ok(pietrs().args(["selftest", dir.path().to_str().unwrap(), "--max-steps", "2"]));
+        run_ok(pietrs().args(["selftest", dir.path().to_str().unwrap(), "--max-steps", "4"]));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("PASS: a"), "{stdout}");
     assert!(stdout.contains("PASS: single"), "{stdout}");
+    assert!(stdout.contains("PASS: subtract"), "{stdout}");
 }
 
 #[test]
@@ -181,4 +194,149 @@ fn selftest_without_cases_is_a_diagnostic() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no .png cases"));
+}
+
+#[test]
+fn build_produces_a_runnable_executable() {
+    let dir = TempDir::new().unwrap();
+    let mut rgba = Vec::new();
+    for _ in 0..65 {
+        rgba.extend_from_slice(&RED);
+    }
+    rgba.extend_from_slice(&RED_DARK);
+    rgba.extend_from_slice(&MAGENTA);
+    let image = write_png(&dir, "a.png", 67, 1, &rgba);
+    let output = dir.path().join("a");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max-steps",
+        "2",
+    ]));
+
+    let executable = dir
+        .path()
+        .join(format!("a{}", std::env::consts::EXE_SUFFIX));
+    let run = Command::new(&executable).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "A");
+    assert!(!run.status.success());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("step limit"));
+}
+
+#[test]
+fn a_built_executable_reads_input() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, CYAN_LIGHT, GREEN_NORMAL]
+        .into_iter()
+        .flatten()
+        .collect();
+    let image = write_png(&dir, "subtract.png", 5, 1, &rgba);
+    let output = dir.path().join("subtract");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max-steps",
+        "4",
+    ]));
+
+    let executable = dir
+        .path()
+        .join(format!("subtract{}", std::env::consts::EXE_SUFFIX));
+    let input = dir.path().join("subtract.in");
+    std::fs::write(&input, "10 3").unwrap();
+    let run = Command::new(&executable)
+        .stdin(std::process::Stdio::from(
+            std::fs::File::open(&input).unwrap(),
+        ))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "7");
+}
+
+#[test]
+fn a_built_executable_rolls_the_stack() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [
+        RED, BLUE_LIGHT, GREEN_DARK, RED, BLUE_LIGHT, GREEN_DARK, RED_LIGHT, MAGENTA, BLUE_DARK,
+        CYAN_LIGHT,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let image = write_png(&dir, "roll.png", 10, 1, &rgba);
+    let output = dir.path().join("roll");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max-steps",
+        "9",
+    ]));
+
+    let executable = dir
+        .path()
+        .join(format!("roll{}", std::env::consts::EXE_SUFFIX));
+    let input = dir.path().join("roll.in");
+    std::fs::write(&input, "10 20 30 3 1").unwrap();
+    let run = Command::new(&executable)
+        .stdin(std::process::Stdio::from(
+            std::fs::File::open(&input).unwrap(),
+        ))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "201030");
+}
+
+#[test]
+fn a_built_executable_round_trips_utf8() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, MAGENTA, BLUE_LIGHT].into_iter().flatten().collect();
+    let image = write_png(&dir, "echo.png", 3, 1, &rgba);
+    let output = dir.path().join("echo");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max-steps",
+        "2",
+    ]));
+
+    let executable = dir
+        .path()
+        .join(format!("echo{}", std::env::consts::EXE_SUFFIX));
+    let input = dir.path().join("echo.in");
+    std::fs::write(&input, "λ").unwrap();
+    let run = Command::new(&executable)
+        .stdin(std::process::Stdio::from(
+            std::fs::File::open(&input).unwrap(),
+        ))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "λ");
+}
+
+#[test]
+fn build_names_a_missing_linker() {
+    let dir = TempDir::new().unwrap();
+    let image = write_png(&dir, "one.png", 1, 1, &RED);
+    let output = dir.path().join("one");
+    let run = pietrs()
+        .args([
+            "build",
+            image.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--linker",
+            "definitely-not-a-compiler",
+        ])
+        .output()
+        .unwrap();
+    assert!(!run.status.success());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("no C compiler found"));
 }

@@ -16,12 +16,12 @@ clap.workspace = true
 codegen.workspace = true
 interp.workspace = true
 runtime.workspace = true
+tempfile.workspace = true
 tessera.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 png.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true
