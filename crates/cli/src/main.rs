@@ -8,7 +8,7 @@ use canvas::{Blocks, CodelGrid};
 use clap::{Args, Parser, Subcommand};
 use interp::{ExitReason, Options, run, run_traced};
 use runtime::BufferIo;
-use tessera::{Start, start};
+use tessera::{Start, StateGraph, start};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -122,6 +122,9 @@ fn check(args: &CheckArgs) -> Result<(), Error> {
         blocks.grid().codel_size()
     );
     println!("blocks: {}", blocks.len());
+    let graph = StateGraph::build(&blocks);
+    println!("states: {}", graph.states().len());
+    println!("edges: {}", graph.edges().len());
     match start(&blocks) {
         Start::State(state) => {
             let color = blocks.block(state.block).map_or_else(

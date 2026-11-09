@@ -74,6 +74,7 @@ fn check_reports_the_grid_and_blocks() {
         "{stdout}"
     );
     assert!(stdout.contains("blocks: 4"), "{stdout}");
+    assert!(stdout.contains("states: "), "{stdout}");
     assert!(stdout.contains("start: block 0"), "{stdout}");
 }
 
