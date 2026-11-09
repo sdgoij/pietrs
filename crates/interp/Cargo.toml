@@ -1,0 +1,16 @@
+[package]
+name = "interp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+canvas.workspace = true
+runtime.workspace = true
+tessera.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
