@@ -1,9 +1,15 @@
 /* The AOT runtime shim: the host functions and the process entry point.
  *
- * `pietrs build` writes this file next to the emitted object and links both
- * with a C compiler. The Context layout must match codegen's `Context`; the
- * static assertions fail the link if it ever drifts.
+ * `pietrs build` compiles this file with the emitted object and links both.
+ * The step limit is passed as `-DPIET_AOT_MAX_STEPS=...`; the default below
+ * keeps the file valid and complete when opened on its own. The Context layout
+ * must match codegen's `Context`; the static assertions fail the build if it
+ * ever drifts.
  */
+
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -32,7 +38,12 @@ _Static_assert(offsetof(Context, reason) == 40, "reason offset");
 extern void piet_main(Context *context);
 
 static const uint64_t PIET_STACK_CAPACITY = 1u << 20;
-static const uint64_t PIET_MAX_STEPS = @MAX_STEPS@;
+
+#ifndef PIET_AOT_MAX_STEPS
+#define PIET_AOT_MAX_STEPS UINT64_C(18446744073709551615)
+#endif
+
+static const uint64_t PIET_MAX_STEPS = PIET_AOT_MAX_STEPS;
 
 enum { REASON_TERMINATED = 0, REASON_STEP_LIMIT = 1, REASON_OVERFLOW = 2 };
 

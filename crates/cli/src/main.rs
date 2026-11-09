@@ -495,20 +495,30 @@ fn build_executable(
     let source_path = directory.path().join("piet_host.c");
     std::fs::write(&object_path, object)?;
     let max_steps = max_steps.unwrap_or(u64::MAX);
-    let source = include_str!("aot.c").replace("@MAX_STEPS@", &format!("UINT64_C({max_steps})"));
-    std::fs::write(&source_path, source)?;
-    link(linker, &source_path, &object_path, output)
+    std::fs::write(&source_path, include_str!("aot.c"))?;
+    link(linker, &source_path, &object_path, output, max_steps)
 }
 
-fn link(linker: Option<&str>, source: &Path, object: &Path, output: &Path) -> Result<(), Error> {
+fn link(
+    linker: Option<&str>,
+    source: &Path,
+    object: &Path,
+    output: &Path,
+    max_steps: u64,
+) -> Result<(), Error> {
     let candidates: Vec<&str> = match linker {
         Some(name) => vec![name],
         None => vec!["cc", "gcc", "clang"],
     };
+    let define = format!("-DPIET_AOT_MAX_STEPS=UINT64_C({max_steps})");
     let mut missing = Vec::new();
     for compiler in candidates {
         let result = Command::new(compiler)
             .arg("-O2")
+            .arg("-Wall")
+            .arg("-Wextra")
+            .arg("-Werror")
+            .arg(&define)
             .arg("-o")
             .arg(output)
             .arg(source)

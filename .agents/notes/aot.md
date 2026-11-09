@@ -10,11 +10,14 @@ returns a relocatable object. The object:
   `piet_in_number`, and `piet_roll`;
 - reads and writes only the shared `Context` prefix.
 
-`pietrs build` writes the object next to `crates/cli/src/aot.c`, substitutes the
-step limit for `@MAX_STEPS@`, and links both with `cc`, `gcc`, or `clang`. The
-C shim provides `main`, the host functions, and the stack allocation. No Rust
-static library or Cargo target path is involved, so the link step is the same
-on every host with a C compiler.
+`pietrs build` compiles `crates/cli/src/aot.c` with the emitted object and
+links both with `cc`, `gcc`, or `clang`. The C shim provides `main`, the host
+functions, and the stack allocation. No Rust static library or Cargo target
+path is involved, so the link step is the same on every host with a C compiler.
+
+The step limit is passed as `-DPIET_AOT_MAX_STEPS=UINT64_C(n)`; the shim's
+`#ifndef` default keeps the file valid C when opened on its own. The link uses
+`-Wall -Wextra -Werror`, so a C warning is a build failure.
 
 ## Context layout
 
