@@ -144,6 +144,11 @@ pub struct EditorApp {
     dirty: bool,
     window_title: String,
     pending: Option<Pending>,
+    new_open: bool,
+    new_width: u32,
+    new_height: u32,
+    resize_width: u32,
+    resize_height: u32,
     #[cfg(feature = "codegen")]
     compiler: CompilerState,
 }
@@ -152,6 +157,8 @@ impl EditorApp {
     pub fn new(document: Document, path: Option<PathBuf>) -> Result<Self, canvas::Error> {
         let analysis = Analysis::build(&document)?;
         let dirty = path.is_none();
+        let resize_width = document.width();
+        let resize_height = document.height();
         Ok(Self {
             document,
             analysis,
@@ -181,6 +188,11 @@ impl EditorApp {
             dirty,
             window_title: String::new(),
             pending: None,
+            new_open: false,
+            new_width: 32,
+            new_height: 32,
+            resize_width,
+            resize_height,
             #[cfg(feature = "codegen")]
             compiler: CompilerState::default(),
         })
@@ -494,13 +506,24 @@ impl EditorApp {
         self.stroke_active = false;
         self.stroke_changed = false;
         self.last_paint = None;
+        self.resize_width = self.document.width();
+        self.resize_height = self.document.height();
+    }
+
+    /// Resizes the document, anchored at the upper-left. New codels are white.
+    pub fn resize_document(&mut self, width: u32, height: u32) {
+        match self.document.resize(width, height) {
+            Ok(true) => self.after_edit(),
+            Ok(false) => {}
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
     }
 
     fn request_new(&mut self) {
         if self.dirty {
             self.pending = Some(Pending::New);
         } else {
-            self.new_document(32, 32);
+            self.new_open = true;
         }
     }
 
@@ -597,11 +620,46 @@ impl EditorApp {
         if discard {
             self.pending = None;
             match pending {
-                Pending::New => self.new_document(32, 32),
+                Pending::New => self.new_open = true,
                 Pending::Open => self.open_dialog(),
             }
         } else if cancel {
             self.pending = None;
+        }
+    }
+
+    fn show_new_dialog(&mut self, ctx: &egui::Context) {
+        if !self.new_open {
+            return;
+        }
+        let mut create = false;
+        let mut cancel = false;
+        egui::Window::new("New document")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Width");
+                    ui.add(egui::DragValue::new(&mut self.new_width).range(1..=1024));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Height");
+                    ui.add(egui::DragValue::new(&mut self.new_height).range(1..=1024));
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Create").clicked() {
+                        create = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if create {
+            self.new_open = false;
+            self.new_document(self.new_width, self.new_height);
+        } else if cancel {
+            self.new_open = false;
         }
     }
 
@@ -700,6 +758,8 @@ impl EditorApp {
         self.debug_reset();
         self.rect_start = None;
         self.rect_end = None;
+        self.resize_width = self.document.width();
+        self.resize_height = self.document.height();
         if let Err(error) = self.analysis.refresh(&self.document) {
             self.last_error = Some(error.to_string());
         }
@@ -763,6 +823,7 @@ impl EditorApp {
             ui.ctx().request_repaint();
         }
         self.confirm_discard(ui.ctx());
+        self.show_new_dialog(ui.ctx());
     }
 
     fn ensure_session(&mut self) -> bool {
@@ -937,6 +998,15 @@ impl EditorApp {
             self.document.height(),
             self.document.codel_size()
         ));
+        ui.horizontal(|ui| {
+            ui.label("W");
+            ui.add(egui::DragValue::new(&mut self.resize_width).range(1..=1024));
+            ui.label("H");
+            ui.add(egui::DragValue::new(&mut self.resize_height).range(1..=1024));
+        });
+        if ui.button("Resize").clicked() {
+            self.resize_document(self.resize_width, self.resize_height);
+        }
         if let Some(block) = self
             .selected
             .and_then(|block| self.analysis.blocks().block(block))
@@ -1868,5 +1938,35 @@ mod tests {
         assert_eq!(app.document().height(), 3);
         assert!(app.is_dirty());
         assert!(app.session().is_none());
+    }
+
+    #[test]
+    fn resizing_refreshes_the_analysis_and_invalidates_the_session() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        app.debug_step().unwrap();
+        assert!(app.session().is_some());
+
+        app.resize_document(3, 2);
+        assert_eq!(app.document().width(), 3);
+        assert_eq!(app.document().height(), 2);
+        assert_eq!(app.document().color(Point::new(2, 1)), Some(Color::White));
+        assert_eq!(app.analysis().report().width, 3);
+        assert!(app.session().is_none());
+
+        assert!(app.undo());
+        assert_eq!(app.document().width(), 2);
+        assert_eq!(app.document().height(), 1);
+    }
+
+    #[test]
+    fn a_resize_to_the_same_size_is_not_an_edit() {
+        let mut app =
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("x.png"))).unwrap();
+        let revision = app.document().revision();
+
+        app.resize_document(2, 1);
+        assert_eq!(app.document().revision(), revision);
+        assert!(!app.is_dirty());
+        assert!(!app.document().can_undo());
     }
 }

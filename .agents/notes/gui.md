@@ -718,9 +718,12 @@ Landed, with tests, in the first implementation pass:
   the texture on the same frame. Panning is right or middle drag, or Space plus
   drag, so the primary button paints.
 - `gui` files: Open (PNG or GIF, detection or `--codel-size`) and Save as PNG
-  at the document's codel size, with Ctrl/Cmd+N, O, S, and Shift+S. New and
-  Open ask before discarding unsaved changes. A failed open leaves the current
-  document intact; saving makes the path current and clears the dirty marker.
+  at the document's codel size, with Ctrl/Cmd+N, O, S, and Shift+S. New asks
+  for a size in a dialog; the tools panel resizes the current document,
+  anchored at the upper-left with new codels white. New and Open ask before
+  discarding unsaved changes. A failed open leaves the current document intact;
+  saving makes the path current and clears the dirty marker. A resize is one
+  undo entry, and a same-size resize is not an edit.
 - `gui` compiler: Compare with JIT runs the interpreter and `codegen` on a
   worker with a 1,000,000-step bound and reports agreement or the first
   difference; Build executable writes the host AOT executable through a save
@@ -733,11 +736,10 @@ Landed, with tests, in the first implementation pass:
 - Gates: `05-features.sh` runs the six shapes; `deny.toml` records the new
   licences and the three unmaintained-advisory ignores.
 
-Still to build: a new-document size dialog (New is a blank 32x32), a resize
-control, and the release verification below. The release question in the risks
-is still open: the GUI has been compiled and tested on Windows; the static musl
-artefact and the two Linux runners have not been exercised here, so CI is the
-first proof.
+Still to build: the release verification below. The release question in the
+risks is still open: the GUI has been compiled and tested on Windows; the
+static musl artefact and the two Linux runners have not been exercised here,
+so CI is the first proof.
 
 ## Invariants this proposal keeps
 
