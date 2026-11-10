@@ -40,6 +40,7 @@ cranelift-object = "0.137"
 
 clap = { version = "4", features = ["derive"] }
 object = "0.40"
+gif = "0.14"
 png = "0.18"
 proptest = "1"
 tempfile = "3"

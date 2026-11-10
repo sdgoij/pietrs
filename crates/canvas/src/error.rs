@@ -28,6 +28,12 @@ pub enum Error {
     #[error("PNG decoding failed: {0}")]
     Png(String),
 
+    #[error("GIF decoding failed: {0}")]
+    Gif(String),
+
+    #[error("the image is neither PNG nor GIF")]
+    UnknownFormat,
+
     #[error("PNG bit depth {0} is not supported after normalisation")]
     UnsupportedBitDepth(String),
 

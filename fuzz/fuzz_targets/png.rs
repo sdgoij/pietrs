@@ -9,7 +9,7 @@ mod grid;
 
 fuzz_target!(|data: &[u8]| {
     // A malformed image is a diagnostic, never a panic.
-    let Ok(codel_grid) = canvas::CodelGrid::from_png(data) else {
+    let Ok(codel_grid) = canvas::CodelGrid::from_image(data) else {
         return;
     };
     let (width, height) = (codel_grid.width(), codel_grid.height());

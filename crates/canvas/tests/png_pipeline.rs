@@ -36,7 +36,7 @@ fn a_png_is_decoded_into_codels_and_blocks() {
         }
     }
     let bytes = png_bytes(4, 4, &rgba);
-    let grid = CodelGrid::from_png(&bytes).unwrap();
+    let grid = CodelGrid::from_image(&bytes).unwrap();
 
     assert_eq!(grid.width(), 2);
     assert_eq!(grid.height(), 2);
@@ -64,17 +64,18 @@ fn the_codel_size_override_is_honoured() {
     let rgba: Vec<u8> = [RED, GREEN, BLUE, WHITE].into_iter().flatten().collect();
     let bytes = png_bytes(2, 2, &rgba);
 
-    let autodetected = CodelGrid::from_png(&bytes).unwrap();
+    let autodetected = CodelGrid::from_image(&bytes).unwrap();
     assert_eq!(autodetected.codel_size(), 1);
 
-    let error = CodelGrid::from_png_with_codel_size(&bytes, 2).unwrap_err();
+    let error = CodelGrid::from_image_with_codel_size(&bytes, 2).unwrap_err();
     assert!(matches!(error, canvas::Error::NonMonochromeCodel { .. }));
 }
 
 #[test]
 fn a_malformed_png_is_a_diagnostic_not_a_panic() {
-    let error = CodelGrid::from_png(b"not a png").unwrap_err();
-    assert!(matches!(error, canvas::Error::Png(_)));
+    // The signature matches, so the PNG decoder reports the corruption.
+    let error = CodelGrid::from_image(b"\x89PNG\r\n\x1a\nnot a png").unwrap_err();
+    assert!(matches!(error, canvas::Error::Png(_)), "{error:?}");
 }
 
 #[test]
@@ -84,7 +85,7 @@ fn a_png_that_declares_too_many_pixels_is_a_diagnostic() {
     // found as an out-of-memory abort.
     let bytes = include_bytes!("../fixtures/huge-header/program.png");
     assert_eq!(
-        CodelGrid::from_png(bytes).unwrap_err(),
+        CodelGrid::from_image(bytes).unwrap_err(),
         canvas::Error::ImageTooLarge
     );
 }
@@ -95,7 +96,7 @@ fn a_non_standard_colour_is_reported_and_treated_as_white() {
     let rgba: Vec<u8> = [RED, strange, WHITE, GREEN].into_iter().flatten().collect();
     let bytes = png_bytes(2, 2, &rgba);
 
-    let grid = CodelGrid::from_png(&bytes).unwrap();
+    let grid = CodelGrid::from_image(&bytes).unwrap();
     assert_eq!(grid.codels()[1], Color::White, "the colour is quantised");
     assert_eq!(grid.unknown_colours(), &[([176, 36, 240], 1)]);
 }
@@ -103,6 +104,6 @@ fn a_non_standard_colour_is_reported_and_treated_as_white() {
 #[test]
 fn an_image_of_standard_colours_reports_nothing() {
     let rgba: Vec<u8> = [RED, GREEN, BLUE, WHITE].into_iter().flatten().collect();
-    let grid = CodelGrid::from_png(&png_bytes(2, 2, &rgba)).unwrap();
+    let grid = CodelGrid::from_image(&png_bytes(2, 2, &rgba)).unwrap();
     assert!(grid.unknown_colours().is_empty());
 }

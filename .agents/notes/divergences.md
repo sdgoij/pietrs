@@ -79,4 +79,22 @@ npiet's exit status in that case.
 ## White-slide legacy modes
 
 npiet keeps `-v1`, `-v11`, and `-dpbug` for older interpreters. `pietrs`
-implements only the clarified 2018 white-slide behaviour.
+implements only the clarified 2018 white-slide behaviour. Two consequences are
+observable:
+
+- **Step accounting.** A white slide that is blocked and re-entered is one
+transition for `pietrs` and several for npiet, so `--max-steps N` does less work
+than npiet's `-e N` on the same program. The trace has one line per resting
+state, not one per slide segment. `xtask conformance` compares the common prefix
+when both implementations are bounded, because equal budgets are not equal work.
+- **Termination.** When a slide returns to the codel it started from, the
+clarified specification terminates; npiet does not always notice and can loop in
+white for ever. `sortgnu.png` and an all-white image print identical output under
+both, and then `pietrs` exits while npiet runs out of steps.
+
+## Output line endings
+
+npiet writes stdout through C stdio, which is in text mode on Windows and turns
+every `\n` into `\r\n`; `pietrs` writes the codepoint's UTF-8 bytes everywhere.
+`xtask conformance` normalises the former on the platforms that do it, so the
+comparison is about the program and not about the reference build's C library.

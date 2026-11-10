@@ -7,10 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+gif.workspace = true
 png.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+gif.workspace = true
 proptest.workspace = true
 
 [lints]

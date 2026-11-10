@@ -30,7 +30,7 @@ mod tests {
     #[test]
     fn a_written_png_decodes_to_the_same_codel() {
         let bytes = png_bytes(1, 1, &super::super::colors::RED);
-        let grid = CodelGrid::from_png(&bytes).unwrap();
+        let grid = CodelGrid::from_image(&bytes).unwrap();
         assert_eq!(grid.width(), 1);
         assert_eq!(grid.height(), 1);
         assert_eq!(

@@ -202,8 +202,8 @@ fn load(image: &ImageArgs) -> Result<CodelGrid, Error> {
         source,
     })?;
     let grid = match image.codel_size {
-        Some(size) => CodelGrid::from_png_with_codel_size(&bytes, size)?,
-        None => CodelGrid::from_png(&bytes)?,
+        Some(size) => CodelGrid::from_image_with_codel_size(&bytes, size)?,
+        None => CodelGrid::from_image(&bytes)?,
     };
     warn_about_unknown_colours(&grid);
     Ok(grid)
@@ -466,7 +466,7 @@ fn case_max_steps(path: &Path) -> Option<u64> {
 
 fn check_case(path: &Path, max_steps: u64, division: runtime::Division) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
+    let grid = CodelGrid::from_image(&bytes).map_err(|error| error.to_string())?;
     let blocks = Blocks::partition(grid);
     let max_steps = case_max_steps(path).unwrap_or(max_steps);
     let input = std::fs::read_to_string(case_input_path(path)).unwrap_or_default();

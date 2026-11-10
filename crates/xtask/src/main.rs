@@ -213,7 +213,7 @@ fn check_case(
     args: &ConformanceArgs,
 ) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
+    let grid = CodelGrid::from_image(&bytes).map_err(|error| error.to_string())?;
     let blocks = Blocks::partition(grid);
     let input = read_input(path)?;
 
@@ -247,15 +247,33 @@ fn check_case(
     if !status.success() {
         return Err(format!("npiet exited with {status}: {stderr}"));
     }
-    if run.stdout != io.output().as_bytes() {
+    let npiet_stdout = normalize_newlines(&run.stdout);
+    let limited = stderr.contains("execution steps exceeded");
+    let mine = io.output().as_bytes();
+    if matches!(interpreted.reason, ExitReason::StepLimit) && limited {
+        // A blocked white slide is one transition for `pietrs` and several for
+        // npiet, so equal budgets do not mean equal work once a program loops.
+        // Compare what both produced: a byte that differs anywhere in that
+        // window is still a divergence.
+        let common = mine.len().min(npiet_stdout.len());
+        if mine[..common] != npiet_stdout[..common] {
+            let first = mine
+                .iter()
+                .zip(npiet_stdout.iter())
+                .take_while(|(ours, theirs)| ours == theirs)
+                .count();
+            return Err(format!(
+                "stdout differs at byte {first} of {common} compared"
+            ));
+        }
+    } else if npiet_stdout != mine {
         return Err(format!(
             "stdout differs (interp {} bytes, npiet {} bytes)",
-            io.output().len(),
-            run.stdout.len()
+            mine.len(),
+            npiet_stdout.len()
         ));
     }
 
-    let limited = stderr.contains("execution steps exceeded");
     match (interpreted.reason, limited) {
         (ExitReason::StepLimit, true) | (ExitReason::Terminated, false) => Ok(()),
         (ExitReason::StepLimit, false) => {
@@ -265,6 +283,27 @@ fn check_case(
             Err("npiet hit the step limit but interp terminated".to_owned())
         }
     }
+}
+
+/// npiet writes stdout through C stdio, which is in text mode on Windows and
+/// turns every `\n` into `\r\n`. That is a property of the reference build, not
+/// of Piet, so the comparison normalises it away where it happens.
+fn normalize_newlines(bytes: &[u8]) -> Vec<u8> {
+    if !cfg!(windows) {
+        return bytes.to_vec();
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+            out.push(b'\n');
+            index += 2;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    out
 }
 
 fn e2e(args: &E2eArgs) -> Result<bool, Error> {
@@ -307,7 +346,7 @@ fn check_e2e(case: &Path, timeout_ms: u64, division: runtime::Division) -> Resul
     let image = case.join("program.png");
     let bytes = std::fs::read(&image)
         .map_err(|error| format!("cannot read {}: {error}", image.display()))?;
-    let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
+    let grid = CodelGrid::from_image(&bytes).map_err(|error| error.to_string())?;
     let blocks = Blocks::partition(grid);
     let input = read_text_if_present(case.join("stdin"))?.unwrap_or_default();
     let expected_stdout = std::fs::read(case.join("expected.stdout"))

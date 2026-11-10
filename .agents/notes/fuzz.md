@@ -9,7 +9,7 @@ dependency of `pietrs`.
 
 | Target | Input | Invariants |
 |---|---|---|
-| `png` | arbitrary bytes | `CodelGrid::from_png` returns a diagnostic, never panics or allocates without a bound; a decoded grid partitions totally and disjointly |
+| `png` | arbitrary bytes | `CodelGrid::from_image` (PNG and GIF) returns a diagnostic, never panics or allocates without a bound; a decoded grid partitions totally and disjointly |
 | `codel_grid` | two shape bytes plus colour codes | `CodelGrid::from_colors` -> `Blocks::partition` is total, disjoint, and self-consistent |
 | `graph` | a grid of all twenty colours | every edge joins two states of the graph, the start state is a state, at most eight states per block, and rebuilding yields the same graph |
 | `codegen` | a small grid | `emit_object` succeeds for both division modes; the CLIF verifier runs inside it, so the verifier is fuzzed too |

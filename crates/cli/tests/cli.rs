@@ -229,16 +229,28 @@ fn the_codel_size_override_is_honoured() {
 }
 
 #[test]
-fn a_malformed_png_is_a_diagnostic() {
+fn a_malformed_image_is_a_diagnostic() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("bad.png");
-    std::fs::write(&path, b"not a png").unwrap();
-    let output = pietrs()
-        .args(["check", path.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("PNG decoding failed"));
+    let garbage = dir.path().join("garbage.png");
+    std::fs::write(&garbage, b"not an image").unwrap();
+    let truncated = dir.path().join("truncated.png");
+    std::fs::write(&truncated, b"\x89PNG\r\n\x1a\nnot a png").unwrap();
+
+    for (path, expected) in [
+        (&garbage, "neither PNG nor GIF"),
+        (&truncated, "PNG decoding failed"),
+    ] {
+        let output = pietrs()
+            .args(["check", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{} succeeded", path.display());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]

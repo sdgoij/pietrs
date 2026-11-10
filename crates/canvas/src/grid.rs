@@ -113,15 +113,15 @@ impl CodelGrid {
         })
     }
 
-    /// Builds a codel grid from a PNG, detecting the codel size.
-    pub fn from_png(bytes: &[u8]) -> Result<Self, Error> {
+    /// Builds a codel grid from an image (PNG or GIF), detecting the codel size.
+    pub fn from_image(bytes: &[u8]) -> Result<Self, Error> {
         let (rgba, width, height) = super::decode::decode_rgba(bytes)?;
         let codel_size = detect_codel_size(&rgba, width, height)?;
         Self::from_rgba(&rgba, width, height, codel_size)
     }
 
-    /// Builds a codel grid from a PNG with an explicit codel size.
-    pub fn from_png_with_codel_size(bytes: &[u8], codel_size: u32) -> Result<Self, Error> {
+    /// Builds a codel grid from an image with an explicit codel size.
+    pub fn from_image_with_codel_size(bytes: &[u8], codel_size: u32) -> Result<Self, Error> {
         let (rgba, width, height) = super::decode::decode_rgba(bytes)?;
         Self::from_rgba(&rgba, width, height, codel_size)
     }

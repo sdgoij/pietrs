@@ -127,7 +127,7 @@ exhaustively; do that.
 
 **Integration tests** (`crates/<crate>/tests/*.rs`) use only the public API:
 
-- `canvas`: fixture PNG -> expected grid, block count, block sizes;
+- `canvas`: fixture PNG or GIF -> expected grid, block count, block sizes;
 - `tessera`: hand-built grid -> expected state graph and trace;
 - `interp`: fixture -> stdout, exit status, trace;
 - `codegen`: graph -> verified CLIF, JIT result, object emission;
@@ -146,14 +146,14 @@ exhaustively; do that.
 - `pietrs trace` against a golden trace;
 - `pietrs run` (JIT) against golden stdout and exit status;
 - `pietrs build` -> a real executable -> run it -> same stdout and exit status;
-- `--codel-size` override, non-standard colours, malformed-PNG diagnostics.
+- `--codel-size` override, non-standard colours, malformed-image diagnostics.
 
 **Property and fuzz** tests cover the open-ended input:
 
 - proptest: block partition is total and disjoint; the state graph is
   deterministic; white-slide resolution terminates or is reported; the command
   table is total; the `rem_euclid` arms are exhaustive;
-- cargo-fuzz: PNG decode/quantise/segment, arbitrary codel grids, and `tessera`
+- cargo-fuzz: PNG and GIF decode/quantise/segment, arbitrary codel grids, and `tessera`
   graph construction. Codegen fuzzing verifies CLIF before execution. A crash is
   a bug: fix the root cause, then add the input to the seed corpus.
 
