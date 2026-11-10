@@ -69,13 +69,8 @@ pub fn exit(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> E
         return Exit::Terminate;
     }
 
-    for attempt in 0..8u32 {
-        let candidate_dp = dp.clockwise_by(attempt / 2);
-        let candidate_cc = if attempt.div_ceil(2) & 1 == 1 {
-            cc.toggled()
-        } else {
-            cc
-        };
+    for index in 0..8u32 {
+        let (candidate_dp, candidate_cc) = attempt(dp, cc, index);
         let Some(edge) = edge_codel(block, candidate_dp, candidate_cc) else {
             continue;
         };
@@ -110,6 +105,20 @@ pub fn exit(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> E
     }
 
     Exit::Terminate
+}
+
+/// The `(DP, CC)` a fallback attempt tries.
+///
+/// The eight attempts cover all four directions with both choosers exactly once:
+/// the chooser toggles before every attempt except the one that follows a
+/// rotation, so the order is `(dp, cc)`, `(dp, !cc)`, then one step clockwise and
+/// both choosers again.
+fn attempt(dp: Direction, cc: Chooser, index: u32) -> (Direction, Chooser) {
+    let toggled = index.div_ceil(2) & 1 == 1;
+    (
+        dp.clockwise_by(index / 2),
+        if toggled { cc.toggled() } else { cc },
+    )
 }
 
 enum Slide {
@@ -306,12 +315,121 @@ mod tests {
     }
 
     #[test]
+    fn the_fallback_covers_every_direction_and_chooser_once() {
+        for dp in Direction::ALL {
+            for cc in [Chooser::Left, Chooser::Right] {
+                let tried: Vec<(Direction, Chooser)> =
+                    (0..8).map(|index| attempt(dp, cc, index)).collect();
+                let mut seen = tried.clone();
+                seen.sort();
+                seen.dedup();
+                assert_eq!(seen.len(), 8, "{dp:?} {cc:?} tried {tried:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_fallback_starts_with_the_state_it_was_given() {
+        assert_eq!(
+            attempt(Direction::Right, Chooser::Left, 0),
+            (Direction::Right, Chooser::Left)
+        );
+        assert_eq!(
+            attempt(Direction::Up, Chooser::Right, 0),
+            (Direction::Up, Chooser::Right)
+        );
+    }
+
+    #[test]
+    fn the_fallback_toggles_the_chooser_before_it_rotates() {
+        let dp = Direction::Right;
+        let cc = Chooser::Left;
+        let tried: Vec<(Direction, Chooser)> = (0..8).map(|index| attempt(dp, cc, index)).collect();
+        assert_eq!(
+            tried,
+            vec![
+                (Direction::Right, Chooser::Left),
+                (Direction::Right, Chooser::Right),
+                (Direction::Down, Chooser::Right),
+                (Direction::Down, Chooser::Left),
+                (Direction::Left, Chooser::Left),
+                (Direction::Left, Chooser::Right),
+                (Direction::Up, Chooser::Right),
+                (Direction::Up, Chooser::Left),
+            ]
+        );
+    }
+
+    #[test]
     fn a_block_with_no_neighbour_terminates() {
-        let blocks = blocks(&["rr"]);
+        let lone = blocks(&["rr"]);
+        let lone_red = id_at(&lone, 0, 0);
+        let walled = blocks(&["###", "#r#", "###"]);
+        let walled_red = id_at(&walled, 1, 1);
+        for (blocks, red) in [(&lone, lone_red), (&walled, walled_red)] {
+            for dp in Direction::ALL {
+                for cc in [Chooser::Left, Chooser::Right] {
+                    assert_eq!(exit(blocks, red, dp, cc), Exit::Terminate, "{dp:?} {cc:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn edge_codel_handles_a_disjoint_edge() {
+        // The top edge is two separate runs; the block is still 4-connected
+        // through the bottom row.
+        let blocks = blocks(&["xx.xx", "x...x", "xxxxx"]);
+        let block = blocks.block(id_at(&blocks, 0, 0)).unwrap();
+        assert_eq!(block.size(), 11);
+        assert_eq!(
+            edge_codel(block, Direction::Up, Chooser::Left),
+            Some(Point::new(0, 0))
+        );
+        assert_eq!(
+            edge_codel(block, Direction::Up, Chooser::Right),
+            Some(Point::new(4, 0))
+        );
+    }
+
+    #[test]
+    fn edge_codel_ignores_a_hole() {
+        let blocks = blocks(&["xxx", "x.x", "xxx"]);
+        let ring = blocks.block(id_at(&blocks, 0, 0)).unwrap();
+        assert_eq!(ring.size(), 8, "the hole is not a codel of the block");
+        for dp in Direction::ALL {
+            for cc in [Chooser::Left, Chooser::Right] {
+                let point = edge_codel(ring, dp, cc).unwrap();
+                assert_ne!(point, Point::new(1, 1), "the hole is never an edge");
+            }
+        }
+        assert_eq!(
+            edge_codel(ring, Direction::Up, Chooser::Left),
+            Some(Point::new(0, 0))
+        );
+        assert_eq!(
+            edge_codel(ring, Direction::Up, Chooser::Right),
+            Some(Point::new(2, 0))
+        );
+    }
+
+    #[test]
+    fn a_blocked_slide_restarts_from_the_current_codel() {
+        // Right is blocked at the top-right, so the slide turns down and back.
+        // Restarting from the entry codel instead of the current one would
+        // slide down the first column into the blue block.
+        let blocks = blocks(&["r..", "#.#", ".b."]);
         let red = id_at(&blocks, 0, 0);
+        let blue = id_at(&blocks, 1, 2);
+        assert_ne!(red, blue);
         assert_eq!(
             exit(&blocks, red, Direction::Right, Chooser::Left),
-            Exit::Terminate
+            Exit::Move {
+                target: red,
+                dp: Direction::Left,
+                cc: Chooser::Left,
+                command: None,
+            }
         );
     }
 
