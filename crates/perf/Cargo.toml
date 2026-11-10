@@ -1,0 +1,31 @@
+[package]
+name = "perf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Every harness is an integration test, so the crates under test are dev
+# dependencies. `canvas` is a normal dependency because the grid builder lives
+# in the library.
+
+[dependencies]
+canvas.workspace = true
+
+[dev-dependencies]
+codegen.workspace = true
+interp.workspace = true
+runtime.workspace = true
+tessera.workspace = true
+testkit.workspace = true
+
+# A counting allocator needs `unsafe`. This crate holds nothing but ignored
+# harnesses, and no shipped code depends on it.
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+float_arithmetic = "deny"
+unwrap_used = "warn"

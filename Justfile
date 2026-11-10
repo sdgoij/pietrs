@@ -35,3 +35,8 @@ e2e corpus="crates/xtask/fixtures":
 # see .agents/notes/fuzz.md.
 fuzz target="png" runs="100000":
 	cargo +nightly fuzz run --fuzz-dir fuzz {{target}} -- -runs={{runs}}
+
+# The ignored performance harnesses. Not a gate; record results in
+# .agents/notes/perf.md. One thread: the allocator counter is process wide.
+perf:
+	cargo test -p perf --release -- --ignored --nocapture --test-threads=1

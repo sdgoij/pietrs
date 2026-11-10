@@ -8,6 +8,7 @@ members = [
     "crates/codegen",
     "crates/aot",
     "crates/cli",
+    "crates/perf",
     "crates/runner",
     "crates/testkit",
     "crates/xtask",

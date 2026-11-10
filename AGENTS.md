@@ -159,8 +159,8 @@ exhaustively; do that.
 
 **Performance** tests are `#[ignore]`d manual harnesses, not CI correctness
 gates. Use a plain wall-clock loop and a counting allocator (the `regexp`
-precedent) rather than adding a benchmark framework. Record results in a perf
-journal; do not gate on a machine-dependent number.
+precedent) rather than adding a benchmark framework. Record results in the perf
+journal, `.agents/notes/perf.md`; do not gate on a machine-dependent number.
 
 ## Fixtures, goldens, and oracles
 
