@@ -1,12 +1,14 @@
 //! The egui view, with no window types.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use canvas::{BlockId, Color, Hue, Lightness, Point};
+use canvas::{BlockId, CodelGrid, Color, Hue, Lightness, Point};
 use editor::{Analysis, Breakpoints, Budget, Document, Session, Stop};
 use egui::{CornerRadius, TextureHandle, TextureOptions, ThemePreference};
 use interp::Options;
 use tessera::{Exit, Start, State};
+
+use crate::FileError;
 
 /// Stack rows shown before the rest is collapsed.
 const MAX_STACK_ROWS: usize = 16;
@@ -36,6 +38,12 @@ enum Tool {
     Rectangle,
     Fill,
     Eyedropper,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    New,
+    Open,
 }
 
 /// The editor's state and panels.
@@ -70,6 +78,7 @@ pub struct EditorApp {
     rect_end: Option<Point>,
     dirty: bool,
     window_title: String,
+    pending: Option<Pending>,
 }
 
 impl EditorApp {
@@ -104,6 +113,7 @@ impl EditorApp {
             rect_end: None,
             dirty,
             window_title: String::new(),
+            pending: None,
         })
     }
 
@@ -313,6 +323,219 @@ impl EditorApp {
         true
     }
 
+    /// Replaces the document with a blank one at `width` x `height`.
+    pub fn new_document(&mut self, width: u32, height: u32) {
+        let document = match Document::new(width, height) {
+            Ok(document) => document,
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                return;
+            }
+        };
+        let analysis = match Analysis::build(&document) {
+            Ok(analysis) => analysis,
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                return;
+            }
+        };
+        self.document = document;
+        self.analysis = analysis;
+        self.path = None;
+        self.dirty = true;
+        self.reset_view();
+    }
+
+    pub fn open_bytes(&mut self, bytes: &[u8], path: Option<PathBuf>) -> Result<(), canvas::Error> {
+        let grid = CodelGrid::from_image(bytes)?;
+        self.adopt(grid, path)
+    }
+
+    pub fn open_bytes_with_codel_size(
+        &mut self,
+        bytes: &[u8],
+        codel_size: u32,
+        path: Option<PathBuf>,
+    ) -> Result<(), canvas::Error> {
+        let grid = CodelGrid::from_image_with_codel_size(bytes, codel_size)?;
+        self.adopt(grid, path)
+    }
+
+    pub fn open_file(&mut self, path: &Path) -> Result<(), FileError> {
+        self.open_file_with_codel_size(path, None)
+    }
+
+    pub fn open_file_with_codel_size(
+        &mut self,
+        path: &Path,
+        codel_size: Option<u32>,
+    ) -> Result<(), FileError> {
+        let bytes = std::fs::read(path).map_err(|source| FileError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let owned = path.to_path_buf();
+        match codel_size {
+            Some(size) => self.open_bytes_with_codel_size(&bytes, size, Some(owned)),
+            None => self.open_bytes(&bytes, Some(owned)),
+        }?;
+        Ok(())
+    }
+
+    pub fn export_png(&self) -> Result<Vec<u8>, canvas::Error> {
+        self.document.to_grid()?.encode_png()
+    }
+
+    /// Writes the document as a PNG and makes `path` the current file.
+    pub fn save_to(&mut self, path: &Path) -> Result<(), FileError> {
+        let bytes = self.export_png()?;
+        std::fs::write(path, bytes).map_err(|source| FileError::Write {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        self.path = Some(path.to_path_buf());
+        self.dirty = false;
+        Ok(())
+    }
+
+    fn adopt(&mut self, grid: CodelGrid, path: Option<PathBuf>) -> Result<(), canvas::Error> {
+        let document = Document::from_grid(&grid);
+        let analysis = Analysis::build(&document)?;
+        self.document = document;
+        self.analysis = analysis;
+        self.path = path;
+        self.dirty = false;
+        self.reset_view();
+        Ok(())
+    }
+
+    fn reset_view(&mut self) {
+        self.texture = None;
+        self.texture_revision = u64::MAX;
+        self.overlay = None;
+        self.overlay_state = None;
+        self.session = None;
+        self.running = false;
+        self.selected = None;
+        self.pan = egui::Vec2::ZERO;
+        self.fit_requested = true;
+        self.last_error = None;
+        self.rect_start = None;
+        self.rect_end = None;
+        self.stroke_active = false;
+        self.stroke_changed = false;
+        self.last_paint = None;
+    }
+
+    fn request_new(&mut self) {
+        if self.dirty {
+            self.pending = Some(Pending::New);
+        } else {
+            self.new_document(32, 32);
+        }
+    }
+
+    fn request_open(&mut self) {
+        if self.dirty {
+            self.pending = Some(Pending::Open);
+        } else {
+            self.open_dialog();
+        }
+    }
+
+    fn save(&mut self) {
+        match self.path.clone() {
+            Some(path) => self.save_or_report(&path),
+            None => self.save_dialog(),
+        }
+    }
+
+    fn save_as(&mut self) {
+        self.save_dialog();
+    }
+
+    fn save_or_report(&mut self, path: &Path) {
+        match self.save_to(path) {
+            Ok(()) => self.last_error = None,
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn open_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Piet image", &["png", "gif"])
+            .pick_file()
+        else {
+            return;
+        };
+        match self.open_file(&path) {
+            Ok(()) => self.last_error = None,
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    #[cfg(not(feature = "native"))]
+    fn open_dialog(&mut self) {
+        self.last_error = Some("file dialogs need the native feature".to_owned());
+    }
+
+    #[cfg(feature = "native")]
+    fn save_dialog(&mut self) {
+        let mut dialog = rfd::FileDialog::new().add_filter("PNG", &["png"]);
+        if let Some(name) = self
+            .path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+        {
+            dialog = dialog.set_file_name(name);
+        }
+        let Some(mut path) = dialog.save_file() else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("png");
+        }
+        self.save_or_report(&path);
+    }
+
+    #[cfg(not(feature = "native"))]
+    fn save_dialog(&mut self) {
+        self.last_error = Some("file dialogs need the native feature".to_owned());
+    }
+
+    fn confirm_discard(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending else {
+            return;
+        };
+        let mut discard = false;
+        let mut cancel = false;
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label("The current document has unsaved changes.");
+                ui.horizontal(|ui| {
+                    if ui.button("Discard").clicked() {
+                        discard = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if discard {
+            self.pending = None;
+            match pending {
+                Pending::New => self.new_document(32, 32),
+                Pending::Open => self.open_dialog(),
+            }
+        } else if cancel {
+            self.pending = None;
+        }
+    }
+
     fn after_edit(&mut self) {
         self.dirty = true;
         self.debug_reset();
@@ -378,6 +601,7 @@ impl EditorApp {
         if self.running {
             ui.ctx().request_repaint();
         }
+        self.confirm_discard(ui.ctx());
     }
 
     fn ensure_session(&mut self) -> bool {
@@ -406,10 +630,24 @@ impl EditorApp {
         let mut step = false;
         let mut toggle_run = false;
         let mut reset = false;
+        let mut new = false;
+        let mut open = false;
+        let mut save = false;
+        let mut save_as = false;
         ui.horizontal(|ui| {
             ui.heading("pietrs");
             ui.separator();
             ui.label(self.title());
+            ui.separator();
+            if ui.button("New").clicked() {
+                new = true;
+            }
+            if ui.button("Open").clicked() {
+                open = true;
+            }
+            if ui.button("Save").clicked() {
+                save = true;
+            }
             ui.separator();
             ui.label(format!(
                 "{}x{} codels, codel size {}",
@@ -450,7 +688,34 @@ impl EditorApp {
         if ui.input(|input| input.key_pressed(egui::Key::F5)) {
             toggle_run = true;
         }
+        if !ui.ctx().text_edit_focused() {
+            let (key_new, key_open, key_save, key_save_as) = ui.input(|input| {
+                let command = input.modifiers.command;
+                (
+                    command && input.key_pressed(egui::Key::N),
+                    command && input.key_pressed(egui::Key::O),
+                    command && !input.modifiers.shift && input.key_pressed(egui::Key::S),
+                    command && input.modifiers.shift && input.key_pressed(egui::Key::S),
+                )
+            });
+            new |= key_new;
+            open |= key_open;
+            save |= key_save;
+            save_as |= key_save_as;
+        }
 
+        if new {
+            self.request_new();
+        }
+        if open {
+            self.request_open();
+        }
+        if save {
+            self.save();
+        }
+        if save_as {
+            self.save_as();
+        }
         if step && let Err(error) = self.debug_step() {
             self.last_error = Some(error.to_string());
         }
@@ -1297,6 +1562,56 @@ mod tests {
         app.paint_to(Point::new(0, 0));
         app.end_edit();
 
+        assert!(app.session().is_none());
+    }
+
+    #[test]
+    fn a_saved_png_reopens_the_same_document() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("program.png");
+
+        let mut app =
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("start.png"))).unwrap();
+        app.set_colour(Color::Black);
+        app.fill_at(Point::new(0, 0));
+        assert!(app.is_dirty());
+        app.save_to(&path).unwrap();
+        assert!(!app.is_dirty());
+
+        let mut reopened = EditorApp::new(small_document(&["rrr"]), None).unwrap();
+        reopened.open_file(&path).unwrap();
+        assert_eq!(reopened.document().width(), 2);
+        assert_eq!(reopened.document().height(), 1);
+        assert_eq!(
+            reopened.document().color(Point::new(0, 0)),
+            Some(Color::Black)
+        );
+        assert_eq!(reopened.document().color(Point::new(1, 0)), Some(green()));
+        assert!(!reopened.is_dirty());
+        assert!(reopened.session().is_none());
+    }
+
+    #[test]
+    fn a_failed_open_keeps_the_current_document() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        let before = app.document().color(Point::new(0, 0));
+
+        assert!(app.open_bytes(&[0, 1, 2, 3], None).is_err());
+        assert_eq!(app.document().color(Point::new(0, 0)), before);
+        assert_eq!(app.document().width(), 2);
+    }
+
+    #[test]
+    fn new_document_replaces_the_image_and_the_session() {
+        let mut app =
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("x.png"))).unwrap();
+        app.debug_step().unwrap();
+        assert!(app.session().is_some());
+
+        app.new_document(4, 3);
+        assert_eq!(app.document().width(), 4);
+        assert_eq!(app.document().height(), 3);
+        assert!(app.is_dirty());
         assert!(app.session().is_none());
     }
 }

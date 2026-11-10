@@ -1784,6 +1784,7 @@ dependencies = [
  "egui",
  "interp",
  "rfd",
+ "tempfile",
  "tessera",
  "thiserror 2.0.21",
 ]

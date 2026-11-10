@@ -19,6 +19,9 @@ thiserror.workspace = true
 eframe = { workspace = true, optional = true }
 rfd = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [features]
 default = ["native", "codegen"]
 native = ["dep:eframe", "dep:rfd"]

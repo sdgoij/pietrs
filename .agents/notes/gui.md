@@ -717,16 +717,20 @@ Landed, with tests, in the first implementation pass:
   entry; an edit refreshes the analysis, invalidates the session, and rebinds
   the texture on the same frame. Panning is right or middle drag, or Space plus
   drag, so the primary button paints.
+- `gui` files: Open (PNG or GIF, detection or `--codel-size`) and Save as PNG
+  at the document's codel size, with Ctrl/Cmd+N, O, S, and Shift+S. New and
+  Open ask before discarding unsaved changes. A failed open leaves the current
+  document intact; saving makes the path current and clears the dirty marker.
 - `cli`: `pietrs editor [IMAGE] [--codel-size N]`, the `editor` feature, the
   named missing-feature error, and tests in both shapes.
 - Gates: `05-features.sh` runs the six shapes; `deny.toml` records the new
   licences and the three unmaintained-advisory ignores.
 
-Still to build: import/export and the JIT/build actions, theme persistence, and
-a fuller README editor section. The release question in the risks is still
-open: the GUI has been compiled and tested on Windows; the static musl artefact
-and the two Linux runners have not been exercised here, so CI is the first
-proof.
+Still to build: the JIT comparison and build actions, theme persistence, a
+new-document size dialog (New is a blank 32x32), a resize control, and a fuller
+README editor section. The release question in the risks is still open: the GUI
+has been compiled and tested on Windows; the static musl artefact and the two
+Linux runners have not been exercised here, so CI is the first proof.
 
 ## Invariants this proposal keeps
 

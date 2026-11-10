@@ -75,6 +75,14 @@ you build a program, which is why a cross build needs no target toolchain.
 | `build` | writes a standalone executable for the host or `--target` |
 | `selftest` | runs a corpus through every execution path and compares them |
 
+### Editor
+
+`pietrs editor` opens a PNG or GIF and paints on the twenty-colour palette with
+pencil, rectangle, fill, and eyedropper; undo, redo, and the window title's
+dirty marker are there. The debugger steps with F10, runs and pauses with F5,
+sets block breakpoints, and shows the stack and the output. The image is the
+document: Save writes it back as a PNG at its codel size.
+
 ### Images
 
 PNG and GIF (the first frame) are decoded, at any codel size: the size is

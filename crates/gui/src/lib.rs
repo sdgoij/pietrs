@@ -9,6 +9,29 @@ mod app;
 #[cfg(feature = "native")]
 mod native;
 
+use std::path::PathBuf;
+
 pub use app::{EditorApp, ThemeChoice};
 #[cfg(feature = "native")]
 pub use native::{Args, Error, run};
+
+/// Why reading or writing a program failed.
+#[derive(Debug, thiserror::Error)]
+pub enum FileError {
+    #[error(transparent)]
+    Canvas(#[from] canvas::Error),
+
+    #[error("cannot read {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("cannot write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}

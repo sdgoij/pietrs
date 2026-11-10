@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::EditorApp;
+use crate::{EditorApp, FileError};
 
 /// What `pietrs editor` starts with.
 #[derive(Debug, Clone)]
@@ -16,12 +16,8 @@ pub enum Error {
     #[error(transparent)]
     Canvas(#[from] canvas::Error),
 
-    #[error("cannot read {path}: {source}")]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error(transparent)]
+    File(#[from] FileError),
 
     #[error("cannot open the editor window: {0}")]
     Window(#[from] eframe::Error),
@@ -29,21 +25,10 @@ pub enum Error {
 
 /// Opens the editor window and runs until it closes.
 pub fn run(args: Args) -> Result<(), Error> {
-    let (document, path) = match &args.image {
-        Some(path) => {
-            let bytes = std::fs::read(path).map_err(|source| Error::Read {
-                path: path.clone(),
-                source,
-            })?;
-            let grid = match args.codel_size {
-                Some(size) => canvas::CodelGrid::from_image_with_codel_size(&bytes, size)?,
-                None => canvas::CodelGrid::from_image(&bytes)?,
-            };
-            (editor::Document::from_grid(&grid), Some(path.clone()))
-        }
-        None => (editor::Document::new(32, 32)?, None),
-    };
-    let app = EditorApp::new(document, path)?;
+    let mut app = EditorApp::new(editor::Document::new(32, 32)?, None)?;
+    if let Some(path) = &args.image {
+        app.open_file_with_codel_size(path, args.codel_size)?;
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
         ..Default::default()
