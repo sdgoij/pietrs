@@ -1,0 +1,41 @@
+# The licence gate. pietrs is GPL-2.0-only; every dependency is used under a
+# licence the GPL accepts. Permissive licences are listed explicitly because a
+# dual-licensed crate is taken under the GPL-compatible arm, not the
+# Apache-2.0 arm, which is not compatible with GPL-2.0-only. The LLVM exception
+# on the cranelift crates is the one that permits combining them with GPL code.
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[bans]
+multiple-versions = "allow"
+# The only wildcards are the unpublished crates in this workspace: their path
+# dependencies carry no version, and the lockfile pins them.
+wildcards = "allow"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "GPL-2.0-only",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
