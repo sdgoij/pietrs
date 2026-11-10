@@ -3,6 +3,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use canvas::{Blocks, CodelGrid};
@@ -179,6 +180,19 @@ fn load(image: &ImageArgs) -> Result<CodelGrid, Error> {
     }
 }
 
+/// Whether `PIETRS_DUMP_GRAPH` is set; read once per process.
+fn dump_graph_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("PIETRS_DUMP_GRAPH").is_some())
+}
+
+/// Writes the state graph to stderr when the diagnostic switch is set.
+fn dump_graph(graph: &StateGraph) {
+    if dump_graph_enabled() {
+        eprint!("{graph}");
+    }
+}
+
 fn check(args: &CheckArgs) -> Result<(), Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
@@ -205,12 +219,16 @@ fn check(args: &CheckArgs) -> Result<(), Error> {
         }
         Start::Terminate => println!("start: terminates"),
     }
+    dump_graph(&graph);
     Ok(())
 }
 
 fn trace(args: &TraceArgs) -> Result<(), Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
+    if dump_graph_enabled() {
+        dump_graph(&StateGraph::build(&blocks));
+    }
     let mut io = BufferIo::new("");
     let options = Options {
         max_steps: Some(args.max_steps),

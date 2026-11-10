@@ -1,6 +1,7 @@
 //! The reachable `(block, DP, CC)` execution graph.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 
 use canvas::Blocks;
 
@@ -149,6 +150,54 @@ impl StateGraph {
     }
 }
 
+impl fmt::Display for StateGraph {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "graph: states={} edges={}",
+            self.states.len(),
+            self.edges.len()
+        )?;
+        match self.start {
+            Some(start) => writeln!(
+                f,
+                "start: block={} dp={:?} cc={:?}",
+                start.block.0, start.dp, start.cc
+            )?,
+            None => writeln!(f, "start: none")?,
+        }
+        for &state in &self.states {
+            writeln!(
+                f,
+                "state: block={} dp={:?} cc={:?}",
+                state.block.0, state.dp, state.cc
+            )?;
+            let mut terminating = true;
+            for edge in self.edges.iter().filter(|edge| edge.from == state) {
+                terminating = false;
+                match edge.command {
+                    Some(command) => write!(f, "  edge: command={command:?}")?,
+                    None => write!(f, "  edge: command=none")?,
+                }
+                match edge.branch {
+                    Branch::Deterministic => write!(f, " branch=deterministic")?,
+                    Branch::Pointer(turns) => write!(f, " branch=pointer({turns})")?,
+                    Branch::Switch(right) => write!(f, " branch=switch({right})")?,
+                }
+                writeln!(
+                    f,
+                    " -> block={} dp={:?} cc={:?}",
+                    edge.to.block.0, edge.to.dp, edge.to.cc
+                )?;
+            }
+            if terminating {
+                writeln!(f, "  terminates")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +311,43 @@ mod tests {
         assert_eq!(graph.start(), None);
         assert!(graph.states().is_empty());
         assert!(graph.edges().is_empty());
+    }
+
+    #[test]
+    fn a_sink_and_an_empty_graph_display() {
+        let graph = StateGraph::build(&blocks(&["r"]));
+        assert_eq!(
+            graph.to_string(),
+            concat!(
+                "graph: states=1 edges=0\n",
+                "start: block=0 dp=Right cc=Left\n",
+                "state: block=0 dp=Right cc=Left\n",
+                "  terminates\n",
+            )
+        );
+
+        let graph = StateGraph::build(&blocks(&["#"]));
+        assert_eq!(graph.to_string(), "graph: states=0 edges=0\nstart: none\n");
+    }
+
+    #[test]
+    fn the_display_lists_every_edge() {
+        // Two codels side by side. The walk leaves block 0 to the right, and
+        // the 8-attempt fallback on block 1 turns it back into block 0 from
+        // the left; both transitions carry the red/green command.
+        let graph = StateGraph::build(&blocks(&["rg"]));
+        assert_eq!(
+            graph.to_string(),
+            concat!(
+                "graph: states=3 edges=3\n",
+                "start: block=0 dp=Right cc=Left\n",
+                "state: block=0 dp=Right cc=Left\n",
+                "  edge: command=Divide branch=deterministic -> block=1 dp=Right cc=Left\n",
+                "state: block=1 dp=Right cc=Left\n",
+                "  edge: command=Duplicate branch=deterministic -> block=0 dp=Left cc=Left\n",
+                "state: block=0 dp=Left cc=Left\n",
+                "  edge: command=Divide branch=deterministic -> block=1 dp=Right cc=Left\n",
+            )
+        );
     }
 }

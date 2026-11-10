@@ -20,7 +20,11 @@ const RED_LIGHT: [u8; 4] = [255, 192, 192, 255];
 const BLUE_DARK: [u8; 4] = [0, 0, 192, 255];
 
 fn pietrs() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_pietrs"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pietrs"));
+    for name in ["PIETRS_DUMP_GRAPH", "PIETRS_DUMP_CLIF", "PIETRS_JIT_DISASM"] {
+        command.env_remove(name);
+    }
+    command
 }
 
 fn png_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
@@ -83,6 +87,67 @@ fn check_reports_the_grid_and_blocks() {
     assert!(stdout.contains("blocks: 4"), "{stdout}");
     assert!(stdout.contains("states: "), "{stdout}");
     assert!(stdout.contains("start: block 0"), "{stdout}");
+}
+
+#[test]
+fn the_graph_dump_switch_writes_the_graph_to_stderr() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, GREEN].into_iter().flatten().collect();
+    let path = write_png(&dir, "two.png", 2, 1, &rgba);
+    let output = run_ok(
+        pietrs()
+            .env("PIETRS_DUMP_GRAPH", "1")
+            .args(["check", path.to_str().unwrap()]),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("graph: states=3 edges=3"), "{stderr}");
+    assert!(
+        stderr.contains("state: block=0 dp=Right cc=Left"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("edge: command=Divide branch=deterministic"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn the_graph_dump_is_off_unless_set() {
+    let dir = TempDir::new().unwrap();
+    let path = write_png(&dir, "one.png", 1, 1, &RED);
+    let output = run_ok(pietrs().args(["check", path.to_str().unwrap()]));
+    assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+}
+
+#[test]
+fn the_clif_dump_switch_writes_the_lowered_function() {
+    let dir = TempDir::new().unwrap();
+    write_png(&dir, "one.png", 1, 1, &RED);
+    let output = run_ok(pietrs().env("PIETRS_DUMP_CLIF", "1").args([
+        "selftest",
+        dir.path().to_str().unwrap(),
+        "--max-steps",
+        "1",
+    ]));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("pietrs: clif"), "{stderr}");
+    assert!(stderr.contains("function"), "{stderr}");
+    assert!(stderr.contains("block0:"), "{stderr}");
+}
+
+#[test]
+fn the_disassembly_switch_writes_the_jit_machine_code() {
+    let dir = TempDir::new().unwrap();
+    write_png(&dir, "one.png", 1, 1, &RED);
+    let output = run_ok(pietrs().env("PIETRS_JIT_DISASM", "1").args([
+        "selftest",
+        dir.path().to_str().unwrap(),
+        "--max-steps",
+        "1",
+    ]));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("pietrs: jit disassembly"), "{stderr}");
+    assert!(stderr.contains("block0:"), "{stderr}");
 }
 
 #[test]

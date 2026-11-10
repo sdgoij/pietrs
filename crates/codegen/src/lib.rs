@@ -25,6 +25,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use runtime::{BufferIo, Division, Input, Output};
 use tessera::{Command, Edge, State, StateGraph};
 
+mod diagnostics;
+
 const REASON_TERMINATED: u32 = 0;
 const REASON_STEP_LIMIT: u32 = 1;
 const REASON_OVERFLOW: u32 = 2;
@@ -203,7 +205,12 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
         frontend_config,
         division: options.division,
     };
-    define_main(&mut module, main_id, &program)?;
+    define_main(
+        &mut module,
+        main_id,
+        &program,
+        diagnostics::diagnostics().jit_disasm,
+    )?;
     module
         .finalize_definitions()
         .map_err(|error| Error::Cranelift(error.to_string()))?;
@@ -250,7 +257,7 @@ pub fn emit_object(blocks: &Blocks, division: Division) -> Result<Vec<u8>, Error
         frontend_config,
         division,
     };
-    define_main(&mut module, main_id, &program)?;
+    define_main(&mut module, main_id, &program, false)?;
     module
         .finish()
         .emit()
@@ -313,6 +320,7 @@ fn define_main<M: Module>(
     module: &mut M,
     main_id: FuncId,
     program: &Program<'_>,
+    disasm: bool,
 ) -> Result<(), Error> {
     let mut context = module.make_context();
     context.func.signature = program.signature.clone();
@@ -416,9 +424,28 @@ fn define_main<M: Module>(
     context
         .verify(module.isa())
         .map_err(|error| Error::Cranelift(error.to_string()))?;
+    if diagnostics::diagnostics().dump_clif {
+        eprintln!("pietrs: clif");
+        eprintln!("{}", context.func.display());
+    }
+    if disasm {
+        context.set_disasm(true);
+    }
     module
         .define_function(main_id, &mut context)
         .map_err(|error| Error::Cranelift(error.to_string()))?;
+    if disasm {
+        match context
+            .compiled_code()
+            .and_then(|code| code.vcode.as_deref())
+        {
+            Some(text) => {
+                eprintln!("pietrs: jit disassembly");
+                eprintln!("{text}");
+            }
+            None => eprintln!("pietrs: no disassembly is available for this target"),
+        }
+    }
     Ok(())
 }
 
