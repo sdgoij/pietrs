@@ -200,7 +200,14 @@ journal, `.agents/notes/perf.md`; do not gate on a machine-dependent number.
 ## Diagnostics and self-testing
 
 - `pietrs check` validates the image, the block partition, and the state graph
-  without executing.
+  without executing. It also answers "will this exit?": the graph is finite and
+  closed, so a program with no terminating state can only run for ever.
+- An image that uses a non-standard colour is reported on stderr, naming each
+  colour and its codel count. The specification maps it to white, which silently
+  changes the program, and a mangled palette is otherwise indistinguishable from
+  a program that loops.
+- An unbounded `run` or `build` of a program that cannot terminate says so before
+  it starts. The alternative is a hang with no explanation.
 - `pietrs trace` is a stable, line-oriented dump of
   `(block, DP, CC, command, target)`. It is both the debugging tool and the
   golden-test format.

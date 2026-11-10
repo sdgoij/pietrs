@@ -88,3 +88,21 @@ fn a_png_that_declares_too_many_pixels_is_a_diagnostic() {
         canvas::Error::ImageTooLarge
     );
 }
+
+#[test]
+fn a_non_standard_colour_is_reported_and_treated_as_white() {
+    let strange = [176, 36, 240, 255];
+    let rgba: Vec<u8> = [RED, strange, WHITE, GREEN].into_iter().flatten().collect();
+    let bytes = png_bytes(2, 2, &rgba);
+
+    let grid = CodelGrid::from_png(&bytes).unwrap();
+    assert_eq!(grid.codels()[1], Color::White, "the colour is quantised");
+    assert_eq!(grid.unknown_colours(), &[([176, 36, 240], 1)]);
+}
+
+#[test]
+fn an_image_of_standard_colours_reports_nothing() {
+    let rgba: Vec<u8> = [RED, GREEN, BLUE, WHITE].into_iter().flatten().collect();
+    let grid = CodelGrid::from_png(&png_bytes(2, 2, &rgba)).unwrap();
+    assert!(grid.unknown_colours().is_empty());
+}

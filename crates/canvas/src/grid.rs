@@ -27,6 +27,7 @@ pub struct CodelGrid {
     height: u32,
     codel_size: u32,
     codels: Vec<Color>,
+    unknown: Vec<([u8; 3], u32)>,
 }
 
 impl CodelGrid {
@@ -64,6 +65,7 @@ impl CodelGrid {
         let width = pixel_width / codel_size;
         let height = pixel_height / codel_size;
         let mut codels = Vec::with_capacity((width as usize) * (height as usize));
+        let mut unknown: Vec<([u8; 3], u32)> = Vec::new();
         let mut tile = Vec::with_capacity((codel_size as usize) * (codel_size as usize));
         for codel_y in 0..height {
             for codel_x in 0..width {
@@ -84,11 +86,21 @@ impl CodelGrid {
                         y: codel_y,
                     });
                 }
-                codels.push(if first[3] == 255 {
-                    Color::quantize([first[0], first[1], first[2]])
+                let rgb = [first[0], first[1], first[2]];
+                let color = if first[3] == 255 {
+                    Color::quantize(rgb)
                 } else {
                     Color::White
-                });
+                };
+                // Only an opaque pixel can carry an unknown colour; a
+                // transparent one is white by definition.
+                if first[3] == 255 && color == Color::White && rgb != Color::White.rgb() {
+                    match unknown.iter_mut().find(|(seen, _)| *seen == rgb) {
+                        Some((_, count)) => *count += 1,
+                        None => unknown.push((rgb, 1)),
+                    }
+                }
+                codels.push(color);
             }
         }
 
@@ -97,6 +109,7 @@ impl CodelGrid {
             height,
             codel_size,
             codels,
+            unknown,
         })
     }
 
@@ -132,6 +145,7 @@ impl CodelGrid {
             height,
             codel_size: 1,
             codels,
+            unknown: Vec::new(),
         })
     }
 
@@ -145,6 +159,14 @@ impl CodelGrid {
 
     pub const fn codel_size(&self) -> u32 {
         self.codel_size
+    }
+
+    /// The non-standard colours the image used, with how many codels each one
+    /// covered. Every one of them is white in the grid, as the specification
+    /// suggests; reporting them is how a user learns that the image is not a
+    /// twenty-colour program.
+    pub fn unknown_colours(&self) -> &[([u8; 3], u32)] {
+        &self.unknown
     }
 
     pub fn codels(&self) -> &[Color] {

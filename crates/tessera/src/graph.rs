@@ -1,6 +1,6 @@
 //! The reachable `(block, DP, CC)` execution graph.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use canvas::Blocks;
@@ -137,6 +137,19 @@ impl StateGraph {
 
     pub fn edges(&self) -> &[Edge] {
         &self.edges
+    }
+
+    /// Whether any reachable state has no outgoing edge.
+    ///
+    /// The graph is finite and closed, so a graph with no terminating state can
+    /// only run forever. When a `pointer` or `switch` branch has several
+    /// successors this means "can terminate", not "always terminates".
+    pub fn can_terminate(&self) -> bool {
+        if self.start.is_none() {
+            return true;
+        }
+        let from: HashSet<State> = self.edges.iter().map(|edge| edge.from).collect();
+        self.states.iter().any(|state| !from.contains(state))
     }
 
     /// Whether the state has no outgoing edge.
@@ -303,6 +316,19 @@ mod tests {
         assert_eq!(graph.states().len(), 1);
         assert!(graph.edges().is_empty());
         assert!(graph.is_terminating(graph.start().unwrap()));
+        assert!(graph.can_terminate());
+    }
+
+    #[test]
+    fn a_closed_graph_cannot_terminate() {
+        // Two blocks that step into each other for ever: every state has a
+        // successor, so the program cannot exit.
+        let graph = StateGraph::build(&blocks(&["rg"]));
+        assert!(!graph.edges().is_empty());
+        assert!(!graph.can_terminate());
+
+        // A program that cannot even start terminates immediately.
+        assert!(StateGraph::build(&blocks(&["#"])).can_terminate());
     }
 
     #[test]

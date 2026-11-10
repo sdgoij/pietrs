@@ -52,6 +52,11 @@ npiet maps unknown colours to white by default (`-ub` and `-uu` change that).
 `pietrs` always maps a non-standard colour to white, following the
 specification's suggestion; there is no error or black mode.
 
+Every command that loads an image warns on stderr when it used one, naming each
+colour and its codel count, because the mapping silently changes what the
+program does. An image whose palette was mangled — re-encoded through a colour
+quantiser, for instance — otherwise looks like a program that loops for ever.
+
 ## Codel-size detection
 
 `pietrs` picks the largest uniform tile and accepts `--codel-size`. npiet

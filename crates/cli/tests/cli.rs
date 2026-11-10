@@ -287,6 +287,68 @@ fn build_help_names_the_cross_targets() {
     }
 }
 
+#[test]
+fn check_reports_a_program_that_cannot_terminate() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, GREEN].into_iter().flatten().collect();
+    let image = write_png(dir.path(), "loop.png", 2, 1, &rgba);
+    let output = run_ok(pietrs().args(["check", image.to_str().unwrap()]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("termination: never"), "{stdout}");
+}
+
+#[test]
+fn check_warns_about_a_non_standard_colour() {
+    let dir = TempDir::new().unwrap();
+    let strange = [176, 36, 240, 255];
+    let rgba: Vec<u8> = [RED, strange].into_iter().flatten().collect();
+    let image = write_png(dir.path(), "strange.png", 2, 1, &rgba);
+    let output = run_ok(pietrs().args(["check", image.to_str().unwrap()]));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("1 codels use 1 non-standard colours"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("#b024f0 x1"), "{stderr}");
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn build_warns_when_the_program_cannot_terminate() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, GREEN].into_iter().flatten().collect();
+    let image = write_png(dir.path(), "loop.png", 2, 1, &rgba);
+    let output = dir.path().join("loop");
+    let run = run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]));
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("no terminating state"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn run_is_quiet_about_termination_when_bounded() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, GREEN].into_iter().flatten().collect();
+    let image = write_png(dir.path(), "loop.png", 2, 1, &rgba);
+    let run = pietrs()
+        .args(["run", image.to_str().unwrap(), "--max-steps", "5"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&run.stderr).contains("no terminating state"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[cfg(feature = "codegen")]
 #[test]
 fn build_produces_a_runnable_executable() {

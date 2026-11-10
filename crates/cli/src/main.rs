@@ -201,10 +201,43 @@ fn load(image: &ImageArgs) -> Result<CodelGrid, Error> {
         path: image.image.clone(),
         source,
     })?;
-    match image.codel_size {
-        Some(size) => Ok(CodelGrid::from_png_with_codel_size(&bytes, size)?),
-        None => Ok(CodelGrid::from_png(&bytes)?),
+    let grid = match image.codel_size {
+        Some(size) => CodelGrid::from_png_with_codel_size(&bytes, size)?,
+        None => CodelGrid::from_png(&bytes)?,
+    };
+    warn_about_unknown_colours(&grid);
+    Ok(grid)
+}
+
+/// The specification maps a non-standard colour to white. Say so, because that
+/// changes what the program does and nothing else would reveal it.
+fn warn_about_unknown_colours(grid: &CodelGrid) {
+    let unknown = grid.unknown_colours();
+    if unknown.is_empty() {
+        return;
     }
+    let codels: u32 = unknown.iter().map(|(_, count)| count).sum();
+    let colours = unknown
+        .iter()
+        .map(|([r, g, b], count)| format!("#{r:02x}{g:02x}{b:02x} x{count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!(
+        "pietrs: warning: {codels} codels use {} non-standard colours and are treated as white: {colours}",
+        unknown.len()
+    );
+}
+
+/// The graph is finite and closed, so a program with no terminating state can
+/// only run for ever. Say so before an unbounded run: the alternative is a
+/// silent hang with no explanation.
+fn warn_about_termination(blocks: &Blocks, max_steps: Option<u64>) {
+    if max_steps.is_some() || StateGraph::build(blocks).can_terminate() {
+        return;
+    }
+    eprintln!(
+        "pietrs: warning: the program has no terminating state and will not exit; pass --max-steps to bound it"
+    );
 }
 
 /// Whether `PIETRS_DUMP_GRAPH` is set; read once per process.
@@ -233,6 +266,11 @@ fn check(args: &CheckArgs) -> Result<(), Error> {
     let graph = StateGraph::build(&blocks);
     println!("states: {}", graph.states().len());
     println!("edges: {}", graph.edges().len());
+    if graph.can_terminate() {
+        println!("termination: possible");
+    } else {
+        println!("termination: never (every reachable state has a successor)");
+    }
     match start(&blocks) {
         Start::State(state) => {
             let color = blocks.block(state.block).map_or_else(
@@ -285,6 +323,7 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
         None => String::new(),
     };
     let mut io = BufferIo::new(input);
+    warn_about_termination(&blocks, args.max_steps);
     let options = codegen::Options {
         max_steps: args.max_steps,
         division: args.division.into(),
@@ -606,6 +645,7 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
     let target = args.target.as_deref().unwrap_or(aot::HOST_TARGET);
+    warn_about_termination(&blocks, args.max_steps);
     let output = executable_path(
         args.output
             .clone()
