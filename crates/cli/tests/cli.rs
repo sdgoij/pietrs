@@ -31,17 +31,6 @@ fn run_ok(command: &mut Command) -> Output {
     output
 }
 
-#[cfg(feature = "codegen")]
-#[test]
-fn the_runner_without_a_program_is_a_diagnostic() {
-    let output = Command::new(env!("CARGO_BIN_EXE_pietrs-runner"))
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no embedded program"), "{stderr}");
-}
-
 #[test]
 fn a_bare_invocation_prints_help_and_succeeds() {
     let output = run_ok(&mut pietrs());

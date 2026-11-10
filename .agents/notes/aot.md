@@ -14,9 +14,10 @@ into the output file:
 [runner bytes][payload][footer]
 ```
 
-The runner is the `pietrs-runner` binary, installed next to `pietrs`. Building a
-program therefore invokes no compiler and no linker: `pietrs build` reads the
-sibling runner, appends the payload and footer, and writes the file.
+The runner is compiled by `aot/build.rs` with `rustc` from
+`crates/runner/src/loader.rs` when `pietrs` itself is built, then embedded in the
+`aot` library with `include_bytes!`. Building a program therefore invokes no
+compiler and no linker: `pietrs build` only writes bytes.
 
 The runner maps the payload sections into executable memory, resolves the five
 host symbols to its own functions, applies the payload's relocations, and calls
@@ -30,13 +31,19 @@ file; a runner without a footer refuses to run.
 The loader supports x86-64 COFF and ELF objects. The payload encoder rejects an
 unsupported relocation or architecture with a named diagnostic at build time.
 
+The loader source is shared with `crates/runner`, which includes it as a module
+so the payload can be executed in-process by the `aot` tests. The `aot` library
+uses an empty runner under the `rust_analyzer` cfg, because rust-analyzer does
+not run build scripts; `cargo` never sets that cfg.
+
 ## Context layout
 
 `codegen`'s `Context` and the runner's `Context` must agree byte for byte. Both
 sides assert it:
 
 - `codegen` has `the_context_layout_matches_the_host_shim`;
-- `crates/runner` has `const` assertions on the size and every field offset.
+- `crates/runner/src/loader.rs` has `const` assertions on the size and every
+  field offset.
 
 The generated code loads the stack base from `Context.stack`, so the payload
 takes only the context pointer.
@@ -58,8 +65,6 @@ takes only the context pointer.
 executable. `xtask e2e` builds each case, runs it with a timeout, and compares
 `expected.stdout`, `expected.exit`, and `expected.trace`. The `aot` tests cover
 the payload header, the footer, the host imports, and in-process execution of a
-terminating program and a step-limited one. `xtask` finds the runner next to
-itself (or in the `deps` parent) and names the missing path when it cannot. The
-runner is a third implementation of the host semantics, so any new command must
-add an AOT case; differential agreement is the only proof that the three paths
-stay together.
+terminating program and a step-limited one. The runner is a third implementation
+of the host semantics, so any new command must add an AOT case; differential
+agreement is the only proof that the three paths stay together.

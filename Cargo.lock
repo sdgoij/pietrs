@@ -247,7 +247,6 @@ dependencies = [
  "clap",
  "codegen",
  "interp",
- "runner",
  "runtime",
  "tempfile",
  "tessera",

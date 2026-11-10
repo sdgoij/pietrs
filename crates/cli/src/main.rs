@@ -150,14 +150,6 @@ enum Error {
     #[error(transparent)]
     Aot(#[from] aot::Error),
 
-    #[cfg(feature = "codegen")]
-    #[error("cannot read the AOT runner at {path}: {source}; install pietrs-runner next to pietrs")]
-    Runner {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
     #[cfg(not(feature = "codegen"))]
     #[error("this pietrs was built without the codegen feature")]
     Unavailable,
@@ -219,22 +211,6 @@ fn dump_graph(graph: &StateGraph) {
     if dump_graph_enabled() {
         eprint!("{graph}");
     }
-}
-
-/// The AOT runner installed next to this binary.
-#[cfg(feature = "codegen")]
-fn runner_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-        .unwrap_or_default()
-        .join(format!("pietrs-runner{}", std::env::consts::EXE_SUFFIX))
-}
-
-#[cfg(feature = "codegen")]
-fn read_runner() -> Result<Vec<u8>, Error> {
-    let path = runner_path();
-    std::fs::read(&path).map_err(|source| Error::Runner { path, source })
 }
 
 fn check(args: &CheckArgs) -> Result<(), Error> {
@@ -360,15 +336,10 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
         return Err(Error::NoCases(args.corpus.clone()));
     }
 
-    #[cfg(feature = "codegen")]
-    let runner = read_runner()?;
-    #[cfg(not(feature = "codegen"))]
-    let runner: Vec<u8> = Vec::new();
-
     let mut failures = 0usize;
     for path in &cases {
         let name = case_name(path);
-        match check_case(path, args.max_steps, args.division.into(), &runner) {
+        match check_case(path, args.max_steps, args.division.into()) {
             Ok(()) => println!("PASS: {name}"),
             Err(reason) => {
                 failures += 1;
@@ -447,12 +418,7 @@ fn case_max_steps(path: &Path) -> Option<u64> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-fn check_case(
-    path: &Path,
-    max_steps: u64,
-    division: runtime::Division,
-    runner: &[u8],
-) -> Result<(), String> {
+fn check_case(path: &Path, max_steps: u64, division: runtime::Division) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
     let blocks = Blocks::partition(grid);
@@ -476,11 +442,10 @@ fn check_case(
         division,
         &interpreted_io,
         interpreted,
-        runner,
     )?;
 
     #[cfg(not(feature = "codegen"))]
-    let _ = (interpreted, interpreted_io, runner);
+    let _ = (interpreted, interpreted_io);
     Ok(())
 }
 
@@ -492,7 +457,6 @@ fn check_paths(
     division: runtime::Division,
     interpreted_io: &BufferIo,
     interpreted: interp::Run,
-    runner: &[u8],
 ) -> Result<(), String> {
     let jit_options = codegen::Options {
         stack_capacity: 1 << 20,
@@ -542,7 +506,6 @@ fn check_paths(
         division,
         interpreted_output,
         interpreted.reason,
-        runner,
     )?;
     Ok(())
 }
@@ -555,13 +518,12 @@ fn check_aot(
     division: runtime::Division,
     interpreted_output: &str,
     reason: ExitReason,
-    runner: &[u8],
 ) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(blocks, &executable, Some(max_steps), division, runner)
+    aot::build(blocks, &executable, Some(max_steps), division)
         .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_executable(&executable, input, Duration::from_secs(10))?;
     if run.stdout != interpreted_output.as_bytes() {
@@ -635,14 +597,7 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
             .clone()
             .unwrap_or_else(|| default_output(&args.image.image)),
     );
-    let runner = read_runner()?;
-    aot::build(
-        &blocks,
-        &output,
-        args.max_steps,
-        args.division.into(),
-        &runner,
-    )?;
+    aot::build(&blocks, &output, args.max_steps, args.division.into())?;
     Ok(())
 }
 

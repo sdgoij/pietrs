@@ -29,5 +29,4 @@ conformance corpus="crates/xtask/fixtures":
 
 # Build, link, run, and compare a corpus against its goldens.
 e2e corpus="crates/xtask/fixtures":
-	cargo build -p cli --bins
 	cargo run -p xtask -- e2e {{corpus}}
