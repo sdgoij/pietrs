@@ -524,10 +524,17 @@ measured by a gate.
   `web-sys`, `wasm-bindgen-futures`, and `web-time` are already in the lock
   through `eframe` and already pass the licence gate; the spike re-runs
   `cargo deny check` to confirm rather than assume.
-- Optional, last step: a `web` job that runs `xtask wasm`, tars `target/web`,
-  and attaches `pietrs-web-<ref>.tar.gz` to a tag's release beside the binary
-  archives. It cannot join the `build` matrix (that job is `-p cli`), and it must
-  not gate `publish` unless we decide the bundle is a release artefact.
+- The `web` job in `ci.yml` publishes the demo. It `needs: [gate]`, installs
+  `wasm-bindgen-cli` at the version the lock pins, runs `xtask wasm`, and
+  deploys `target/web` with `configure-pages`, `upload-pages-artifact`, and
+  `deploy-pages`. It runs on `main` only: a pull request cannot deploy to the
+  `github-pages` environment, and a branch that broke the bundle is already
+  caught by `08-wasm`.
+
+  The page uses relative URLs, so the `/pietrs/` project subpath needs no base
+  path. Enabling it is one repository setting, Pages -> Source: GitHub Actions;
+  nothing in the repository enables Pages itself, because that needs admin
+  rights a workflow token should not have by default.
 
 ## Dependencies, lints, and features
 
@@ -663,6 +670,8 @@ Landed, with the full gate green after each step:
 - The page has a footer linking the repository and the specification, and the
   editor opens with the canonical hello world embedded in the bundle: 39
   blocks, 25 states, and `Hello world!` under `pietrs run`.
+- `ci.yml` publishes the demo at `sdgoij.github.io/pietrs` from `main`, and the
+  README links it and shows the editor.
 
 Found and fixed while testing the bundle in a browser:
 
@@ -678,15 +687,13 @@ The end-to-end flow was then run over DevTools: open a PNG, save it, open a
 second PNG, with no exception at any step. Painting and the theme round trip
 still want a person and a mouse.
 
-Still open: the two questions below.
+Still open: the questions below.
 
 ## Open questions
 
-- Is the web bundle a release artefact? If yes, step 5 adds the `web` job and
-  `publish` waits for it; if no, it stays a documented `xtask` command.
-- Is a hosted demo (GitHub Pages) wanted? It is one more CI job and a URL, and
-  it makes the editor tryable without a download — but it also makes the
-  project's CI depend on a deployment target, which is a deliberate choice, not
-  a default.
+- Is the web bundle also a release artefact? Today it is published to Pages
+  only, and `publish` does not wait for it. Attaching
+  `pietrs-web-<ref>.tar.gz` to a tag is the alternative, and it needs the `web`
+  job to run on tags as well as `main`.
 - Drag-and-drop import (eframe delivers dropped files on the web) is small
-  enough to fold into step 4 if it is wanted in v1.
+  enough to add whenever it is wanted.

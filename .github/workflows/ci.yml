@@ -162,6 +162,53 @@ jobs:
           # assets are unaffected.
           retention-days: 7
 
+  # The browser demo. The gate already links the wasm on all three runners, so
+  # this job adds only the `wasm-bindgen` glue and the page, and publishes it.
+  #
+  # It runs on the default branch only: a pull request cannot deploy to the
+  # `github-pages` environment, and should not. A pull request that broke the
+  # bundle is still caught, by `08-wasm` in the gate.
+  web:
+    name: Browser demo
+    needs: [gate]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # `xtask wasm` refuses a CLI that does not match the lock, so install the
+      # version the lock pins rather than a major.
+      - name: Read the wasm-bindgen pin
+        id: bindgen
+        run: |
+          set -eu
+          version=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;q;}' Cargo.lock)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        with:
+          tool: wasm-bindgen-cli@${{ steps.bindgen.outputs.version }}
+      - name: Build the bundle
+        run: cargo run -p xtask -- wasm
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          # `index.html` uses relative URLs, so the project subpath is fine.
+          path: target/web
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
   publish:
     name: Publish release
     needs: [build, tag]

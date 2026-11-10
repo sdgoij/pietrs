@@ -22,6 +22,9 @@ state. Only `pointer` and `switch` read the stack, and each lowers to a jump
 table over two or four statically known successors — exactly the shape a
 compiler backend expects.
 
+> **Try it in the browser:** [sdgoij.github.io/pietrs](https://sdgoij.github.io/pietrs) —
+> the same editor and debugger, compiled to WebAssembly.
+
 ## Install
 
 Download the archive for your platform from the
@@ -85,7 +88,12 @@ compares the interpreter with the JIT and builds a standalone executable. The
 image is the document: Save writes it back as a PNG at its codel size. The
 theme choice persists across launches.
 
+![The editor, with the hello world program run to completion](screenshot.png)
+
 ### In the browser
+
+A build of `main` is published at
+[sdgoij.github.io/pietrs](https://sdgoij.github.io/pietrs).
 
 The same editor compiles to WebAssembly. Building the bundle needs
 `wasm-bindgen-cli` at the version `Cargo.lock` pins; `xtask` checks it first and
