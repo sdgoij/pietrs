@@ -1,9 +1,7 @@
 # The GUI: visual editor and debugger
 
-Status: implemented through the headless editor, the debug session, the
-`pietrs editor` entry point, and the first GUI milestone (open, render, check,
-theme). The editing tools, debugger panels, and import/export dialogs are the
-remaining phases.
+Status: implemented and shipped. All three gate jobs and all three release
+builds pass in CI, including both static musl targets with the editor.
 
 A desktop editor and debugger, reached with `pietrs editor`, that opens a Piet
 image, edits it codel by codel, and runs it under the reference interpreter one
@@ -25,7 +23,7 @@ trace format, the movement rules, and the integer-only core stay untouched.
 | Document | the PNG is the document | no private project format to design, version, and migrate |
 | Export | PNG at the document's codel size | the palette is exact; GIF import remains |
 | Theme | `System`, `Light`, `Dark`, persisted | system default with a manual override |
-| Release | the editor is a default feature; the spike decides the musl artefact | the shipped Linux build is static musl, which a GUI has to prove |
+| Release | the editor is a default feature and ships on every target | static musl needs one generated empty `libdl` archive, which `cli/build.rs` provides |
 
 ## Non-goals for v1
 
@@ -643,23 +641,22 @@ gate.
 
 ## Risks
 
-1. **System libraries on Linux CI.** The GUI compiles and its tests pass on
-   Windows. The Linux runners are the remaining check: if a package is
-   genuinely required it is installed explicitly, the way the gate already
-   installs the musl targets; the crate is not dropped from the gate.
+1. **System libraries on Linux CI — resolved.** All three gate jobs pass with
+   the packages the runners already have; no extra install is needed.
 2. **`cargo deny` licences.** New transitive crates can add a licence class.
    The gate is run in the spike, before the bulk of the UI exists.
 3. **egui churn.** 0.37 is pinned for the workspace, like Cranelift. An upgrade
    is one deliberate commit that runs the full gate.
 4. **Panel API naming.** The panel names in this note come from the 0.37 docs;
    the shell is written against 0.37, not against older `SidePanel` examples.
-5. **The editor in the release binary.** `pietrs` links `winit`/`glow` in its
-   default build, and the Linux artefacts are static musl. The spike is the
-   gate: build the release command for all three targets and start `pietrs
-   editor` on a stock desktop. If that fails, the release job builds
-   `--no-default-features --features codegen`; the shipped binary keeps every
-   compiler command, loses only the editor, and `pietrs editor` says exactly
-   that. It is a recorded packaging decision, not a silent `cfg`.
+5. **The editor in the release binary — resolved.** `pietrs` links
+   `winit`/`glow` by default, and both static musl builds initially failed with
+   `unable to find library -ldl`: `libloading` asks for it, while musl keeps
+   `dlopen` in libc. `crates/cli/build.rs` generates an eight-byte empty
+   `libdl.a` in `OUT_DIR` for musl targets. All three release builds pass in CI,
+   and the x86-64 musl binary runs `pietrs editor --help` and `check` under WSL.
+   The headless fallback (`--no-default-features --features codegen`) remains
+   available but is not the shipped shape.
 6. **Large documents.** A 1024x1024 grid is a 4 MiB texture and a 1 MiB codel
    vector; undo deltas are bounded by the edit, not the document. The soft
    warning is there because a 512x512 partition is still fast but a repaint is
@@ -736,12 +733,10 @@ Landed, with tests, in the first implementation pass:
 - Gates: `05-features.sh` runs the six shapes; `deny.toml` records the new
   licences and the three unmaintained-advisory ignores.
 
-Still to build: the release verification below. On this Windows host `cargo
-build --release --locked -p cli` produces the editor binary (about 25.6 MB) and
-the headless fallback (`--no-default-features --features codegen`) builds and
-reports the missing editor feature by name. The release question in the risks is
-still open only for Linux: the static musl artefact and the two Linux runners
-have not been exercised here, so CI is the first proof.
+The original proposal is complete. CI runs the three gates and the three build
+jobs on the pinned toolchain; both static musl binaries and the Windows binary
+are built with the editor. Remaining work is polish, not a missing phase: in-app
+document tabs, reverse stepping, and GIF export stay non-goals.
 
 ## Invariants this proposal keeps
 
@@ -755,14 +750,9 @@ have not been exercised here, so CI is the first proof.
   and narrowly waived.
 - No `unsafe`, no `TODO`, no generated artefact in the tree.
 
-## Open questions
+## Deferred questions
 
-1. **Does the released `pietrs` include the editor?** Recommendation: yes for
-   Windows and macOS, and for Linux if the spike's static musl build starts on
-   a stock desktop. If it does not, the release is the headless shape and the
-   editor ships from source until a glibc desktop artefact is packaged. The
-   subcommand exists either way.
-2. **Reverse stepping in v1?** Recommendation: no. "Replay to step N" is the
-   honest version, and it is a second machine plus a recorded input.
-3. **GIF export?** Recommendation: no. PNG is lossless and the palette is
+1. **Reverse stepping?** Recommendation: no. "Replay to step N" is the honest
+   version, and it is a second machine plus a recorded input.
+2. **GIF export?** Recommendation: no. PNG is lossless and the palette is
    exact.
