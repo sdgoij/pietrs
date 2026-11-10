@@ -2,7 +2,7 @@
 //! The Cranelift lowering: one native function for the reachable state graph.
 //!
 //! [`run`] executes it in-process through the JIT; [`emit_object`] writes a
-//! relocatable object that a C linker can turn into a standalone executable.
+//! relocatable object that a linker can turn into a standalone executable.
 //! Each `(block, DP, CC)` state becomes a basic block. The value stack lives in
 //! the shared context; `pointer` and `switch` choose their successor from the
 //! popped value, and the remaining commands are straight-line IR. Host calls
@@ -74,7 +74,7 @@ pub enum Error {
     UnsupportedTarget,
 }
 
-/// The ABI the generated code and the C AOT shim share.
+/// The ABI the generated code and the AOT host shim share.
 #[repr(C)]
 struct Context {
     stack: *mut i64,
@@ -997,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn the_context_layout_matches_the_c_shim() {
+    fn the_context_layout_matches_the_host_shim() {
         assert_eq!(std::mem::size_of::<Context>(), 48);
         assert_eq!(offset_of!(Context, stack), 0);
         assert_eq!(offset_of!(Context, capacity), 8);

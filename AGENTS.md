@@ -93,7 +93,8 @@ cargo run -p xtask -- conformance <image-or-corpus>   # differential vs npiet
 cargo run -p xtask -- e2e <corpus>                    # build, link, run, compare
 ```
 
-A missing `npiet` or linker is reported by name. It never silently passes.
+A missing `npiet` or Rust compiler is reported by name. It never silently
+passes.
 
 ## Test layers
 
@@ -189,8 +190,8 @@ journal; do not gate on a machine-dependent number.
 - Every subprocess the suite starts (JIT run, AOT executable, `npiet`) gets a
   timeout. A timeout is a verdict, not a reason to raise the deadline. An
   infinite Piet program gets bounded stdin or a kill, not a longer timeout.
-- A test that needs a linker or `npiet` fails with a diagnostic naming the
-  missing tool when it is expected to run. Do not turn a missing tool into a
+- A test that needs a Rust compiler or `npiet` fails with a diagnostic naming
+  the missing tool when it is expected to run. Do not turn a missing tool into a
   silent pass.
 - A gate's own verdict is its `OK:`/`FAIL:` line; the exit status backs it up.
   A crash after the verdict is not a pass. The gate runner (`tools/gates.sh`)
@@ -205,7 +206,7 @@ journal; do not gate on a machine-dependent number.
   `(block, DP, CC, command, target)`. It is both the debugging tool and the
   golden-test format.
 - `pietrs selftest` runs the checked-in corpus through every execution path that
-  exists — `interp`, the JIT, and, when a linker is configured, the AOT
+  exists — `interp`, the JIT, and, when a Rust compiler is configured, the AOT
   executable — compares them, and prints one PASS/FAIL line per case. This is the
   project's self-check: the compiler booting its own corpus and judging it, the
   analogue of the Godot gates.

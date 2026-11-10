@@ -458,7 +458,7 @@ fn the_division_flag_selects_the_rounding() {
 }
 
 #[test]
-fn build_names_a_missing_linker() {
+fn build_names_a_missing_compiler() {
     let dir = TempDir::new().unwrap();
     let image = write_png(&dir, "one.png", 1, 1, &RED);
     let output = dir.path().join("one");
@@ -468,11 +468,11 @@ fn build_names_a_missing_linker() {
             image.to_str().unwrap(),
             "-o",
             output.to_str().unwrap(),
-            "--linker",
+            "--compiler",
             "definitely-not-a-compiler",
         ])
         .output()
         .unwrap();
     assert!(!run.status.success());
-    assert!(String::from_utf8_lossy(&run.stderr).contains("no C compiler found"));
+    assert!(String::from_utf8_lossy(&run.stderr).contains("no Rust compiler found"));
 }

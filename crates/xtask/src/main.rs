@@ -69,9 +69,9 @@ struct ConformanceArgs {
 struct E2eArgs {
     /// A corpus; each case directory holds `program.png` and its goldens.
     corpus: PathBuf,
-    /// Use this C compiler instead of probing for one.
+    /// Build the executable with this Rust compiler instead of probing for one.
     #[arg(long)]
-    linker: Option<String>,
+    compiler: Option<String>,
     /// Kill a case that runs longer than this.
     #[arg(long, default_value_t = 10_000)]
     timeout_ms: u64,
@@ -97,7 +97,7 @@ enum Error {
     #[error("the vendored npiet source is missing: {0}")]
     MissingSource(PathBuf),
 
-    #[error("no C compiler found: tried {0}")]
+    #[error("no Rust compiler found: tried {0}")]
     NoCompiler(String),
 
     #[error("building npiet with {compiler} failed: {message}")]
@@ -280,8 +280,8 @@ fn e2e(args: &E2eArgs) -> Result<bool, Error> {
     if cases.is_empty() {
         return Err(Error::NoCaseDirectories(args.corpus.clone()));
     }
-    let Some(linker) = aot::find_linker(args.linker.as_deref()) else {
-        return Err(Error::NoCompiler("cc, gcc, clang".to_owned()));
+    let Some(compiler) = aot::find_compiler(args.compiler.as_deref()) else {
+        return Err(Error::NoCompiler("rustc".to_owned()));
     };
 
     let mut failures = 0usize;
@@ -290,7 +290,7 @@ fn e2e(args: &E2eArgs) -> Result<bool, Error> {
             || "?".to_owned(),
             |name| name.to_string_lossy().into_owned(),
         );
-        match check_e2e(case, Some(&linker), args.timeout_ms, args.division.into()) {
+        match check_e2e(case, Some(&compiler), args.timeout_ms, args.division.into()) {
             Ok(()) => println!("OK: {name}"),
             Err(reason) => {
                 failures += 1;
@@ -319,7 +319,7 @@ fn case_directories(root: &Path) -> Result<Vec<PathBuf>, Error> {
 
 fn check_e2e(
     case: &Path,
-    linker: Option<&str>,
+    compiler: Option<&str>,
     timeout_ms: u64,
     division: runtime::Division,
 ) -> Result<(), String> {
@@ -351,7 +351,7 @@ fn check_e2e(
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(&blocks, &executable, max_steps, division, linker)
+    aot::build(&blocks, &executable, max_steps, division, compiler)
         .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_with_timeout(
         &mut Command::new(&executable),

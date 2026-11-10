@@ -107,9 +107,9 @@ struct BuildArgs {
     /// How division and modulo round.
     #[arg(long, value_enum, default_value = "floored")]
     division: DivisionArg,
-    /// Link with this C compiler instead of probing for one.
+    /// Build the executable with this Rust compiler instead of probing for one.
     #[arg(long)]
-    linker: Option<String>,
+    compiler: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -122,9 +122,9 @@ struct SelftestArgs {
     /// How division and modulo round.
     #[arg(long, value_enum, default_value = "floored")]
     division: DivisionArg,
-    /// Link with this C compiler instead of probing for one.
+    /// Build the executable with this Rust compiler instead of probing for one.
     #[arg(long)]
-    linker: Option<String>,
+    compiler: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -311,9 +311,9 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
         return Err(Error::NoCases(args.corpus.clone()));
     }
 
-    let linker = aot::find_linker(args.linker.as_deref());
-    if linker.is_none() {
-        eprintln!("pietrs: no C compiler found (tried cc, gcc, clang); the AOT path is skipped");
+    let compiler = aot::find_compiler(args.compiler.as_deref());
+    if compiler.is_none() {
+        eprintln!("pietrs: no Rust compiler found (tried rustc); the AOT path is skipped");
     }
 
     let mut failures = 0usize;
@@ -323,7 +323,7 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
             path,
             args.max_steps,
             args.division.into(),
-            linker.as_deref(),
+            compiler.as_deref(),
         ) {
             Ok(()) => println!("PASS: {name}"),
             Err(reason) => {
@@ -407,7 +407,7 @@ fn check_case(
     path: &Path,
     max_steps: u64,
     division: runtime::Division,
-    linker: Option<&str>,
+    compiler: Option<&str>,
 ) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
@@ -466,13 +466,13 @@ fn check_case(
         }
     }
 
-    if let Some(linker) = linker {
+    if let Some(compiler) = compiler {
         check_aot(
             &blocks,
             &input,
             max_steps,
             division,
-            linker,
+            compiler,
             interpreted_output,
             interpreted.reason,
         )?;
@@ -485,7 +485,7 @@ fn check_aot(
     input: &str,
     max_steps: u64,
     division: runtime::Division,
-    linker: &str,
+    compiler: &str,
     interpreted_output: &str,
     reason: ExitReason,
 ) -> Result<(), String> {
@@ -493,8 +493,14 @@ fn check_aot(
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(blocks, &executable, Some(max_steps), division, Some(linker))
-        .map_err(|error| format!("cannot build the executable: {error}"))?;
+    aot::build(
+        blocks,
+        &executable,
+        Some(max_steps),
+        division,
+        Some(compiler),
+    )
+    .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_executable(&executable, input, Duration::from_secs(10))?;
     if run.stdout != interpreted_output.as_bytes() {
         return Err(format!(
@@ -570,7 +576,7 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
         &output,
         args.max_steps,
         args.division.into(),
-        args.linker.as_deref(),
+        args.compiler.as_deref(),
     )?;
     Ok(())
 }
