@@ -736,10 +736,12 @@ Landed, with tests, in the first implementation pass:
 - Gates: `05-features.sh` runs the six shapes; `deny.toml` records the new
   licences and the three unmaintained-advisory ignores.
 
-Still to build: the release verification below. The release question in the
-risks is still open: the GUI has been compiled and tested on Windows; the
-static musl artefact and the two Linux runners have not been exercised here,
-so CI is the first proof.
+Still to build: the release verification below. On this Windows host `cargo
+build --release --locked -p cli` produces the editor binary (about 25.6 MB) and
+the headless fallback (`--no-default-features --features codegen`) builds and
+reports the missing editor feature by name. The release question in the risks is
+still open only for Linux: the static musl artefact and the two Linux runners
+have not been exercised here, so CI is the first proof.
 
 ## Invariants this proposal keeps
 
