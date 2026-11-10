@@ -64,6 +64,18 @@ built it, so `pietrs selftest` and `xtask e2e` stay host-only; a cross build is
 verified by its format (ELF magic, `e_machine`, the payload architecture in the
 footer) until it runs on real hardware or an emulator.
 
+On a Windows host WSL runs the `x86_64` Linux executable, which is how the cross
+path was checked against the corpus:
+
+```
+pietrs build crates/xtask/fixtures/hello/program.png -o hello-linux --target x86_64-unknown-linux-gnu --max-steps 2
+wsl ./hello-linux   # prints A, reports the step limit, exits 1
+```
+
+That is a developer check, not a gate: `wsl` is a host-specific tool, and a
+missing one must not turn into a silent pass. No `aarch64` emulator is installed,
+so the `aarch64` path is checked by format only.
+
 `aarch64-apple-darwin` is available only when it is the host. A Mach-O runner
 needs libSystem, so cross-linking it from Windows or Linux would need the macOS
 SDK, which is not vendored.
