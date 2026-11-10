@@ -1,0 +1,7 @@
+# The fuzz workspace's own build output and working corpus. The corpus lives
+# here so a fuzzing session never dirties the tree; the curated seeds under
+# `seeds/` are committed, and a reproduced crash is added to them.
+/target
+artifacts/
+corpus/
+coverage/

@@ -30,3 +30,8 @@ conformance corpus="crates/xtask/fixtures":
 # Build, link, run, and compare a corpus against its goldens.
 e2e corpus="crates/xtask/fixtures":
 	cargo run -p xtask -- e2e {{corpus}}
+
+# Fuzz one target for a bounded number of runs. Needs cargo-fuzz and nightly;
+# see .agents/notes/fuzz.md.
+fuzz target="png" runs="100000":
+	cargo +nightly fuzz run --fuzz-dir fuzz {{target}} -- -runs={{runs}}

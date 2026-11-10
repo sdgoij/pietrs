@@ -1,0 +1,54 @@
+# The fuzz targets. This crate is its own workspace, so `cargo test
+# --workspace` and the gate never build it and its machine-specific flags stay
+# out of the compiler's build.
+#
+# Run a target with:
+#   cargo +nightly fuzz run png -- -runs=10000
+# See `.agents/notes/fuzz.md` for the invariants each target asserts.
+
+[package]
+name = "fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+canvas = { path = "../crates/canvas" }
+codegen = { path = "../crates/codegen" }
+runtime = { path = "../crates/runtime" }
+tessera = { path = "../crates/tessera" }
+
+[[bin]]
+name = "png"
+path = "fuzz_targets/png.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codel_grid"
+path = "fuzz_targets/codel_grid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph"
+path = "fuzz_targets/graph.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codegen"
+path = "fuzz_targets/codegen.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
