@@ -54,7 +54,7 @@ and Windows. If the two ever disagree, CI is the truth.
 
 Before the first command, refresh editor diagnostics project-wide. A diagnostic
 is a failure just like a compiler warning, in every language the project uses:
-Rust, C, and any fixture tooling. It is cheap; the build is not.
+Rust and any fixture tooling. It is cheap; the build is not.
 
 ```sh
 # 1. Formatting and whitespace.
@@ -243,6 +243,11 @@ journal; do not gate on a machine-dependent number.
   crate forbids it.
 - The AOT executable is the shipped artefact; the JIT is for `run`, tests, and
   debugging. They share one lowering.
+- `pietrs build` invokes no external tool: no C compiler, no linker, no `rustc`.
+  It writes the runner embedded at compile time and the payload in-process.
+- `pietrs build --target <triple>` cross-compiles. The embedded runners cover the
+  host and the two static musl targets that the GNU Linux triples run unchanged;
+  adding a target means adding a runner and an ISA, never a build-time tool.
 - The same input produces the same trace and the same stdout and exit status.
   Object bytes are not required to be byte-identical unless a golden says so.
 - The toolchain is the `rust-version` in `Cargo.toml` (1.98, edition 2024). A

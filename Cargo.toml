@@ -30,7 +30,7 @@ aot = { path = "crates/aot" }
 runner = { path = "crates/runner" }
 testkit = { path = "crates/testkit" }
 
-cranelift-codegen = "0.137"
+cranelift-codegen = { version = "0.137", features = ["x86", "arm64"] }
 cranelift-frontend = "0.137"
 cranelift-jit = "0.137"
 cranelift-module = "0.137"

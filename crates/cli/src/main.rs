@@ -110,6 +110,9 @@ struct BuildArgs {
     /// How division and modulo round.
     #[arg(long, value_enum, default_value = "floored")]
     division: DivisionArg,
+    /// Emit for this target triple instead of the host.
+    #[arg(long)]
+    target: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -523,8 +526,14 @@ fn check_aot(
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(blocks, &executable, Some(max_steps), division)
-        .map_err(|error| format!("cannot build the executable: {error}"))?;
+    aot::build(
+        blocks,
+        &executable,
+        Some(max_steps),
+        division,
+        aot::HOST_TARGET,
+    )
+    .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_executable(&executable, input, Duration::from_secs(10))?;
     if run.stdout != interpreted_output.as_bytes() {
         return Err(format!(
@@ -592,12 +601,20 @@ fn run_executable(
 fn build_program(args: &BuildArgs) -> Result<(), Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
+    let target = args.target.as_deref().unwrap_or(aot::HOST_TARGET);
     let output = executable_path(
         args.output
             .clone()
             .unwrap_or_else(|| default_output(&args.image.image)),
+        target,
     );
-    aot::build(&blocks, &output, args.max_steps, args.division.into())?;
+    aot::build(
+        &blocks,
+        &output,
+        args.max_steps,
+        args.division.into(),
+        target,
+    )?;
     Ok(())
 }
 
@@ -614,11 +631,12 @@ fn default_output(image: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from("a.out"), PathBuf::from)
 }
 
+/// The suffix follows the target, not the host: a Linux ELF produced on Windows
+/// is still named without `.exe`.
 #[cfg(feature = "codegen")]
-fn executable_path(mut path: PathBuf) -> PathBuf {
-    let suffix = std::env::consts::EXE_SUFFIX;
-    if !suffix.is_empty() && path.extension().is_none() {
-        path.set_extension(&suffix[1..]);
+fn executable_path(mut path: PathBuf, target: &str) -> PathBuf {
+    if path.extension().is_none() && target.contains("windows") {
+        path.set_extension("exe");
     }
     path
 }

@@ -352,7 +352,7 @@ fn check_e2e(case: &Path, timeout_ms: u64, division: runtime::Division) -> Resul
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(&blocks, &executable, max_steps, division)
+    aot::build(&blocks, &executable, max_steps, division, aot::HOST_TARGET)
         .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_with_timeout(
         &mut Command::new(&executable),

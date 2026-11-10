@@ -308,6 +308,76 @@ fn build_produces_a_runnable_executable() {
     assert!(String::from_utf8_lossy(&run.stderr).contains("step limit"));
 }
 
+/// Reads `e_machine` from an ELF header (offset 18, two bytes, little endian).
+#[cfg(feature = "codegen")]
+fn elf_machine(path: &Path) -> u16 {
+    let bytes = std::fs::read(path).unwrap();
+    assert_eq!(&bytes[..4], b"\x7fELF", "not an ELF file");
+    u16::from_le_bytes([bytes[18], bytes[19]])
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn build_for_x86_64_linux_writes_an_x86_64_elf() {
+    let dir = TempDir::new().unwrap();
+    let image = write_png(dir.path(), "one.png", 1, 1, &RED);
+    let output = dir.path().join("one");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--target",
+        "x86_64-unknown-linux-gnu",
+    ]));
+
+    assert!(output.is_file(), "the executable has no .exe suffix");
+    assert_eq!(elf_machine(&output), 62, "e_machine is x86-64");
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn build_for_aarch64_linux_writes_an_aarch64_elf() {
+    let dir = TempDir::new().unwrap();
+    let image = write_png(dir.path(), "one.png", 1, 1, &RED);
+    let output = dir.path().join("one");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--target",
+        "aarch64-unknown-linux-gnu",
+    ]));
+
+    assert!(output.is_file(), "the executable has no .exe suffix");
+    assert_eq!(elf_machine(&output), 183, "e_machine is AArch64");
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn an_unknown_target_is_a_diagnostic() {
+    let dir = TempDir::new().unwrap();
+    let image = write_png(dir.path(), "one.png", 1, 1, &RED);
+    let run = pietrs()
+        .args([
+            "build",
+            image.to_str().unwrap(),
+            "-o",
+            dir.path().join("one").to_str().unwrap(),
+            "--target",
+            "riscv64-unknown-none",
+        ])
+        .output()
+        .unwrap();
+    assert!(!run.status.success());
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("the AOT compiler does not support"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[cfg(feature = "codegen")]
 #[test]
 fn a_built_executable_reads_input() {

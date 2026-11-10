@@ -79,6 +79,7 @@ dependencies = [
  "object",
  "runner",
  "runtime",
+ "tempfile",
  "tessera",
  "testkit",
  "thiserror",

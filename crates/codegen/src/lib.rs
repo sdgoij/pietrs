@@ -231,19 +231,39 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
     })
 }
 
-/// Emits the program as a relocatable object exporting `piet_main`.
+/// Emits the program as a relocatable object exporting `piet_main` for the
+/// host target.
 ///
 /// The object calls the host symbols `piet_out_char`, `piet_out_number`,
 /// `piet_in_char`, `piet_in_number`, and `piet_roll`, which the host must
 /// provide.
 #[cfg(feature = "object")]
 pub fn emit_object(blocks: &Blocks, division: Division) -> Result<Vec<u8>, Error> {
+    emit_object_with(blocks, division, None)
+}
+
+/// Emits the program as a relocatable object for `target`.
+#[cfg(feature = "object")]
+pub fn emit_object_for(
+    blocks: &Blocks,
+    division: Division,
+    target: &str,
+) -> Result<Vec<u8>, Error> {
+    emit_object_with(blocks, division, Some(target))
+}
+
+#[cfg(feature = "object")]
+fn emit_object_with(
+    blocks: &Blocks,
+    division: Division,
+    target: Option<&str>,
+) -> Result<Vec<u8>, Error> {
     if std::mem::size_of::<usize>() != 8 {
         return Err(Error::UnsupportedTarget);
     }
     let graph = StateGraph::build(blocks);
     let offsets = Offsets::new();
-    let mut module = build_object_module()?;
+    let mut module = build_object_module(target)?;
     let signature = pointer_signature(&mut module);
     let frontend_config = module.target_config();
     let main_id = module
@@ -294,12 +314,18 @@ fn pointer_signature<M: Module>(module: &mut M) -> Signature {
 }
 
 #[cfg(feature = "object")]
-fn build_object_module() -> Result<ObjectModule, Error> {
-    let isa_builder =
-        cranelift_native::builder().map_err(|error| Error::Cranelift(error.to_string()))?;
-    let isa = isa_builder
-        .finish(settings::Flags::new(settings::builder()))
-        .map_err(|error| Error::Cranelift(error.to_string()))?;
+fn build_object_module(target: Option<&str>) -> Result<ObjectModule, Error> {
+    let flags = settings::Flags::new(settings::builder());
+    let isa = match target {
+        Some(target) => cranelift_codegen::isa::lookup_by_name(target)
+            .map_err(|error| Error::Cranelift(error.to_string()))?
+            .finish(flags)
+            .map_err(|error| Error::Cranelift(error.to_string()))?,
+        None => cranelift_native::builder()
+            .map_err(|error| Error::Cranelift(error.to_string()))?
+            .finish(flags)
+            .map_err(|error| Error::Cranelift(error.to_string()))?,
+    };
     let builder = ObjectBuilder::new(isa, "pietrs", default_libcall_names())
         .map_err(|error| Error::Cranelift(error.to_string()))?;
     Ok(ObjectModule::new(builder))

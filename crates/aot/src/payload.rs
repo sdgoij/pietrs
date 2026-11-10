@@ -16,8 +16,9 @@ use object::{
 const MAGIC: [u8; 16] = *b"PIETRS-PAYLOAD\0\0";
 /// The payload format version.
 const VERSION: u32 = 1;
-/// The only architecture the runner executes.
+/// The only architectures the runner executes.
 const ARCH_X86_64: u32 = 0;
+const ARCH_AARCH64: u32 = 1;
 
 /// The footer magic. The runner has the same sixteen bytes.
 const FOOTER_MAGIC: [u8; 16] = *b"PIETRS-AOT\0\0\0\0\0\0";
@@ -33,12 +34,12 @@ const RELOCATION_ABSOLUTE_32: u8 = 1;
 const RELOCATION_RELATIVE_32: u8 = 2;
 
 /// The footer that records where the payload is and how the run is bounded.
-pub(crate) fn footer(payload_len: u64, max_steps: u64) -> [u8; FOOTER_LEN] {
+pub(crate) fn footer(payload_len: u64, max_steps: u64, arch: u32) -> [u8; FOOTER_LEN] {
     let mut bytes = [0u8; FOOTER_LEN];
     bytes[..16].copy_from_slice(&FOOTER_MAGIC);
     bytes[16..24].copy_from_slice(&payload_len.to_le_bytes());
     bytes[24..32].copy_from_slice(&max_steps.to_le_bytes());
-    bytes[32..36].copy_from_slice(&ARCH_X86_64.to_le_bytes());
+    bytes[32..36].copy_from_slice(&arch.to_le_bytes());
     bytes[36..40].copy_from_slice(&VERSION.to_le_bytes());
     bytes
 }
@@ -63,13 +64,15 @@ struct Relocation {
     addend: i64,
 }
 
-/// Encodes the object into the payload the runner consumes.
-pub(crate) fn encode(object: &[u8]) -> Result<Vec<u8>, String> {
-    if !cfg!(target_arch = "x86_64") {
-        return Err("the AOT payload supports x86-64 only".to_owned());
-    }
+/// Encodes the object into the payload and architecture the runner consumes.
+pub(crate) fn encode(object: &[u8]) -> Result<(Vec<u8>, u32), String> {
     let file =
         File::parse(object).map_err(|error| format!("cannot read the emitted object: {error}"))?;
+    let arch = match file.architecture() {
+        object::Architecture::X86_64 => ARCH_X86_64,
+        object::Architecture::Aarch64 => ARCH_AARCH64,
+        other => return Err(format!("the AOT payload does not support {other:?}")),
+    };
 
     let mut sections = Vec::new();
     let mut section_map: HashMap<SectionIndex, u32> = HashMap::new();
@@ -166,7 +169,7 @@ pub(crate) fn encode(object: &[u8]) -> Result<Vec<u8>, String> {
 
     relocations.sort_by_key(|relocation| (relocation.section, relocation.offset));
 
-    Ok(write(&sections, &symbols, &relocations, entry))
+    Ok((write(&sections, &symbols, &relocations, entry, arch), arch))
 }
 
 fn is_allocatable(kind: SectionKind) -> bool {
@@ -191,11 +194,12 @@ fn write(
     symbols: &[Symbol],
     relocations: &[Relocation],
     entry: u32,
+    arch: u32,
 ) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&MAGIC);
     put_u32(&mut out, VERSION);
-    put_u32(&mut out, ARCH_X86_64);
+    put_u32(&mut out, arch);
     put_u32(&mut out, sections.len() as u32);
     put_u32(&mut out, symbols.len() as u32);
     put_u32(&mut out, relocations.len() as u32);
@@ -263,7 +267,7 @@ mod tests {
     fn encoded(commands: &[tessera::Command]) -> Vec<u8> {
         let blocks = testkit::row(commands);
         let object = codegen::emit_object(&blocks, runtime::Division::Floored).unwrap();
-        encode(&object).unwrap()
+        encode(&object).unwrap().0
     }
 
     #[test]
@@ -299,10 +303,31 @@ mod tests {
 
     #[test]
     fn the_footer_records_the_payload_and_limit() {
-        let footer = footer(123, 456);
+        let footer = footer(123, 456, ARCH_X86_64);
         assert_eq!(&footer[..16], &FOOTER_MAGIC);
         assert_eq!(u64::from_le_bytes(footer[16..24].try_into().unwrap()), 123);
         assert_eq!(u64::from_le_bytes(footer[24..32].try_into().unwrap()), 456);
+        assert_eq!(
+            u32::from_le_bytes(footer[32..36].try_into().unwrap()),
+            ARCH_X86_64
+        );
+    }
+
+    #[test]
+    fn an_aarch64_object_becomes_an_aarch64_payload() {
+        let blocks = testkit::row(&[tessera::Command::InChar, tessera::Command::OutChar]);
+        let object = codegen::emit_object_for(
+            &blocks,
+            runtime::Division::Floored,
+            "aarch64-unknown-linux-musl",
+        )
+        .unwrap();
+        let (payload, arch) = encode(&object).unwrap();
+        assert_eq!(arch, ARCH_AARCH64);
+        assert_eq!(
+            u32::from_le_bytes(payload[20..24].try_into().unwrap()),
+            ARCH_AARCH64
+        );
     }
 
     #[test]
@@ -311,13 +336,15 @@ mod tests {
         let green = Color::chromatic(Hue::Green, Lightness::Normal);
 
         let single = testkit::blocks(vec![red], 1);
-        let payload =
-            encode(&codegen::emit_object(&single, runtime::Division::Floored).unwrap()).unwrap();
+        let payload = encode(&codegen::emit_object(&single, runtime::Division::Floored).unwrap())
+            .unwrap()
+            .0;
         assert_eq!(runner::execute(&payload, 1).unwrap(), (0, 0));
 
         let looping = testkit::blocks(vec![red, green], 2);
-        let payload =
-            encode(&codegen::emit_object(&looping, runtime::Division::Floored).unwrap()).unwrap();
+        let payload = encode(&codegen::emit_object(&looping, runtime::Division::Floored).unwrap())
+            .unwrap()
+            .0;
         assert_eq!(runner::execute(&payload, 1).unwrap(), (1, 1));
     }
 }

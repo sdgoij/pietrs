@@ -28,8 +28,36 @@ The footer records the payload length, the baked-in step limit, the
 architecture, and the format version. The runner finds it at the end of its own
 file; a runner without a footer refuses to run.
 
-The loader supports x86-64 COFF and ELF objects. The payload encoder rejects an
-unsupported relocation or architecture with a named diagnostic at build time.
+The loader supports x86-64 and AArch64 objects in COFF and ELF. The payload
+encoder rejects an unsupported relocation or architecture with a named
+diagnostic at build time.
+
+## Targets
+
+`pietrs build --target <triple>` selects the target; without the flag it builds
+for the host. `aot/build.rs` compiles a runner for the host and for the two
+static musl targets, and embeds them all:
+
+| Target | Runner | Codegen ISA |
+|---|---|---|
+| the host triple | host | host |
+| `x86_64-unknown-linux-gnu` / `-musl` | `x86_64-unknown-linux-musl` | `x86_64-unknown-linux-musl` |
+| `aarch64-unknown-linux-gnu` / `-musl` | `aarch64-unknown-linux-musl` | `aarch64-unknown-linux-musl` |
+
+GNU Linux programs run the musl artifacts unchanged, and musl avoids a
+cross sysroot: `aarch64-unknown-linux-gnu` cannot link self-contained. The musl
+runners are linked by `rust-lld` with `link-self-contained=yes`, so the same
+matrix builds from Windows and Linux alike. `rust-toolchain.toml` installs both
+musl standard libraries.
+
+The payload encoder reads the object's architecture, so the codegen ISA and the
+footer must agree; the runner checks the footer and the payload header against
+its own architecture and refuses a mismatch. On AArch64 the loader flushes the
+data cache and invalidates the instruction cache (`ctr_el0`, `dc cvau`,
+`ic ivau`) before entering the mapped code.
+
+The output suffix follows the target, not the host: a Linux ELF built on Windows
+has no `.exe`.
 
 The loader source is shared with `crates/runner`, which includes it as a module
 so the payload can be executed in-process by the `aot` tests. The `aot` library

@@ -10,6 +10,14 @@ const PAYLOAD_MAGIC: [u8; 16] = *b"PIETRS-PAYLOAD\0\0";
 const FOOTER_MAGIC: [u8; 16] = *b"PIETRS-AOT\0\0\0\0\0\0";
 const VERSION: u32 = 1;
 const ARCH_X86_64: u32 = 0;
+const ARCH_AARCH64: u32 = 1;
+const RUNNER_ARCH: u32 = if cfg!(target_arch = "x86_64") {
+    ARCH_X86_64
+} else if cfg!(target_arch = "aarch64") {
+    ARCH_AARCH64
+} else {
+    u32::MAX
+};
 const FOOTER_LEN: usize = 40;
 const HEADER_LEN: usize = 40;
 
@@ -135,8 +143,8 @@ impl<'a> Program<'a> {
             return Err("the payload format version is not supported".to_owned());
         }
         let arch = reader.u32()?;
-        if arch != ARCH_X86_64 || !cfg!(target_arch = "x86_64") {
-            return Err("the payload needs an x86-64 runner".to_owned());
+        if arch != RUNNER_ARCH {
+            return Err("the payload architecture does not match this runner".to_owned());
         }
         let section_count = reader.u32()? as usize;
         let symbol_count = reader.u32()? as usize;
@@ -297,6 +305,7 @@ impl<'a> Program<'a> {
         let entry = *addresses
             .get(self.entry as usize)
             .ok_or_else(|| "the payload entry symbol is missing".to_owned())?;
+        flush_instruction_cache(memory, total);
         let mut stack = Vec::new();
         if let Err(error) = stack.try_reserve_exact(STACK_CAPACITY) {
             return Err(format!("cannot allocate the stack: {error}"));
@@ -317,6 +326,42 @@ impl<'a> Program<'a> {
         Ok((context.reason, context.steps))
     }
 }
+
+#[cfg(target_arch = "aarch64")]
+fn flush_instruction_cache(base: *mut u8, size: usize) {
+    use std::arch::asm;
+
+    let start = base as usize;
+    let end = start + size;
+    // Clean the data cache to the point of unification, then invalidate the
+    // instruction cache. `ctr_el0` reports the line sizes.
+    let ctr: u64;
+    // SAFETY: reading ctr_el0 is allowed in user mode on aarch64.
+    unsafe { asm!("mrs {ctr}, ctr_el0", ctr = out(reg) ctr, options(nostack)) };
+    let data_line = 4usize << ((ctr >> 16) & 0xf);
+    let instruction_line = 4usize << (ctr & 0xf);
+
+    let mut address = start & !(data_line - 1);
+    while address < end {
+        // SAFETY: the address is inside the mapped region.
+        unsafe { asm!("dc cvau, {address}", address = in(reg) address, options(nostack)) };
+        address += data_line;
+    }
+    // SAFETY: a barrier is safe in user mode.
+    unsafe { asm!("dsb ish", options(nostack)) };
+
+    let mut address = start & !(instruction_line - 1);
+    while address < end {
+        // SAFETY: the address is inside the mapped region.
+        unsafe { asm!("ic ivau, {address}", address = in(reg) address, options(nostack)) };
+        address += instruction_line;
+    }
+    // SAFETY: barriers are safe in user mode.
+    unsafe { asm!("dsb ish", "isb", options(nostack)) };
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn flush_instruction_cache(_base: *mut u8, _size: usize) {}
 
 fn align_up(value: usize, align: u64) -> Result<usize, String> {
     let align = align.max(1);
@@ -472,8 +517,11 @@ fn split(bytes: &[u8]) -> Result<(&[u8], u64), String> {
     if version != VERSION {
         return Err("the embedded program uses an unsupported format".to_owned());
     }
-    if arch != ARCH_X86_64 || !cfg!(target_arch = "x86_64") {
-        return Err("the embedded program needs an x86-64 runner".to_owned());
+    if arch != ARCH_X86_64 && arch != ARCH_AARCH64 {
+        return Err("the embedded program has an unknown architecture".to_owned());
+    }
+    if arch != RUNNER_ARCH {
+        return Err("the embedded program does not match this runner".to_owned());
     }
     let end = bytes.len() - FOOTER_LEN;
     let payload_len =
@@ -695,5 +743,52 @@ mod tests {
         bytes[..16].copy_from_slice(&FOOTER_MAGIC);
         bytes[16..24].copy_from_slice(&100u64.to_le_bytes());
         assert!(split(&bytes).is_err());
+    }
+
+    fn footer(arch: u32) -> Vec<u8> {
+        let mut bytes = vec![0u8; FOOTER_LEN];
+        bytes[..16].copy_from_slice(&FOOTER_MAGIC);
+        bytes[32..36].copy_from_slice(&arch.to_le_bytes());
+        bytes[36..40].copy_from_slice(&VERSION.to_le_bytes());
+        bytes
+    }
+
+    fn header(arch: u32) -> Vec<u8> {
+        let mut bytes = PAYLOAD_MAGIC.to_vec();
+        for value in [VERSION, arch, 0, 0, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn the_host_architecture_passes_the_footer_check() {
+        assert!(split(&footer(RUNNER_ARCH)).is_ok());
+    }
+
+    #[test]
+    fn a_footer_for_another_architecture_is_a_diagnostic() {
+        let error = split(&footer(1 - RUNNER_ARCH)).unwrap_err();
+        assert!(error.contains("does not match this runner"), "{error}");
+    }
+
+    #[test]
+    fn a_footer_with_an_unknown_architecture_is_a_diagnostic() {
+        let error = split(&footer(7)).unwrap_err();
+        assert!(error.contains("unknown architecture"), "{error}");
+    }
+
+    #[test]
+    fn a_payload_for_another_architecture_is_a_diagnostic() {
+        let error = execute(&header(1 - RUNNER_ARCH), 0).unwrap_err();
+        assert!(error.contains("does not match this runner"), "{error}");
+    }
+
+    #[test]
+    fn a_payload_with_an_unknown_version_is_a_diagnostic() {
+        let mut bytes = header(RUNNER_ARCH);
+        bytes[16..20].copy_from_slice(&7u32.to_le_bytes());
+        let error = execute(&bytes, 0).unwrap_err();
+        assert!(error.contains("version"), "{error}");
     }
 }
