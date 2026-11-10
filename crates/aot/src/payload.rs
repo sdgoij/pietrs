@@ -270,6 +270,15 @@ mod tests {
         encode(&object).unwrap().0
     }
 
+    /// The architecture `emit_object` emits for, which is the host's.
+    fn host_arch() -> u32 {
+        if cfg!(target_arch = "aarch64") {
+            ARCH_AARCH64
+        } else {
+            ARCH_X86_64
+        }
+    }
+
     #[test]
     fn the_header_names_the_format_and_entry() {
         let payload = encoded(&[tessera::Command::InChar, tessera::Command::OutChar]);
@@ -280,7 +289,8 @@ mod tests {
         );
         assert_eq!(
             u32::from_le_bytes(payload[20..24].try_into().unwrap()),
-            ARCH_X86_64
+            host_arch(),
+            "the header names the host architecture"
         );
         assert!(
             u32::from_le_bytes(payload[32..36].try_into().unwrap()) > 0,

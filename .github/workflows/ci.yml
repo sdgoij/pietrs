@@ -2,11 +2,12 @@ name: pietrs
 
 # Everything, in one place.
 #
-# Branches and pull requests run the gate on Linux and Windows, in the same order
-# a developer sees locally. A `v*` tag adds three jobs on top: `tag` compares the
-# tag with the workspace version, `build` produces the archives for the three
-# targets, and `publish` attaches them to the release. The build needs the gate
-# *and* `tag`, so a mistyped tag fails in seconds and a red gate cannot publish.
+# Branches and pull requests run the gate on Linux x86-64, Linux arm64, and
+# Windows, in the same order a developer sees locally. A `v*` tag adds three jobs
+# on top: `tag` compares the tag with the workspace version, `build` produces the
+# archives for the three targets, and `publish` attaches them to the release. The
+# build needs the gate *and* `tag`, so a mistyped tag fails in seconds and a red
+# gate cannot publish.
 #
 # Every action is pinned to a commit hash with its release in a trailing comment,
 # following the sibling repositories. The majors are current -- `checkout` v7,
@@ -39,7 +40,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # `ubuntu-24.04-arm` is a native arm64 runner, which a public repository
+        # gets on the free plan. The AOT cases run there for real instead of
+        # under QEMU, so the aarch64 runner's payload loader and its
+        # instruction-cache flush are actually executed by the gate.
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # `rust-toolchain.toml` pins the channel and the clippy and rustfmt
@@ -99,15 +104,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Each target is built on its own architecture, so no release artefact
+        # depends on cross-linking. The Linux ones are static musl: no C library
+        # to match, and `.cargo/config.toml` links them with the toolchain's own
+        # linker and bundled CRT.
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-    env:
-      NAME: pietrs-${{ github.ref_name }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install the pinned toolchain
