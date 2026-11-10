@@ -438,7 +438,16 @@ fn selftest_runs_the_checked_in_corpus() {
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../xtask/fixtures");
     let output = run_ok(pietrs().args(["selftest", corpus.to_str().unwrap()]));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for name in ["hello", "subtract", "roll", "single", "white", "pointer"] {
+    for name in [
+        "hello",
+        "subtract",
+        "roll",
+        "single",
+        "white",
+        "pointer",
+        "black-start",
+        "white-start",
+    ] {
         assert!(stdout.contains(&format!("PASS: {name}")), "{stdout}");
     }
 }

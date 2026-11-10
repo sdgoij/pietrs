@@ -100,7 +100,16 @@ fn conformance_agrees_with_the_checked_in_corpus() {
         output.status.success(),
         "stdout: {stdout}\nstderr: {stderr}"
     );
-    for name in ["hello", "subtract", "roll", "single", "white", "pointer"] {
+    for name in [
+        "hello",
+        "subtract",
+        "roll",
+        "single",
+        "white",
+        "pointer",
+        "black-start",
+        "white-start",
+    ] {
         assert!(stdout.contains(&format!("OK: {name}")), "{stdout}");
     }
 }

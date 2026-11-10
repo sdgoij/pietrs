@@ -25,3 +25,8 @@ npiet; `selftest` and `e2e` default to `floored`. A case whose output depends on
 rounding needs a mode-specific golden or should stay out of the shared corpus.
 Values outside 32-bit range and non-ASCII character I/O remain npiet
 deviations. The recorded deviations are in `.agents/notes/divergences.md`.
+
+Degraded inputs are cases too: `single` is a 1x1 single-colour image,
+`black-start` has a black upper-left codel, and `white-start` has a white
+upper-left codel whose slide dead-ends. A malformed PNG cannot be a passing
+case; the `pietrs check` diagnostic is covered by the CLI tests.
