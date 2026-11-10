@@ -5,27 +5,10 @@ use std::path::Path;
 use std::process::Command;
 
 use tempfile::TempDir;
-
-const RED: [u8; 4] = [255, 0, 0, 255];
-const BLUE_LIGHT: [u8; 4] = [192, 192, 255, 255];
-const GREEN_DARK: [u8; 4] = [0, 192, 0, 255];
-const CYAN_LIGHT: [u8; 4] = [192, 255, 255, 255];
-const GREEN_NORMAL: [u8; 4] = [0, 255, 0, 255];
+use testkit::{BLUE_LIGHT, CYAN_LIGHT, GREEN_DARK, GREEN_NORMAL, RED, write_png};
 
 fn xtask() -> Command {
     Command::new(env!("CARGO_BIN_EXE_xtask"))
-}
-
-fn png_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(rgba).unwrap();
-    }
-    out
 }
 
 fn write_case(directory: &Path, expected_stdout: &str) {
@@ -35,7 +18,7 @@ fn write_case(directory: &Path, expected_stdout: &str) {
         .into_iter()
         .flatten()
         .collect();
-    std::fs::write(case.join("program.png"), png_bytes(5, 1, &rgba)).unwrap();
+    write_png(&case, "program.png", 5, 1, &rgba);
     std::fs::write(case.join("stdin"), "10 3").unwrap();
     std::fs::write(case.join("max_steps"), "4").unwrap();
     std::fs::write(case.join("expected.stdout"), expected_stdout).unwrap();

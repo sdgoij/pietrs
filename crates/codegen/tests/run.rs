@@ -1,65 +1,12 @@
 #![allow(clippy::unwrap_used)]
 //! Differential tests: the JIT and the interpreter must agree.
 
-use canvas::{Blocks, CodelGrid, Color, Hue, Lightness};
+use canvas::{Blocks, Color, Hue, Lightness};
 use codegen::{ExitReason as JitExit, Options as JitOptions, run as run_jit};
 use interp::{ExitReason as InterpExit, Options as InterpOptions, run as run_interp};
 use runtime::{BufferIo, Division};
-use tessera::{Command, command};
-
-fn blocks(codels: Vec<Color>, width: u32) -> Blocks {
-    let height = (codels.len() as u32) / width;
-    Blocks::partition(CodelGrid::from_colors(width, height, codels).unwrap())
-}
-
-/// The forward deltas the command table assigns to each command.
-fn deltas(wanted: Command) -> (u8, u8) {
-    match wanted {
-        Command::Push => (0, 1),
-        Command::Pop => (0, 2),
-        Command::Add => (1, 0),
-        Command::Subtract => (1, 1),
-        Command::Multiply => (1, 2),
-        Command::Divide => (2, 0),
-        Command::Modulo => (2, 1),
-        Command::Not => (2, 2),
-        Command::Greater => (3, 0),
-        Command::Pointer => (3, 1),
-        Command::Switch => (3, 2),
-        Command::Duplicate => (4, 0),
-        Command::Roll => (4, 1),
-        Command::InNumber => (4, 2),
-        Command::InChar => (5, 0),
-        Command::OutNumber => (5, 1),
-        Command::OutChar => (5, 2),
-    }
-}
-
-/// A single-row program whose transitions run `commands` in order.
-///
-/// Every codel is its own block, so the row walks left to right and each
-/// transition is the command the test asked for.
-fn row(commands: &[Command]) -> Blocks {
-    let mut colours = vec![Color::chromatic(Hue::Red, Lightness::Normal)];
-    for &wanted in commands {
-        let from = *colours.last().unwrap();
-        let deltas = deltas(wanted);
-        let to = Color::ALL
-            .into_iter()
-            .find(|colour| from.deltas(*colour) == Some(deltas))
-            .unwrap();
-        colours.push(to);
-    }
-    for (index, &wanted) in commands.iter().enumerate() {
-        assert_eq!(
-            command(colours[index], colours[index + 1]),
-            Some(wanted),
-            "the fixture must run {wanted:?} at step {index}"
-        );
-    }
-    let width = colours.len() as u32;
-    blocks(colours, width)
-}
+use tessera::Command;
+use testkit::{blocks, row};
 
 /// Runs both paths and asserts they agree, returning the output.
 fn assert_paths_agree_on(blocks: &Blocks, input: &str, max_steps: u64) -> String {

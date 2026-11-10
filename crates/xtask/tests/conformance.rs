@@ -5,29 +5,12 @@ use std::path::Path;
 use std::process::Command;
 
 use tempfile::TempDir;
-
-const RED: [u8; 4] = [255, 0, 0, 255];
-const RED_DARK: [u8; 4] = [192, 0, 0, 255];
-const MAGENTA: [u8; 4] = [255, 0, 255, 255];
-const BLUE_LIGHT: [u8; 4] = [192, 192, 255, 255];
-const GREEN_DARK: [u8; 4] = [0, 192, 0, 255];
-const CYAN_LIGHT: [u8; 4] = [192, 255, 255, 255];
-const GREEN_NORMAL: [u8; 4] = [0, 255, 0, 255];
+use testkit::{
+    BLUE_LIGHT, CYAN_LIGHT, GREEN_DARK, GREEN_NORMAL, MAGENTA, RED, RED_DARK, write_png,
+};
 
 fn xtask() -> Command {
     Command::new(env!("CARGO_BIN_EXE_xtask"))
-}
-
-fn png_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(rgba).unwrap();
-    }
-    out
 }
 
 #[test]
@@ -39,7 +22,7 @@ fn conformance_agrees_with_npiet_on_a_pushed_character() {
     }
     rgba.extend_from_slice(&RED_DARK);
     rgba.extend_from_slice(&MAGENTA);
-    std::fs::write(dir.path().join("a.png"), png_bytes(67, 1, &rgba)).unwrap();
+    write_png(dir.path(), "a.png", 67, 1, &rgba);
 
     let output = xtask()
         .args([
@@ -66,7 +49,7 @@ fn conformance_agrees_on_input_and_arithmetic() {
         .into_iter()
         .flatten()
         .collect();
-    std::fs::write(dir.path().join("subtract.png"), png_bytes(5, 1, &rgba)).unwrap();
+    write_png(dir.path(), "subtract.png", 5, 1, &rgba);
     std::fs::write(dir.path().join("subtract.in"), "10 3").unwrap();
 
     let output = xtask()

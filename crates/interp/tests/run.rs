@@ -1,19 +1,11 @@
 #![allow(clippy::unwrap_used)]
 //! Reference runs over hand-built grids.
 
-use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
+use canvas::{Blocks, Color, Hue, Lightness};
 use interp::{ExitReason, Options, Step, run, run_traced};
 use runtime::BufferIo;
 use tessera::{Chooser, Command, Direction};
-
-fn blocks(codels: Vec<Color>, width: u32) -> Blocks {
-    let height = (codels.len() as u32) / width;
-    Blocks::partition(CodelGrid::from_colors(width, height, codels).unwrap())
-}
-
-fn id_at(blocks: &Blocks, x: u32, y: u32) -> BlockId {
-    blocks.block_id_at(Point::new(x, y)).unwrap()
-}
+use testkit::{blocks, id_at};
 
 fn print_a_program() -> Blocks {
     let mut codels = vec![Color::chromatic(Hue::Red, Lightness::Normal); 65];

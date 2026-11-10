@@ -20,6 +20,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 interp.workspace = true
+testkit.workspace = true
 
 [features]
 default = ["object"]

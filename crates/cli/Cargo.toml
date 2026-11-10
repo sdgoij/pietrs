@@ -26,7 +26,7 @@ default = ["codegen"]
 codegen = ["dep:codegen", "dep:aot", "dep:tempfile"]
 
 [dev-dependencies]
-png.workspace = true
+testkit.workspace = true
 tempfile.workspace = true
 
 [lints]

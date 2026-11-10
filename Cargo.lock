@@ -78,6 +78,7 @@ dependencies = [
  "codegen",
  "runtime",
  "tempfile",
+ "testkit",
  "thiserror",
 ]
 
@@ -244,10 +245,10 @@ dependencies = [
  "clap",
  "codegen",
  "interp",
- "png",
  "runtime",
  "tempfile",
  "tessera",
+ "testkit",
  "thiserror",
 ]
 
@@ -265,6 +266,7 @@ dependencies = [
  "interp",
  "runtime",
  "tessera",
+ "testkit",
  "thiserror",
 ]
 
@@ -601,6 +603,7 @@ dependencies = [
  "canvas",
  "runtime",
  "tessera",
+ "testkit",
  "thiserror",
 ]
 
@@ -978,6 +981,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "testkit"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "png",
+ "tessera",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1180,9 +1192,9 @@ dependencies = [
  "canvas",
  "clap",
  "interp",
- "png",
  "runtime",
  "tempfile",
+ "testkit",
  "thiserror",
 ]
 

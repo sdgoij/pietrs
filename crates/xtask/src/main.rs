@@ -11,6 +11,7 @@ use canvas::{Blocks, CodelGrid, Point};
 use clap::{Args, Parser, Subcommand};
 use interp::{ExitReason, Options};
 use runtime::BufferIo;
+use testkit::Checks;
 
 /// The npiet release the vendored source and the gate expect.
 const EXPECTED_NPIET: &str = "v1.3h";
@@ -147,19 +148,13 @@ fn conformance(args: &ConformanceArgs) -> Result<bool, Error> {
     check_version(&npiet)?;
 
     let temporary = tempfile::tempdir()?;
-    let mut failures = 0usize;
+    let mut checks = Checks::new();
     for case in &cases {
         let name = case_name(case);
-        match check_case(case, &npiet, temporary.path(), args) {
-            Ok(()) => println!("OK: {name}"),
-            Err(reason) => {
-                failures += 1;
-                println!("FAIL: {name}: {reason}");
-            }
-        }
+        checks.check(&name, check_case(case, &npiet, temporary.path(), args));
     }
-    eprintln!("{} cases, {failures} failed", cases.len());
-    Ok(failures > 0)
+    eprintln!("{} cases, {} failed", checks.total(), checks.failures());
+    Ok(!checks.passed())
 }
 
 fn cases(input: &Path) -> Result<Vec<PathBuf>, Error> {
@@ -284,22 +279,19 @@ fn e2e(args: &E2eArgs) -> Result<bool, Error> {
         return Err(Error::NoCompiler("rustc".to_owned()));
     };
 
-    let mut failures = 0usize;
+    let mut checks = Checks::new();
     for case in &cases {
         let name = case.file_name().map_or_else(
             || "?".to_owned(),
             |name| name.to_string_lossy().into_owned(),
         );
-        match check_e2e(case, Some(&compiler), args.timeout_ms, args.division.into()) {
-            Ok(()) => println!("OK: {name}"),
-            Err(reason) => {
-                failures += 1;
-                println!("FAIL: {name}: {reason}");
-            }
-        }
+        checks.check(
+            &name,
+            check_e2e(case, Some(&compiler), args.timeout_ms, args.division.into()),
+        );
     }
-    eprintln!("{} cases, {failures} failed", cases.len());
-    Ok(failures > 0)
+    eprintln!("{} cases, {} failed", checks.total(), checks.failures());
+    Ok(!checks.passed())
 }
 
 fn case_directories(root: &Path) -> Result<Vec<PathBuf>, Error> {

@@ -7,20 +7,10 @@ use std::process::Stdio;
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
-
-const RED: [u8; 4] = [255, 0, 0, 255];
-const RED_DARK: [u8; 4] = [192, 0, 0, 255];
-const GREEN: [u8; 4] = [0, 255, 0, 255];
-const BLUE: [u8; 4] = [0, 0, 255, 255];
-const MAGENTA: [u8; 4] = [255, 0, 255, 255];
-const WHITE: [u8; 4] = [255, 255, 255, 255];
-const BLUE_LIGHT: [u8; 4] = [192, 192, 255, 255];
-const GREEN_DARK: [u8; 4] = [0, 192, 0, 255];
-const CYAN_LIGHT: [u8; 4] = [192, 255, 255, 255];
-const GREEN_NORMAL: [u8; 4] = [0, 255, 0, 255];
-#[cfg(feature = "codegen")]
-const RED_LIGHT: [u8; 4] = [255, 192, 192, 255];
-const BLUE_DARK: [u8; 4] = [0, 0, 192, 255];
+use testkit::{
+    BLUE, BLUE_DARK, BLUE_LIGHT, CYAN_LIGHT, GREEN, GREEN_DARK, GREEN_NORMAL, MAGENTA, RED,
+    RED_DARK, RED_LIGHT, WHITE, format_trace, parse_trace, write_png,
+};
 
 fn pietrs() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pietrs"));
@@ -28,30 +18,6 @@ fn pietrs() -> Command {
         command.env_remove(name);
     }
     command
-}
-
-fn png_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(rgba).unwrap();
-    }
-    out
-}
-
-fn write_png(
-    dir: &TempDir,
-    name: &str,
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-) -> std::path::PathBuf {
-    let path = dir.path().join(name);
-    std::fs::write(&path, png_bytes(width, height, rgba)).unwrap();
-    path
 }
 
 fn run_ok(command: &mut Command) -> Output {
@@ -88,7 +54,7 @@ fn check_reports_the_grid_and_blocks() {
             rgba.extend_from_slice(&pixel);
         }
     }
-    let path = write_png(&dir, "four.png", 4, 4, &rgba);
+    let path = write_png(dir.path(), "four.png", 4, 4, &rgba);
     let output = run_ok(pietrs().args(["check", path.to_str().unwrap()]));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -104,7 +70,7 @@ fn check_reports_the_grid_and_blocks() {
 fn the_graph_dump_switch_writes_the_graph_to_stderr() {
     let dir = TempDir::new().unwrap();
     let rgba: Vec<u8> = [RED, GREEN].into_iter().flatten().collect();
-    let path = write_png(&dir, "two.png", 2, 1, &rgba);
+    let path = write_png(dir.path(), "two.png", 2, 1, &rgba);
     let output = run_ok(
         pietrs()
             .env("PIETRS_DUMP_GRAPH", "1")
@@ -125,7 +91,7 @@ fn the_graph_dump_switch_writes_the_graph_to_stderr() {
 #[test]
 fn the_graph_dump_is_off_unless_set() {
     let dir = TempDir::new().unwrap();
-    let path = write_png(&dir, "one.png", 1, 1, &RED);
+    let path = write_png(dir.path(), "one.png", 1, 1, &RED);
     let output = run_ok(pietrs().args(["check", path.to_str().unwrap()]));
     assert!(output.stderr.is_empty(), "{:?}", output.stderr);
 }
@@ -134,7 +100,7 @@ fn the_graph_dump_is_off_unless_set() {
 #[test]
 fn the_clif_dump_switch_writes_the_lowered_function() {
     let dir = TempDir::new().unwrap();
-    let path = write_png(&dir, "one.png", 1, 1, &RED);
+    let path = write_png(dir.path(), "one.png", 1, 1, &RED);
     let output = run_ok(pietrs().env("PIETRS_DUMP_CLIF", "1").args([
         "run",
         path.to_str().unwrap(),
@@ -152,7 +118,7 @@ fn the_clif_dump_switch_writes_the_lowered_function() {
 fn run_uses_the_jit() {
     // `run` is the JIT path, so the disassembly exists there and nowhere else.
     let dir = TempDir::new().unwrap();
-    let path = write_png(&dir, "one.png", 1, 1, &RED);
+    let path = write_png(dir.path(), "one.png", 1, 1, &RED);
     let output = run_ok(pietrs().env("PIETRS_JIT_DISASM", "1").args([
         "run",
         path.to_str().unwrap(),
@@ -167,7 +133,7 @@ fn run_uses_the_jit() {
 #[test]
 fn a_single_block_terminates() {
     let dir = TempDir::new().unwrap();
-    let path = write_png(&dir, "one.png", 1, 1, &RED);
+    let path = write_png(dir.path(), "one.png", 1, 1, &RED);
     let output = run_ok(pietrs().args(["run", path.to_str().unwrap()]));
     assert!(output.stdout.is_empty());
 }
@@ -181,7 +147,7 @@ fn run_prints_a_pushed_character() {
     }
     rgba.extend_from_slice(&RED_DARK);
     rgba.extend_from_slice(&MAGENTA);
-    let path = write_png(&dir, "a.png", 67, 1, &rgba);
+    let path = write_png(dir.path(), "a.png", 67, 1, &rgba);
     let output = pietrs()
         .args(["run", path.to_str().unwrap(), "--max-steps", "2"])
         .output()
@@ -200,7 +166,7 @@ fn trace_prints_the_transitions() {
     }
     rgba.extend_from_slice(&RED_DARK);
     rgba.extend_from_slice(&MAGENTA);
-    let path = write_png(&dir, "a.png", 67, 1, &rgba);
+    let path = write_png(dir.path(), "a.png", 67, 1, &rgba);
     let output = run_ok(pietrs().args(["trace", path.to_str().unwrap(), "--max-steps", "2"]));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -229,6 +195,14 @@ fn trace_matches_every_corpus_golden() {
         let program = case.join("program.png");
         let expected = std::fs::read(case.join("expected.trace"))
             .unwrap_or_else(|error| panic!("{name}: cannot read expected.trace: {error}"));
+        let expected_text = String::from_utf8(expected.clone()).unwrap();
+        let lines = parse_trace(&expected_text)
+            .unwrap_or_else(|error| panic!("{name}: invalid expected.trace: {error}"));
+        assert_eq!(
+            format_trace(&lines),
+            expected_text,
+            "{name}: expected.trace does not round-trip"
+        );
         let max_steps = std::fs::read_to_string(case.join("max_steps"))
             .map_or_else(|_| "100000".to_owned(), |text| text.trim().to_owned());
         let output = run_ok(pietrs().args([
@@ -245,7 +219,7 @@ fn trace_matches_every_corpus_golden() {
 fn the_codel_size_override_is_honoured() {
     let dir = TempDir::new().unwrap();
     let rgba: Vec<u8> = [RED, GREEN, BLUE, WHITE].into_iter().flatten().collect();
-    let path = write_png(&dir, "pixels.png", 2, 2, &rgba);
+    let path = write_png(dir.path(), "pixels.png", 2, 2, &rgba);
     let output = pietrs()
         .args(["check", path.to_str().unwrap(), "--codel-size", "2"])
         .output()
@@ -276,13 +250,13 @@ fn selftest_compares_every_path() {
     }
     rgba.extend_from_slice(&RED_DARK);
     rgba.extend_from_slice(&MAGENTA);
-    write_png(&dir, "a.png", 67, 1, &rgba);
-    write_png(&dir, "single.png", 1, 1, &RED);
+    write_png(dir.path(), "a.png", 67, 1, &rgba);
+    write_png(dir.path(), "single.png", 1, 1, &RED);
     let subtract: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, CYAN_LIGHT, GREEN_NORMAL]
         .into_iter()
         .flatten()
         .collect();
-    write_png(&dir, "subtract.png", 5, 1, &subtract);
+    write_png(dir.path(), "subtract.png", 5, 1, &subtract);
     std::fs::write(dir.path().join("subtract.in"), "10 3").unwrap();
 
     let output =
@@ -314,7 +288,7 @@ fn build_produces_a_runnable_executable() {
     }
     rgba.extend_from_slice(&RED_DARK);
     rgba.extend_from_slice(&MAGENTA);
-    let image = write_png(&dir, "a.png", 67, 1, &rgba);
+    let image = write_png(dir.path(), "a.png", 67, 1, &rgba);
     let output = dir.path().join("a");
     run_ok(pietrs().args([
         "build",
@@ -342,7 +316,7 @@ fn a_built_executable_reads_input() {
         .into_iter()
         .flatten()
         .collect();
-    let image = write_png(&dir, "subtract.png", 5, 1, &rgba);
+    let image = write_png(dir.path(), "subtract.png", 5, 1, &rgba);
     let output = dir.path().join("subtract");
     run_ok(pietrs().args([
         "build",
@@ -378,7 +352,7 @@ fn a_built_executable_rolls_the_stack() {
     .into_iter()
     .flatten()
     .collect();
-    let image = write_png(&dir, "roll.png", 10, 1, &rgba);
+    let image = write_png(dir.path(), "roll.png", 10, 1, &rgba);
     let output = dir.path().join("roll");
     run_ok(pietrs().args([
         "build",
@@ -408,7 +382,7 @@ fn a_built_executable_rolls_the_stack() {
 fn a_built_executable_round_trips_utf8() {
     let dir = TempDir::new().unwrap();
     let rgba: Vec<u8> = [RED, MAGENTA, BLUE_LIGHT].into_iter().flatten().collect();
-    let image = write_png(&dir, "echo.png", 3, 1, &rgba);
+    let image = write_png(dir.path(), "echo.png", 3, 1, &rgba);
     let output = dir.path().join("echo");
     run_ok(pietrs().args([
         "build",
@@ -459,7 +433,7 @@ fn the_division_flag_selects_the_rounding_on_run() {
         .into_iter()
         .flatten()
         .collect();
-    let image = write_png(&dir, "divide.png", 5, 1, &rgba);
+    let image = write_png(dir.path(), "divide.png", 5, 1, &rgba);
     let input = dir.path().join("divide.in");
     std::fs::write(&input, "-7 3").unwrap();
 
@@ -489,7 +463,7 @@ fn the_division_flag_selects_the_rounding_on_build() {
         .into_iter()
         .flatten()
         .collect();
-    let image = write_png(&dir, "divide.png", 5, 1, &rgba);
+    let image = write_png(dir.path(), "divide.png", 5, 1, &rgba);
     let input = dir.path().join("divide.in");
     std::fs::write(&input, "-7 3").unwrap();
 
@@ -520,7 +494,7 @@ fn the_division_flag_selects_the_rounding_on_build() {
 #[test]
 fn build_reports_the_missing_feature() {
     let dir = TempDir::new().unwrap();
-    let image = write_png(&dir, "one.png", 1, 1, &RED);
+    let image = write_png(dir.path(), "one.png", 1, 1, &RED);
     let run = pietrs()
         .args(["build", image.to_str().unwrap(), "-o", "out"])
         .output()
@@ -533,7 +507,7 @@ fn build_reports_the_missing_feature() {
 #[test]
 fn build_names_a_missing_compiler() {
     let dir = TempDir::new().unwrap();
-    let image = write_png(&dir, "one.png", 1, 1, &RED);
+    let image = write_png(dir.path(), "one.png", 1, 1, &RED);
     let output = dir.path().join("one");
     let run = pietrs()
         .args([

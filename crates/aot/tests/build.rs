@@ -5,12 +5,8 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use canvas::{Blocks, CodelGrid, Color, Hue, Lightness};
-
-fn blocks(codels: Vec<Color>, width: u32) -> Blocks {
-    let height = (codels.len() as u32) / width;
-    Blocks::partition(CodelGrid::from_colors(width, height, codels).unwrap())
-}
+use canvas::{Blocks, Color, Hue, Lightness};
+use testkit::blocks;
 
 fn single_block() -> Blocks {
     blocks(vec![Color::chromatic(Hue::Red, Lightness::Normal)], 1)

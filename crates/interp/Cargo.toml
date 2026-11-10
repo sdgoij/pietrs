@@ -12,5 +12,8 @@ runtime.workspace = true
 tessera.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+testkit.workspace = true
+
 [lints]
 workspace = true
