@@ -1183,6 +1183,7 @@ dependencies = [
  "proptest",
  "runtime",
  "tessera",
+ "web-time",
 ]
 
 [[package]]

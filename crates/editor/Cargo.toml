@@ -11,6 +11,7 @@ canvas.workspace = true
 interp.workspace = true
 runtime.workspace = true
 tessera.workspace = true
+web-time.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

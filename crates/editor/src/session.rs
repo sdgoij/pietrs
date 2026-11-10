@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+// `web-time` re-exports `std::time` off wasm, so only the clock is
+// substituted: `Duration` is the same type and the public API is unchanged.
+use web_time::{Duration, Instant};
 
 use canvas::{BlockId, Blocks, Point};
 use interp::{Machine, Options, Progress, Step};
@@ -461,6 +463,25 @@ mod tests {
         assert_eq!(session.steps(), 0);
         assert!(session.is_finished());
         assert_eq!(session.stop(), Some(Stop::StepLimit));
+    }
+
+    #[test]
+    fn a_zero_time_budget_stops_before_the_first_step() {
+        // The time branch of the loop had no case: every other test stopped on
+        // a step limit or a breakpoint first, so `started.elapsed() >= time`
+        // was never the reason a run paused.
+        let document = small_document(&["rg", "gg"]);
+        let analysis = Analysis::build(&document).unwrap();
+        let mut session = Session::new(&analysis, String::new(), Options::default());
+
+        let budget = Budget {
+            steps: u64::MAX,
+            time: Duration::ZERO,
+        };
+        let stop = session.run_until(&Breakpoints::default(), budget).unwrap();
+        assert_eq!(stop, Stop::Budget);
+        assert!(!stop.is_final(), "a budget stop can continue");
+        assert_eq!(session.steps(), 0);
     }
 
     #[test]

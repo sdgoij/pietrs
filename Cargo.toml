@@ -61,6 +61,9 @@ png = "0.18"
 proptest = "1"
 tempfile = "3"
 thiserror = "2"
+# `std::time::Instant::now()` panics on `wasm32-unknown-unknown`; `web-time` is
+# a drop-in replacement that re-exports `std::time` everywhere else.
+web-time = "1.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
