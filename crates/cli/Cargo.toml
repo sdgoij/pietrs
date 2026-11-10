@@ -10,6 +10,11 @@ publish.workspace = true
 name = "pietrs"
 path = "src/main.rs"
 
+[[bin]]
+name = "pietrs-runner"
+path = "src/runner.rs"
+required-features = ["codegen"]
+
 [dependencies]
 aot = { workspace = true, optional = true }
 canvas.workspace = true
@@ -17,13 +22,14 @@ clap.workspace = true
 codegen = { workspace = true, optional = true }
 interp.workspace = true
 runtime.workspace = true
+runner = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 tessera.workspace = true
 thiserror.workspace = true
 
 [features]
 default = ["codegen"]
-codegen = ["dep:codegen", "dep:aot", "dep:tempfile"]
+codegen = ["dep:codegen", "dep:aot", "dep:tempfile", "dep:runner"]
 
 [dev-dependencies]
 testkit.workspace = true

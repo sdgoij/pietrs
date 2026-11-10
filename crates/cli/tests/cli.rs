@@ -31,6 +31,17 @@ fn run_ok(command: &mut Command) -> Output {
     output
 }
 
+#[cfg(feature = "codegen")]
+#[test]
+fn the_runner_without_a_program_is_a_diagnostic() {
+    let output = Command::new(env!("CARGO_BIN_EXE_pietrs-runner"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no embedded program"), "{stderr}");
+}
+
 #[test]
 fn a_bare_invocation_prints_help_and_succeeds() {
     let output = run_ok(&mut pietrs());
@@ -501,25 +512,4 @@ fn build_reports_the_missing_feature() {
         .unwrap();
     assert!(!run.status.success());
     assert!(String::from_utf8_lossy(&run.stderr).contains("without the codegen feature"));
-}
-
-#[cfg(feature = "codegen")]
-#[test]
-fn build_names_a_missing_compiler() {
-    let dir = TempDir::new().unwrap();
-    let image = write_png(dir.path(), "one.png", 1, 1, &RED);
-    let output = dir.path().join("one");
-    let run = pietrs()
-        .args([
-            "build",
-            image.to_str().unwrap(),
-            "-o",
-            output.to_str().unwrap(),
-            "--compiler",
-            "definitely-not-a-compiler",
-        ])
-        .output()
-        .unwrap();
-    assert!(!run.status.success());
-    assert!(String::from_utf8_lossy(&run.stderr).contains("no Rust compiler found"));
 }

@@ -8,12 +8,14 @@ publish.workspace = true
 
 [dependencies]
 canvas.workspace = true
-codegen = { workspace = true, features = ["object"] }
+codegen.workspace = true
+object.workspace = true
 runtime.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+runner.workspace = true
+tessera.workspace = true
 testkit.workspace = true
 
 [lints]

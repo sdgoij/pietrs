@@ -110,9 +110,6 @@ struct BuildArgs {
     /// How division and modulo round.
     #[arg(long, value_enum, default_value = "floored")]
     division: DivisionArg,
-    /// Build the executable with this Rust compiler instead of probing for one.
-    #[arg(long)]
-    compiler: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -125,9 +122,6 @@ struct SelftestArgs {
     /// How division and modulo round.
     #[arg(long, value_enum, default_value = "floored")]
     division: DivisionArg,
-    /// Build the executable with this Rust compiler instead of probing for one.
-    #[arg(long)]
-    compiler: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,6 +149,14 @@ enum Error {
     #[cfg(feature = "codegen")]
     #[error(transparent)]
     Aot(#[from] aot::Error),
+
+    #[cfg(feature = "codegen")]
+    #[error("cannot read the AOT runner at {path}: {source}; install pietrs-runner next to pietrs")]
+    Runner {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[cfg(not(feature = "codegen"))]
     #[error("this pietrs was built without the codegen feature")]
@@ -217,6 +219,22 @@ fn dump_graph(graph: &StateGraph) {
     if dump_graph_enabled() {
         eprint!("{graph}");
     }
+}
+
+/// The AOT runner installed next to this binary.
+#[cfg(feature = "codegen")]
+fn runner_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_default()
+        .join(format!("pietrs-runner{}", std::env::consts::EXE_SUFFIX))
+}
+
+#[cfg(feature = "codegen")]
+fn read_runner() -> Result<Vec<u8>, Error> {
+    let path = runner_path();
+    std::fs::read(&path).map_err(|source| Error::Runner { path, source })
 }
 
 fn check(args: &CheckArgs) -> Result<(), Error> {
@@ -343,23 +361,14 @@ fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
     }
 
     #[cfg(feature = "codegen")]
-    let compiler = aot::find_compiler(args.compiler.as_deref());
-    #[cfg(feature = "codegen")]
-    if compiler.is_none() {
-        eprintln!("pietrs: no Rust compiler found (tried rustc); the AOT path is skipped");
-    }
+    let runner = read_runner()?;
     #[cfg(not(feature = "codegen"))]
-    let compiler: Option<String> = None;
+    let runner: Vec<u8> = Vec::new();
 
     let mut failures = 0usize;
     for path in &cases {
         let name = case_name(path);
-        match check_case(
-            path,
-            args.max_steps,
-            args.division.into(),
-            compiler.as_deref(),
-        ) {
+        match check_case(path, args.max_steps, args.division.into(), &runner) {
             Ok(()) => println!("PASS: {name}"),
             Err(reason) => {
                 failures += 1;
@@ -442,7 +451,7 @@ fn check_case(
     path: &Path,
     max_steps: u64,
     division: runtime::Division,
-    compiler: Option<&str>,
+    runner: &[u8],
 ) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let grid = CodelGrid::from_png(&bytes).map_err(|error| error.to_string())?;
@@ -467,11 +476,11 @@ fn check_case(
         division,
         &interpreted_io,
         interpreted,
-        compiler,
+        runner,
     )?;
 
     #[cfg(not(feature = "codegen"))]
-    let _ = (interpreted, interpreted_io, compiler);
+    let _ = (interpreted, interpreted_io, runner);
     Ok(())
 }
 
@@ -483,7 +492,7 @@ fn check_paths(
     division: runtime::Division,
     interpreted_io: &BufferIo,
     interpreted: interp::Run,
-    compiler: Option<&str>,
+    runner: &[u8],
 ) -> Result<(), String> {
     let jit_options = codegen::Options {
         stack_capacity: 1 << 20,
@@ -526,17 +535,15 @@ fn check_paths(
         }
     }
 
-    if let Some(compiler) = compiler {
-        check_aot(
-            blocks,
-            input,
-            max_steps,
-            division,
-            compiler,
-            interpreted_output,
-            interpreted.reason,
-        )?;
-    }
+    check_aot(
+        blocks,
+        input,
+        max_steps,
+        division,
+        interpreted_output,
+        interpreted.reason,
+        runner,
+    )?;
     Ok(())
 }
 
@@ -546,22 +553,16 @@ fn check_aot(
     input: &str,
     max_steps: u64,
     division: runtime::Division,
-    compiler: &str,
     interpreted_output: &str,
     reason: ExitReason,
+    runner: &[u8],
 ) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(
-        blocks,
-        &executable,
-        Some(max_steps),
-        division,
-        Some(compiler),
-    )
-    .map_err(|error| format!("cannot build the executable: {error}"))?;
+    aot::build(blocks, &executable, Some(max_steps), division, runner)
+        .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_executable(&executable, input, Duration::from_secs(10))?;
     if run.stdout != interpreted_output.as_bytes() {
         return Err(format!(
@@ -634,12 +635,13 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
             .clone()
             .unwrap_or_else(|| default_output(&args.image.image)),
     );
+    let runner = read_runner()?;
     aot::build(
         &blocks,
         &output,
         args.max_steps,
         args.division.into(),
-        args.compiler.as_deref(),
+        &runner,
     )?;
     Ok(())
 }

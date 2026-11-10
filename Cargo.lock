@@ -76,8 +76,10 @@ version = "0.1.0"
 dependencies = [
  "canvas",
  "codegen",
+ "object",
+ "runner",
  "runtime",
- "tempfile",
+ "tessera",
  "testkit",
  "thiserror",
 ]
@@ -245,6 +247,7 @@ dependencies = [
  "clap",
  "codegen",
  "interp",
+ "runner",
  "runtime",
  "tempfile",
  "tessera",
@@ -703,9 +706,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
 dependencies = [
  "crc32fast",
+ "flate2",
  "hashbrown 0.17.1",
  "indexmap",
  "memchr",
+ "ruzstd",
 ]
 
 [[package]]
@@ -850,6 +855,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "runner"
+version = "0.1.0"
+
+[[package]]
 name = "runtime"
 version = "0.1.0"
 dependencies = [
@@ -886,6 +895,15 @@ dependencies = [
  "quick-error",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
+dependencies = [
+ "twox-hash",
 ]
 
 [[package]]
@@ -1038,6 +1056,12 @@ checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "unarray"

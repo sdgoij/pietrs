@@ -8,6 +8,7 @@ members = [
     "crates/codegen",
     "crates/aot",
     "crates/cli",
+    "crates/runner",
     "crates/testkit",
     "crates/xtask",
 ]
@@ -26,6 +27,7 @@ runtime = { path = "crates/runtime" }
 interp = { path = "crates/interp" }
 codegen = { path = "crates/codegen" }
 aot = { path = "crates/aot" }
+runner = { path = "crates/runner" }
 testkit = { path = "crates/testkit" }
 
 cranelift-codegen = "0.137"
@@ -36,6 +38,7 @@ cranelift-native = "0.137"
 cranelift-object = "0.137"
 
 clap = { version = "4", features = ["derive"] }
+object = "0.40"
 png = "0.18"
 proptest = "1"
 tempfile = "3"

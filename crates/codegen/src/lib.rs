@@ -2,7 +2,8 @@
 //! The Cranelift lowering: one native function for the reachable state graph.
 //!
 //! [`run`] executes it in-process through the JIT; [`emit_object`] writes a
-//! relocatable object that a linker can turn into a standalone executable.
+//! relocatable object that the `aot` crate packages into a standalone
+//! executable.
 //! Each `(block, DP, CC)` state becomes a basic block. The value stack lives in
 //! the shared context; `pointer` and `switch` choose their successor from the
 //! popped value, and the remaining commands are straight-line IR. Host calls
@@ -233,7 +234,7 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
 /// Emits the program as a relocatable object exporting `piet_main`.
 ///
 /// The object calls the host symbols `piet_out_char`, `piet_out_number`,
-/// `piet_in_char`, `piet_in_number`, and `piet_roll`, which the linker must
+/// `piet_in_char`, `piet_in_number`, and `piet_roll`, which the host must
 /// provide.
 #[cfg(feature = "object")]
 pub fn emit_object(blocks: &Blocks, division: Division) -> Result<Vec<u8>, Error> {

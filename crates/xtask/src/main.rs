@@ -70,9 +70,9 @@ struct ConformanceArgs {
 struct E2eArgs {
     /// A corpus; each case directory holds `program.png` and its goldens.
     corpus: PathBuf,
-    /// Build the executable with this Rust compiler instead of probing for one.
+    /// Use this AOT runner instead of the one next to xtask.
     #[arg(long)]
-    compiler: Option<String>,
+    runner: Option<PathBuf>,
     /// Kill a case that runs longer than this.
     #[arg(long, default_value_t = 10_000)]
     timeout_ms: u64,
@@ -98,8 +98,18 @@ enum Error {
     #[error("the vendored npiet source is missing: {0}")]
     MissingSource(PathBuf),
 
-    #[error("no Rust compiler found: tried {0}")]
+    #[error("no C compiler found for npiet: tried {0}")]
     NoCompiler(String),
+
+    #[error("cannot read the AOT runner at {path}: {source}")]
+    Runner {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("no AOT runner found: tried {0}")]
+    MissingRunner(String),
 
     #[error("building npiet with {compiler} failed: {message}")]
     Build { compiler: String, message: String },
@@ -275,9 +285,14 @@ fn e2e(args: &E2eArgs) -> Result<bool, Error> {
     if cases.is_empty() {
         return Err(Error::NoCaseDirectories(args.corpus.clone()));
     }
-    let Some(compiler) = aot::find_compiler(args.compiler.as_deref()) else {
-        return Err(Error::NoCompiler("rustc".to_owned()));
+    let runner = match &args.runner {
+        Some(path) => path.clone(),
+        None => find_runner()?,
     };
+    let runner_bytes = std::fs::read(&runner).map_err(|source| Error::Runner {
+        path: runner.clone(),
+        source,
+    })?;
 
     let mut checks = Checks::new();
     for case in &cases {
@@ -287,11 +302,36 @@ fn e2e(args: &E2eArgs) -> Result<bool, Error> {
         );
         checks.check(
             &name,
-            check_e2e(case, Some(&compiler), args.timeout_ms, args.division.into()),
+            check_e2e(case, args.timeout_ms, args.division.into(), &runner_bytes),
         );
     }
     eprintln!("{} cases, {} failed", checks.total(), checks.failures());
     Ok(!checks.passed())
+}
+
+fn find_runner() -> Result<PathBuf, Error> {
+    let name = format!("pietrs-runner{}", std::env::consts::EXE_SUFFIX);
+    let mut tried = Vec::new();
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        tried.push(directory.join(&name));
+        if directory.file_name().is_some_and(|name| name == "deps")
+            && let Some(parent) = directory.parent()
+        {
+            tried.push(parent.join(&name));
+        }
+    }
+    if let Some(path) = tried.iter().find(|path| path.is_file()) {
+        return Ok(path.clone());
+    }
+    Err(Error::MissingRunner(
+        tried
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    ))
 }
 
 fn case_directories(root: &Path) -> Result<Vec<PathBuf>, Error> {
@@ -311,9 +351,9 @@ fn case_directories(root: &Path) -> Result<Vec<PathBuf>, Error> {
 
 fn check_e2e(
     case: &Path,
-    compiler: Option<&str>,
     timeout_ms: u64,
     division: runtime::Division,
+    runner: &[u8],
 ) -> Result<(), String> {
     let image = case.join("program.png");
     let bytes = std::fs::read(&image)
@@ -363,7 +403,7 @@ fn check_e2e(
     let executable = directory
         .path()
         .join(format!("case{}", std::env::consts::EXE_SUFFIX));
-    aot::build(&blocks, &executable, max_steps, division, compiler)
+    aot::build(&blocks, &executable, max_steps, division, runner)
         .map_err(|error| format!("cannot build the executable: {error}"))?;
     let run = run_with_timeout(
         &mut Command::new(&executable),
