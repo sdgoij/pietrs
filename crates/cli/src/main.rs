@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use canvas::{Blocks, CodelGrid};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use interp::{ExitReason, Options, run, run_traced};
 use runtime::BufferIo;
 use tessera::{Start, StateGraph, start};
@@ -20,7 +20,7 @@ use tessera::{Start, StateGraph, start};
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -156,7 +156,10 @@ enum Error {
 }
 
 fn main() -> ExitCode {
-    let result = match Cli::parse().command {
+    let Some(command) = Cli::parse().command else {
+        return help();
+    };
+    let result = match command {
         Commands::Check(args) => check(&args).map(|()| ExitCode::SUCCESS),
         Commands::Trace(args) => trace(&args).map(|()| ExitCode::SUCCESS),
         Commands::Run(args) => run_program(&args),
@@ -170,6 +173,17 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A bare invocation is a request for help, so it succeeds.
+fn help() -> ExitCode {
+    let mut command = Cli::command();
+    if let Err(error) = command.print_help() {
+        eprintln!("pietrs: {error}");
+        return ExitCode::FAILURE;
+    }
+    println!();
+    ExitCode::SUCCESS
 }
 
 fn load(image: &ImageArgs) -> Result<CodelGrid, Error> {

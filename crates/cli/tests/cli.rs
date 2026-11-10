@@ -63,6 +63,14 @@ fn run_ok(command: &mut Command) -> Output {
 }
 
 #[test]
+fn a_bare_invocation_prints_help_and_succeeds() {
+    let output = run_ok(&mut pietrs());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Usage: pietrs"), "{stdout}");
+    assert!(stdout.contains("selftest"), "{stdout}");
+}
+
+#[test]
 fn check_reports_the_grid_and_blocks() {
     let dir = TempDir::new().unwrap();
     let mut rgba = Vec::new();
