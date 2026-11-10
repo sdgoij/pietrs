@@ -59,7 +59,14 @@ rfd = "0.17"
 # moves with it; one deliberate bump updates both.
 wasm-bindgen = "=0.2.130"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "=0.3.107", features = ["HtmlCanvasElement"] }
+js-sys = "=0.3.107"
+web-sys = { version = "=0.3.107", features = [
+    "Blob",
+    "BlobPropertyBag",
+    "HtmlAnchorElement",
+    "HtmlCanvasElement",
+    "Url",
+] }
 object = "0.40"
 gif = "0.14"
 png = "0.18"

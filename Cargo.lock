@@ -1784,6 +1784,7 @@ dependencies = [
  "eframe",
  "egui",
  "interp",
+ "js-sys",
  "rfd",
  "runtime",
  "tempfile",

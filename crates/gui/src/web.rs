@@ -1,9 +1,10 @@
 //! The browser shell: a canvas, the async dialogs, and the wasm entry.
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use crate::{EditorApp, FileRequest, IoResult, ThemeChoice};
@@ -12,7 +13,7 @@ use crate::{EditorApp, FileRequest, IoResult, ThemeChoice};
 #[wasm_bindgen]
 pub struct WebHandle {
     runner: eframe::WebRunner,
-    results: Rc<RefCell<Vec<IoResult>>>,
+    results: Rc<Cell<Vec<IoResult>>>,
 }
 
 #[wasm_bindgen]
@@ -71,16 +72,21 @@ impl Default for WebHandle {
     }
 }
 
+/// The queue between the dialog futures and the next frame.
+///
+/// A `Cell` rather than a `RefCell` on purpose: `take` and `set` cannot fail,
+/// so a future cannot hold a borrow across an `.await` and abort the module
+/// when the next frame tries to read the queue.
 struct WebApp {
     app: EditorApp,
-    results: Rc<RefCell<Vec<IoResult>>>,
+    results: Rc<Cell<Vec<IoResult>>>,
 }
 
 impl eframe::App for WebApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // A dialog resolves on a later frame; apply what arrived before the
         // draw, so the frame after the dialog already shows the new document.
-        for result in self.results.borrow_mut().drain(..) {
+        for result in self.results.take() {
             self.app.apply_io(result);
         }
 
@@ -92,7 +98,10 @@ impl eframe::App for WebApp {
         let results = Rc::clone(&self.results);
         let ctx = ui.ctx().clone();
         wasm_bindgen_futures::spawn_local(async move {
-            results.borrow_mut().push(service(request).await);
+            let result = service(request).await;
+            let mut queued = results.take();
+            queued.push(result);
+            results.set(queued);
             ctx.request_repaint();
         });
     }
@@ -102,13 +111,15 @@ impl eframe::App for WebApp {
     }
 }
 
-/// Runs one file dialog and whatever follows it.
+/// Runs one file operation.
 ///
-/// Always yields a result: a dismissed dialog is [`IoResult::Cancelled`], which
+/// Always yields a result: a dismissed picker is [`IoResult::Cancelled`], which
 /// is what clears the app's `io_pending` flag.
 async fn service(request: FileRequest) -> IoResult {
     match request {
         FileRequest::Open => {
+            // rfd renders an `<input type=file>` and clicks it, which opens the
+            // browser's picker while the click's user activation is still live.
             let Some(file) = rfd::AsyncFileDialog::new()
                 .add_filter("Piet image", &["png", "gif"])
                 .pick_file()
@@ -125,24 +136,53 @@ async fn service(request: FileRequest) -> IoResult {
             }
         }
         FileRequest::Save { path, bytes } => {
-            let mut dialog = rfd::AsyncFileDialog::new();
-            if let Some(name) = path
+            // No dialog: a Blob URL with `download` is the browser's save, and
+            // it completes without waiting for another click.
+            let name = path
                 .as_ref()
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
-            {
-                dialog = dialog.set_file_name(name);
-            }
-            // On the web this resolves immediately; `write` is the download.
-            let Some(file) = dialog.save_file().await else {
-                return IoResult::Cancelled;
-            };
-            match file.write(&bytes).await {
+                .unwrap_or("program.png")
+                .to_owned();
+            match download(&name, &bytes) {
                 Ok(()) => IoResult::Saved {
-                    path: Some(PathBuf::from(file.file_name())),
+                    path: Some(PathBuf::from(name)),
                 },
-                Err(error) => IoResult::Failed(error.to_string()),
+                Err(message) => IoResult::Failed(message),
             }
         }
     }
+}
+
+/// Hands `bytes` to the browser as a download called `name`.
+fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let document = window.document().ok_or("no document")?;
+    let body = document.body().ok_or("no body")?;
+
+    let parts = js_sys::Array::new();
+    parts.push(&js_sys::Uint8Array::new_from_slice(bytes).buffer());
+
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("image/png");
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+        .map_err(|_| "cannot build the download".to_owned())?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "cannot create the download URL".to_owned())?;
+
+    let anchor: web_sys::HtmlAnchorElement = document
+        .create_element("a")
+        .map_err(|_| "cannot create the download link".to_owned())?
+        .dyn_into()
+        .map_err(|_| "cannot create the download link".to_owned())?;
+    anchor.set_href(&url);
+    anchor.set_download(name);
+    body.append_child(&anchor)
+        .map_err(|_| "cannot attach the download link".to_owned())?;
+    anchor.click();
+    anchor.remove();
+    web_sys::Url::revoke_object_url(&url)
+        .map_err(|_| "cannot release the download URL".to_owned())?;
+
+    Ok(())
 }

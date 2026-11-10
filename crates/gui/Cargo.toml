@@ -25,6 +25,7 @@ eframe = { workspace = true, optional = true }
 rfd = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -38,6 +39,7 @@ web = [
     "dep:rfd",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
+    "dep:js-sys",
     "dep:web-sys",
 ]
 codegen = ["dep:codegen", "dep:aot"]

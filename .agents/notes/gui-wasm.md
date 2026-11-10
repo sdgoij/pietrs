@@ -25,7 +25,7 @@ build, and this note explains why that is structural, not a choice deferred.
 | Renderer | `glow` (WebGL2, falling back to WebGL1) | already the desktop backend; WebGPU is a second pipeline for no benefit |
 | File I/O | the **shell** owns dialogs and the filesystem; the app emits `FileRequest` and applies `IoResult` | async on the web, blocking on the desktop, one document model, no `cfg` in the app |
 | Open | `rfd::AsyncFileDialog::pick_file` → `FileHandle::read` | rfd's wasm backend renders its own `<input type=file>` overlay and resolves `None` on cancel |
-| Save | `rfd::AsyncFileDialog::save_file` → `FileHandle::write` (browser download) | no paths exist on the web; "Save" is always a download |
+| Save | a `Blob` URL plus an `<a download>` click | no paths exist on the web, and a download needs no dialog; rfd's save surface adds an overlay and blocks the editor until it is dismissed |
 | Time | `web-time` inside `editor` | `std::time::Instant::now()` panics on `wasm32-unknown-unknown`; `Duration` is the same type |
 | Codegen | the `web` feature never enables `codegen` | `cranelift-jit` does not build for wasm32 (it needs executable memory and `region`) |
 | Tooling | `wasm-bindgen-cli` at the crate's exact version, driven by `cargo run -p xtask -- wasm` | one pinned tool, an explicit failure when the versions differ; Trunk's auto-matching is convenience we do not need |
@@ -213,7 +213,10 @@ where the filesystem now lives.
 ### The web shell
 
 The dialog resolves on a later tick, so the result comes back through an
-`Rc<RefCell<Vec<IoResult>>>` that `ui` drains before it draws:
+`Rc<Cell<Vec<IoResult>>>` that `ui` drains before it draws. It is a `Cell`, not
+a `RefCell`, so `take` and `set` cannot fail: an earlier `RefCell` version held
+its borrow across the `.await` in one statement and aborted the module with
+`RefCell already borrowed` on the next frame.
 
 ```rust
 impl eframe::App for WebApp {
@@ -227,9 +230,10 @@ impl eframe::App for WebApp {
             let results = Rc::clone(&self.results);
             let ctx = ui.ctx().clone();
             wasm_bindgen_futures::spawn_local(async move {
-                if let Some(result) = service(request).await {
-                    results.borrow_mut().push(result);
-                }
+                let result = service(request).await;
+                let mut queued = results.take();
+                queued.push(result);
+                results.set(queued);
                 ctx.request_repaint();
             });
         }
@@ -244,31 +248,34 @@ impl eframe::App for WebApp {
 `service` is the only browser-specific code, and it never touches the app:
 
 ```rust
-async fn service(request: FileRequest) -> Option<IoResult> {
+async fn service(request: FileRequest) -> IoResult {
     match request {
         FileRequest::Open => {
-            let file = rfd::AsyncFileDialog::new()
+            let Some(file) = rfd::AsyncFileDialog::new()
                 .add_filter("Piet image", &["png", "gif"])
                 .pick_file()
-                .await?;                       // None when the user cancels
+                .await
+            else {
+                return IoResult::Cancelled;
+            };
             let name = file.file_name();
             let bytes = file.read().await;
-            Some(IoResult::Opened { bytes, path: Some(name.into()) })
+            IoResult::Opened { bytes, path: Some(name.into()) }
         }
         FileRequest::Save { path, bytes } => {
-            let name = /* the path's file name, or "untitled.png" */;
-            let file = rfd::AsyncFileDialog::new()
-                .set_file_name(name)
-                .save_file()
-                .await?;                       // on wasm: resolves immediately
-            match file.write(&bytes).await {   // triggers the browser download
-                Ok(()) => Some(IoResult::Saved { path }),
-                Err(error) => Some(IoResult::Failed(error.to_string())),
+            let name = /* the path's file name, or "program.png" */;
+            match download(name, &bytes) {
+                Ok(()) => IoResult::Saved { path: Some(name.into()) },
+                Err(message) => IoResult::Failed(message),
             }
         }
     }
 }
 ```
+
+`download` is ten lines: a `Blob` from a `Uint8Array`, an object URL, an
+`<a download>` that is clicked and removed, and `revoke_object_url`. It never
+waits, so `io_pending` clears on the next frame with no extra click.
 
 Two browser facts to record in the code, not discover later:
 
@@ -276,10 +283,10 @@ Two browser facts to record in the code, not discover later:
   document's `path` becomes a display name: the title bar, the save dialog's
   suggested name, and nothing else. Opening `report.png` twice looks identical,
   and there is no "same file on disk" notion.
-- **Cancelling a save is invisible.** `save_file` resolves before the browser
-  asks where to put the file, and `write` cannot report a cancel. The document
-  is marked clean after `write` returns `Ok`. This is documented in the shell;
-  it is the price of the download model.
+- **Saving is a download, and the browser owns the name.** The `Blob` URL
+  carries the document's name, but the browser may rename it to avoid a clash,
+  and it picks the directory. The editor records the suggested name and marks
+  the document clean immediately; nothing on the page waits for the user.
 
 ## The web entry point
 
@@ -292,7 +299,7 @@ rlib, and only the wasm build links the cdylib.
 #[wasm_bindgen]
 pub struct WebHandle {
     runner: eframe::WebRunner,
-    results: Rc<RefCell<Vec<IoResult>>>,
+    results: Rc<Cell<Vec<IoResult>>>,
 }
 
 #[wasm_bindgen]
@@ -451,25 +458,34 @@ The output is `target/web/index.html` plus `pietrs.js`, `pietrs_bg.wasm`, and
 | Integration | `gui/native.rs` | the temp-file write/open round trip (moved from `app.rs`) |
 | Build | gate | `cargo build -p gui --no-default-features --features web --target wasm32-unknown-unknown` (debug profile: the gate proves the target links, and a release build adds minutes to every leg for no extra coverage) |
 | Manual | `xtask wasm` + a browser | paint, step, run, breakpoints, open a PNG, save a PNG, switch the theme, reload and confirm the theme persisted, resize the window |
-| Smoke | `xtask wasm` + headless Edge | the page boots, sizes the canvas, and runs frames without panicking |
+| Smoke | `xtask wasm` + headless Edge | the page boots, then open, save, and open again through the real dialogs with no exception |
 | Not in the gate | — | `wasm-bindgen-test` in a headless browser |
 
-The browser test is deliberately out. It needs chromedriver or geckodriver on
-every runner, it tests the same `EditorApp` the headless frame tests already
-drive, and the wasm-only code is `WebHandle` (four delegating methods) and the
-`service` function (two rfd calls). The honest coverage is: put every rule in
-`EditorApp`, unit-test it there, and keep `web.rs` too small to hide a bug.
-If browser tests are ever wanted, `cargo run -p xtask -- wasm-test` is the
-natural home and still not a gate.
+The browser test is deliberately out of the gate: it needs chromedriver or
+geckodriver on every runner. The rule is still to put every decision in
+`EditorApp`, unit-test it there, and keep `web.rs` to plumbing.
 
-What was run once, by hand, is a headless smoke test. Serve `target/web` over
-HTTP and let `msedge --headless=new --enable-unsafe-swiftshader
---virtual-time-budget=6000 --dump-dom` load the page: the canvas comes back with
-eframe's `tabindex` and a real `width`/`height`, the `#error` element stays
-hidden, and a probe that calls `has_panicked()` after three seconds reports
-`false`. That covers module load, WebGL context creation, the first frames, and
-the absence of a panic; it does not cover the dialogs or the painting, which
-need a person and a mouse.
+`web.rs` did hide a bug the host gate could never see, though. The first browser
+build panicked with `RefCell already borrowed` as soon as a dialog opened:
+`results.borrow_mut().push(service(request).await)` keeps the `RefMut` alive
+across the suspension point, so the next frame's drain panicked, and wasm has no
+unwinding, so the whole module aborted and the page froze. The fix is structural
+— the queue is a `Cell`, where `take`/`set` cannot be held — but only a browser
+could have shown it.
+
+The harness that catches it is a DevTools driver, run by hand:
+
+1. `cargo run -p xtask -- wasm`, serve `target/web` over HTTP.
+2. `msedge --headless=new --enable-unsafe-swiftshader --remote-debugging-port=9223`
+   on the page, then connect to `/json/list` and `Runtime.enable`.
+3. Reload, press Ctrl+O, click Discard in the confirm window, then
+   `DOM.setFileInputFiles` on `#rfd-input` with a corpus PNG.
+4. Press Ctrl+S, then Ctrl+O again and pick a second PNG.
+5. Assert no `Runtime.exceptionThrown`, and check the screenshot at each step.
+
+That is not a gate — it needs a browser — but it is how a change to `web.rs` is
+verified, and it is what a `wasm-bindgen-test` job would automate if one is ever
+added.
 
 The existing perf case in `editor` (partition plus analysis for a 512x512
 document) is a host measurement and stays on the host. A browser repaint of a
@@ -508,8 +524,9 @@ Workspace additions:
 web-time = "1.1"
 wasm-bindgen = "=0.2.130"
 wasm-bindgen-futures = "0.4"
+js-sys = "=0.3.107"
 web-sys = { version = "=0.3.107", features = [
-    "Document", "HtmlCanvasElement", "Window",
+    "Blob", "BlobPropertyBag", "HtmlAnchorElement", "HtmlCanvasElement", "Url",
 ] }
 ```
 
@@ -524,12 +541,13 @@ eframe = { workspace = true, optional = true }
 rfd = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true }
 
 [features]
 default = ["native", "codegen"]
 native  = ["dep:eframe", "dep:rfd"]
-web     = ["dep:eframe", "dep:rfd", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
+web     = ["dep:eframe", "dep:rfd", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 codegen = ["dep:codegen", "dep:aot"]
 ```
 
@@ -564,10 +582,12 @@ crates.
    always a download. A user who edits the same file twice ends up with
    `report.png` and `report (1).png`; that is the browser's model, and the shell
    documents it rather than pretending otherwise.
-5. **Cancelling a save looks like success.** `save_file` resolves before the
-   browser prompts, and `write` cannot report a cancel. The document is marked
-   clean. Accepted and documented; the alternative is the File System Access
-   API, which is not portable and needs a user gesture per handle.
+5. **A panicking future aborts the whole module.** wasm has no unwinding, so a
+   Rust panic anywhere — including inside a spawned dialog future — becomes
+   `unreachable` and the page stops. One such panic shipped in the first
+   browser build: a `RefCell` borrow held across an `.await`. The queue is a
+   `Cell` now, which cannot be borrowed at all, and the end-to-end harness below
+   is what caught it.
 6. **The dialog race.** The native dialog blocks the frame; the web dialog does
    not. `io_pending` freezes edits while a request is outstanding, and a test
    proves the freeze.
@@ -623,10 +643,20 @@ Landed, with the full gate green after each step:
   the exact command that fixes them.
 - `08-wasm.sh` joins the gate on all three runners; `cargo deny` needed no
   change, as predicted; the README has a browser section and a gate table row.
-- The bundle was loaded in headless Edge: the canvas was sized by eframe, the
-  error element stayed hidden, and a probe reported `panicked=false` after
-  three seconds. Painting, the dialogs, and the theme round trip still want a
-  person.
+
+Found and fixed while testing the bundle in a browser:
+
+- Opening a file panicked with `RefCell already borrowed`. One statement held
+  the result queue's borrow across an `.await`, so the next frame's drain
+  panicked; wasm has no unwinding, so the module aborted and the page froze.
+  The queue is a `Cell` now, where a borrow cannot be held at all.
+- Saving went through rfd's overlay, which waited for a second click and left
+  the editor frozen behind it. Save is a `Blob` URL plus an `<a download>` now:
+  one click, no overlay, and `io_pending` clears on the next frame.
+
+The end-to-end flow was then run over DevTools: open a PNG, save it, open a
+second PNG, with no exception at any step. Painting and the theme round trip
+still want a person and a mouse.
 
 Still open: the two questions below.
 
