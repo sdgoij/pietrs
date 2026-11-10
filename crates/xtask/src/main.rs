@@ -346,6 +346,26 @@ fn check_e2e(
                 .map_err(|error| format!("invalid max_steps: {error}"))
         })
         .transpose()?;
+    let expected_trace = std::fs::read_to_string(case.join("expected.trace"))
+        .map_err(|error| format!("cannot read expected.trace: {error}"))?;
+
+    let options = Options {
+        max_steps,
+        division,
+        ..Options::default()
+    };
+    let mut trace_io = BufferIo::new(input.as_str());
+    let (_, trace) =
+        interp::run_traced(&blocks, &mut trace_io, &options).map_err(|error| error.to_string())?;
+    let actual_trace: String = trace.iter().map(|step| format!("{step}\n")).collect();
+    if actual_trace != expected_trace {
+        let first = actual_trace
+            .lines()
+            .zip(expected_trace.lines())
+            .take_while(|(actual, expected)| actual == expected)
+            .count();
+        return Err(format!("trace differs at line {}", first + 1));
+    }
 
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let executable = directory

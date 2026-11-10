@@ -254,16 +254,7 @@ fn trace(args: &TraceArgs) -> Result<(), Error> {
     };
     let (result, trace) = run_traced(&blocks, &mut io, &options)?;
     for step in trace {
-        let command = step
-            .command
-            .map_or_else(|| "none".to_owned(), |command| format!("{command:?}"));
-        let target = step
-            .target
-            .map_or_else(|| "none".to_owned(), |target| target.0.to_string());
-        println!(
-            "block={} dp={:?} cc={:?} command={command} target={target}",
-            step.block.0, step.dp, step.cc
-        );
+        println!("{step}");
     }
     eprintln!("{} steps: {:?}", result.steps, result.reason);
     if !io.output().is_empty() {

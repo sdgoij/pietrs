@@ -209,6 +209,34 @@ fn trace_prints_the_transitions() {
 }
 
 #[test]
+fn trace_matches_every_corpus_golden() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../xtask/fixtures");
+    let mut cases: Vec<std::path::PathBuf> = std::fs::read_dir(&corpus)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("program.png").is_file())
+        .collect();
+    cases.sort();
+    assert!(!cases.is_empty(), "no corpus cases");
+
+    for case in cases {
+        let name = case.file_name().unwrap().to_string_lossy().into_owned();
+        let program = case.join("program.png");
+        let expected = std::fs::read(case.join("expected.trace"))
+            .unwrap_or_else(|error| panic!("{name}: cannot read expected.trace: {error}"));
+        let max_steps = std::fs::read_to_string(case.join("max_steps"))
+            .map_or_else(|_| "100000".to_owned(), |text| text.trim().to_owned());
+        let output = run_ok(pietrs().args([
+            "trace",
+            program.to_str().unwrap(),
+            "--max-steps",
+            &max_steps,
+        ]));
+        assert_eq!(output.stdout, expected, "trace differs for {name}");
+    }
+}
+
+#[test]
 fn the_codel_size_override_is_honoured() {
     let dir = TempDir::new().unwrap();
     let rgba: Vec<u8> = [RED, GREEN, BLUE, WHITE].into_iter().flatten().collect();

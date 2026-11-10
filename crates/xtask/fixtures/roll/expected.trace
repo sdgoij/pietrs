@@ -1,0 +1,9 @@
+block=0 dp=Right cc=Left command=InNumber target=1
+block=1 dp=Right cc=Left command=InNumber target=2
+block=2 dp=Right cc=Left command=InNumber target=3
+block=3 dp=Right cc=Left command=InNumber target=4
+block=4 dp=Right cc=Left command=InNumber target=5
+block=5 dp=Right cc=Left command=Roll target=6
+block=6 dp=Right cc=Left command=OutNumber target=7
+block=7 dp=Right cc=Left command=OutNumber target=8
+block=8 dp=Right cc=Left command=OutNumber target=9

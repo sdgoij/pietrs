@@ -6,7 +6,8 @@ Each case is a directory with:
 - `stdin` — optional program input;
 - `max_steps` — optional transition limit, baked into the AOT executable;
 - `expected.stdout` — the exact bytes the program prints;
-- `expected.exit` — optional exit status, default `0`.
+- `expected.exit` — optional exit status, default `0`;
+- `expected.trace` — the interpreter's transition trace, required.
 
 The same corpus drives all three gates:
 
@@ -18,7 +19,8 @@ cargo run -p xtask -- e2e         crates/xtask/fixtures
 
 `selftest` compares `interp`, the JIT, and the linked executable; `conformance`
 compares the interpreter with npiet v1.3h; `e2e` compares the linked executable
-with the goldens. `conformance` defaults to `--division truncating` to match
+with the goldens and the interpreter's trace with `expected.trace`. `conformance`
+defaults to `--division truncating` to match
 npiet; `selftest` and `e2e` default to `floored`. A case whose output depends on
 rounding needs a mode-specific golden or should stay out of the shared corpus.
 Values outside 32-bit range and non-ASCII character I/O remain npiet

@@ -1,6 +1,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 //! The reference interpreter: walk the tessellation flow and apply commands.
 
+use std::fmt;
+
 use canvas::Blocks;
 use runtime::{Division, Io, Stack, Value, greater, not};
 use tessera::{Chooser, Command, Direction, Exit, Start, State, start};
@@ -45,6 +47,25 @@ pub struct Step {
     pub cc: Chooser,
     pub command: Option<Command>,
     pub target: Option<canvas::BlockId>,
+}
+
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "block={} dp={:?} cc={:?} command=",
+            self.block.0, self.dp, self.cc
+        )?;
+        match self.command {
+            Some(command) => write!(f, "{command:?}")?,
+            None => write!(f, "none")?,
+        }
+        write!(f, " target=")?;
+        match self.target {
+            Some(target) => write!(f, "{}", target.0),
+            None => write!(f, "none"),
+        }
+    }
 }
 
 /// A runtime failure that is not ignored by the specification.
@@ -500,5 +521,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stack.as_slice(), &[1]);
+    }
+
+    #[test]
+    fn a_step_displays_the_transition() {
+        let step = Step {
+            block: canvas::BlockId(3),
+            dp: Direction::Down,
+            cc: Chooser::Right,
+            command: Some(Command::OutChar),
+            target: Some(canvas::BlockId(7)),
+        };
+        assert_eq!(
+            step.to_string(),
+            "block=3 dp=Down cc=Right command=OutChar target=7"
+        );
+
+        let terminal = Step {
+            block: canvas::BlockId(1),
+            dp: Direction::Up,
+            cc: Chooser::Left,
+            command: None,
+            target: None,
+        };
+        assert_eq!(
+            terminal.to_string(),
+            "block=1 dp=Up cc=Left command=none target=none"
+        );
     }
 }

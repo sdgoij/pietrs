@@ -1,0 +1,2 @@
+block=0 dp=Right cc=Left command=Push target=1
+block=1 dp=Right cc=Left command=OutChar target=2

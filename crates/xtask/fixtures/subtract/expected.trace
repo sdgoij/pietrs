@@ -1,0 +1,4 @@
+block=0 dp=Right cc=Left command=InNumber target=1
+block=1 dp=Right cc=Left command=InNumber target=2
+block=2 dp=Right cc=Left command=Subtract target=3
+block=3 dp=Right cc=Left command=OutNumber target=4
