@@ -59,6 +59,15 @@ data cache and invalidates the instruction cache (`ctr_el0`, `dc cvau`,
 The output suffix follows the target, not the host: a Linux ELF built on Windows
 has no `.exe`.
 
+An executable built for a foreign target cannot be exercised on the host that
+built it, so `pietrs selftest` and `xtask e2e` stay host-only; a cross build is
+verified by its format (ELF magic, `e_machine`, the payload architecture in the
+footer) until it runs on real hardware or an emulator.
+
+`aarch64-apple-darwin` is available only when it is the host. A Mach-O runner
+needs libSystem, so cross-linking it from Windows or Linux would need the macOS
+SDK, which is not vendored.
+
 The loader source is shared with `crates/runner`, which includes it as a module
 so the payload can be executed in-process by the `aot` tests. The `aot` library
 uses an empty runner under the `rust_analyzer` cfg, because rust-analyzer does

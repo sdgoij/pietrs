@@ -111,6 +111,10 @@ struct BuildArgs {
     #[arg(long, value_enum, default_value = "floored")]
     division: DivisionArg,
     /// Emit for this target triple instead of the host.
+    ///
+    /// The embedded runners cover the host, `x86_64-unknown-linux-gnu`, and
+    /// `aarch64-unknown-linux-gnu`; the GNU triples run the static musl
+    /// artifacts unchanged.
     #[arg(long)]
     target: Option<String>,
 }

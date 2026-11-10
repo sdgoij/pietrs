@@ -278,6 +278,15 @@ fn selftest_without_cases_is_a_diagnostic() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("no .png cases"));
 }
 
+#[test]
+fn build_help_names_the_cross_targets() {
+    let output = run_ok(pietrs().args(["build", "--help"]));
+    let text = String::from_utf8_lossy(&output.stdout);
+    for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+        assert!(text.contains(target), "{text}");
+    }
+}
+
 #[cfg(feature = "codegen")]
 #[test]
 fn build_produces_a_runnable_executable() {
