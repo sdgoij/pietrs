@@ -1,14 +1,12 @@
 //! The egui view, with no window types.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use canvas::{BlockId, CodelGrid, Color, Hue, Lightness, Point};
 use editor::{Analysis, Breakpoints, Budget, Document, Session, Stop};
 use egui::{CornerRadius, TextureHandle, TextureOptions, ThemePreference};
 use interp::Options;
 use tessera::{Exit, Start, State};
-
-use crate::FileError;
 
 #[cfg(feature = "codegen")]
 use runtime::BufferIo;
@@ -81,6 +79,37 @@ enum Pending {
     Open,
 }
 
+/// A file operation the app cannot perform itself.
+///
+/// The shell owns every dialog and every filesystem access; the app only says
+/// what it needs. The PNG is encoded when the request is made, not when the
+/// dialog closes, so a slow dialog cannot change what gets saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileRequest {
+    /// Pick an image and hand its bytes back through [`EditorApp::apply_io`].
+    Open,
+    /// Write these bytes; `path` is the current file, if there is one.
+    Save {
+        path: Option<PathBuf>,
+        bytes: Vec<u8>,
+    },
+}
+
+/// The outcome of a [`FileRequest`], applied on a later frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IoResult {
+    Opened {
+        bytes: Vec<u8>,
+        path: Option<PathBuf>,
+    },
+    Saved {
+        path: Option<PathBuf>,
+    },
+    /// The user dismissed the dialog; the document is unchanged.
+    Cancelled,
+    Failed(String),
+}
+
 #[cfg(feature = "codegen")]
 #[derive(Default)]
 struct CompilerState {
@@ -144,6 +173,8 @@ pub struct EditorApp {
     dirty: bool,
     window_title: String,
     pending: Option<Pending>,
+    request: Option<FileRequest>,
+    io_pending: bool,
     new_open: bool,
     new_width: u32,
     new_height: u32,
@@ -188,6 +219,8 @@ impl EditorApp {
             dirty,
             window_title: String::new(),
             pending: None,
+            request: None,
+            io_pending: false,
             new_open: false,
             new_width: 32,
             new_height: 32,
@@ -321,8 +354,19 @@ impl EditorApp {
         self.dirty
     }
 
+    /// The document's file name, for the title bar and the save dialog.
+    pub fn file_name(&self) -> Option<&str> {
+        self.path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+    }
+
     /// Starts a freehand stroke.
     pub fn begin_edit(&mut self) {
+        if self.io_pending {
+            return;
+        }
         self.document.begin_stroke();
         self.stroke_active = true;
         self.stroke_changed = false;
@@ -332,6 +376,9 @@ impl EditorApp {
     /// Paints from the previous point to this one, so a fast drag leaves no
     /// gaps between sampled codels.
     pub fn paint_to(&mut self, point: Point) {
+        if self.io_pending {
+            return;
+        }
         if !self.stroke_active {
             self.begin_edit();
         }
@@ -356,6 +403,9 @@ impl EditorApp {
     }
 
     pub fn fill_at(&mut self, point: Point) {
+        if self.io_pending {
+            return;
+        }
         if self.document.fill(point, self.colour) {
             self.after_edit();
         }
@@ -369,6 +419,9 @@ impl EditorApp {
 
     /// Paints the inclusive rectangle in one undo entry.
     pub fn apply_rect(&mut self, from: Point, to: Point) {
+        if self.io_pending {
+            return;
+        }
         self.document.begin_stroke();
         let mut changed = false;
         for y in from.y.min(to.y)..=from.y.max(to.y) {
@@ -383,6 +436,9 @@ impl EditorApp {
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.io_pending {
+            return false;
+        }
         if self.stroke_active {
             self.stroke_active = false;
             self.stroke_changed = false;
@@ -397,6 +453,9 @@ impl EditorApp {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.io_pending {
+            return false;
+        }
         if !self.document.redo() {
             return false;
         }
@@ -406,6 +465,9 @@ impl EditorApp {
 
     /// Replaces the document with a blank one at `width` x `height`.
     pub fn new_document(&mut self, width: u32, height: u32) {
+        if self.io_pending {
+            return;
+        }
         let document = match Document::new(width, height) {
             Ok(document) => document,
             Err(error) => {
@@ -442,41 +504,49 @@ impl EditorApp {
         self.adopt(grid, path)
     }
 
-    pub fn open_file(&mut self, path: &Path) -> Result<(), FileError> {
-        self.open_file_with_codel_size(path, None)
-    }
-
-    pub fn open_file_with_codel_size(
-        &mut self,
-        path: &Path,
-        codel_size: Option<u32>,
-    ) -> Result<(), FileError> {
-        let bytes = std::fs::read(path).map_err(|source| FileError::Read {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let owned = path.to_path_buf();
-        match codel_size {
-            Some(size) => self.open_bytes_with_codel_size(&bytes, size, Some(owned)),
-            None => self.open_bytes(&bytes, Some(owned)),
-        }?;
-        Ok(())
-    }
-
     pub fn export_png(&self) -> Result<Vec<u8>, canvas::Error> {
         self.document.to_grid()?.encode_png()
     }
 
-    /// Writes the document as a PNG and makes `path` the current file.
-    pub fn save_to(&mut self, path: &Path) -> Result<(), FileError> {
-        let bytes = self.export_png()?;
-        std::fs::write(path, bytes).map_err(|source| FileError::Write {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        self.path = Some(path.to_path_buf());
-        self.dirty = false;
-        Ok(())
+    /// Drains the file operation the app needs, if there is one.
+    ///
+    /// The shell performs it and returns the outcome through [`Self::apply_io`].
+    /// While a request is outstanding edits are refused, because on the web the
+    /// dialog resolves long after the click that asked for it.
+    pub fn take_request(&mut self) -> Option<FileRequest> {
+        let request = self.request.take();
+        if request.is_some() {
+            self.io_pending = true;
+        }
+        request
+    }
+
+    /// Whether a file operation is in flight.
+    ///
+    /// While it is, every method that changes the document is refused. On the
+    /// desktop the request completes inside the click that made it, so the gap
+    /// never exists; on the web the dialog resolves several frames later, and
+    /// an edit made in between must not be discarded by the arriving file.
+    pub fn io_pending(&self) -> bool {
+        self.io_pending
+    }
+
+    /// Applies what the shell did with a [`FileRequest`].
+    pub fn apply_io(&mut self, result: IoResult) {
+        self.io_pending = false;
+        match result {
+            IoResult::Opened { bytes, path } => match self.open_bytes(&bytes, path) {
+                Ok(()) => self.last_error = None,
+                Err(error) => self.last_error = Some(error.to_string()),
+            },
+            IoResult::Saved { path } => {
+                self.path = path;
+                self.dirty = false;
+                self.last_error = None;
+            }
+            IoResult::Cancelled => {}
+            IoResult::Failed(message) => self.last_error = Some(message),
+        }
     }
 
     fn adopt(&mut self, grid: CodelGrid, path: Option<PathBuf>) -> Result<(), canvas::Error> {
@@ -512,6 +582,9 @@ impl EditorApp {
 
     /// Resizes the document, anchored at the upper-left. New codels are white.
     pub fn resize_document(&mut self, width: u32, height: u32) {
+        if self.io_pending {
+            return;
+        }
         match self.document.resize(width, height) {
             Ok(true) => self.after_edit(),
             Ok(false) => {}
@@ -520,6 +593,9 @@ impl EditorApp {
     }
 
     fn request_new(&mut self) {
+        if self.io_pending {
+            return;
+        }
         if self.dirty {
             self.pending = Some(Pending::New);
         } else {
@@ -528,73 +604,32 @@ impl EditorApp {
     }
 
     fn request_open(&mut self) {
+        if self.io_pending {
+            return;
+        }
         if self.dirty {
             self.pending = Some(Pending::Open);
         } else {
-            self.open_dialog();
+            self.request = Some(FileRequest::Open);
         }
     }
 
     fn save(&mut self) {
-        match self.path.clone() {
-            Some(path) => self.save_or_report(&path),
-            None => self.save_dialog(),
-        }
+        self.request_save(self.path.clone());
     }
 
     fn save_as(&mut self) {
-        self.save_dialog();
+        self.request_save(None);
     }
 
-    fn save_or_report(&mut self, path: &Path) {
-        match self.save_to(path) {
-            Ok(()) => self.last_error = None,
+    fn request_save(&mut self, path: Option<PathBuf>) {
+        if self.io_pending {
+            return;
+        }
+        match self.export_png() {
+            Ok(bytes) => self.request = Some(FileRequest::Save { path, bytes }),
             Err(error) => self.last_error = Some(error.to_string()),
         }
-    }
-
-    #[cfg(feature = "native")]
-    fn open_dialog(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Piet image", &["png", "gif"])
-            .pick_file()
-        else {
-            return;
-        };
-        match self.open_file(&path) {
-            Ok(()) => self.last_error = None,
-            Err(error) => self.last_error = Some(error.to_string()),
-        }
-    }
-
-    #[cfg(not(feature = "native"))]
-    fn open_dialog(&mut self) {
-        self.last_error = Some("file dialogs need the native feature".to_owned());
-    }
-
-    #[cfg(feature = "native")]
-    fn save_dialog(&mut self) {
-        let mut dialog = rfd::FileDialog::new().add_filter("PNG", &["png"]);
-        if let Some(name) = self
-            .path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
-        {
-            dialog = dialog.set_file_name(name);
-        }
-        let Some(mut path) = dialog.save_file() else {
-            return;
-        };
-        if path.extension().is_none() {
-            path.set_extension("png");
-        }
-        self.save_or_report(&path);
-    }
-
-    #[cfg(not(feature = "native"))]
-    fn save_dialog(&mut self) {
-        self.last_error = Some("file dialogs need the native feature".to_owned());
     }
 
     fn confirm_discard(&mut self, ctx: &egui::Context) {
@@ -621,7 +656,7 @@ impl EditorApp {
             self.pending = None;
             match pending {
                 Pending::New => self.new_open = true,
-                Pending::Open => self.open_dialog(),
+                Pending::Open => self.request = Some(FileRequest::Open),
             }
         } else if cancel {
             self.pending = None;
@@ -955,12 +990,7 @@ impl EditorApp {
     }
 
     fn title(&self) -> String {
-        self.path
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
-            .unwrap_or("untitled")
-            .to_owned()
+        self.file_name().unwrap_or("untitled").to_owned()
     }
 
     fn tools(&mut self, ui: &mut egui::Ui) {
@@ -1900,29 +1930,110 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_png_reopens_the_same_document() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("program.png");
+    fn a_clean_document_asks_to_open_and_a_dirty_one_asks_first() {
+        let mut clean =
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("x.png"))).unwrap();
+        clean.request_open();
+        assert_eq!(clean.take_request(), Some(FileRequest::Open));
 
+        let mut dirty = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        dirty.request_open();
+        assert_eq!(dirty.take_request(), None);
+        assert_eq!(dirty.pending, Some(Pending::Open));
+    }
+
+    #[test]
+    fn saving_carries_the_current_path_and_the_png() {
         let mut app =
-            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("start.png"))).unwrap();
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("x.png"))).unwrap();
         app.set_colour(Color::Black);
         app.fill_at(Point::new(0, 0));
-        assert!(app.is_dirty());
-        app.save_to(&path).unwrap();
-        assert!(!app.is_dirty());
 
-        let mut reopened = EditorApp::new(small_document(&["rrr"]), None).unwrap();
-        reopened.open_file(&path).unwrap();
-        assert_eq!(reopened.document().width(), 2);
-        assert_eq!(reopened.document().height(), 1);
+        app.save();
+        let Some(FileRequest::Save { path, bytes }) = app.take_request() else {
+            panic!("expected a save request");
+        };
+        assert_eq!(path, Some(PathBuf::from("x.png")));
+
+        let mut reopened = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        reopened.open_bytes(&bytes, None).unwrap();
         assert_eq!(
             reopened.document().color(Point::new(0, 0)),
             Some(Color::Black)
         );
-        assert_eq!(reopened.document().color(Point::new(1, 0)), Some(green()));
-        assert!(!reopened.is_dirty());
-        assert!(reopened.session().is_none());
+    }
+
+    #[test]
+    fn save_as_asks_for_a_name() {
+        let mut app =
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("x.png"))).unwrap();
+        app.save_as();
+        match app.take_request() {
+            Some(FileRequest::Save { path, .. }) => assert_eq!(path, None),
+            other => panic!("expected a save request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edits_are_refused_while_a_request_is_in_flight() {
+        let mut app =
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("x.png"))).unwrap();
+        app.set_colour(Color::Black);
+        app.request_open();
+        assert!(app.take_request().is_some());
+        assert!(app.io_pending());
+
+        app.begin_edit();
+        app.paint_to(Point::new(0, 0));
+        app.end_edit();
+        assert_eq!(app.document().color(Point::new(0, 0)), Some(red()));
+        assert!(!app.undo());
+        app.resize_document(9, 9);
+        assert_eq!(app.document().width(), 2);
+        assert!(!app.is_dirty());
+
+        // A second request is refused too, so two dialogs cannot overlap.
+        app.request_open();
+        assert_eq!(app.take_request(), None);
+
+        app.apply_io(IoResult::Cancelled);
+        assert!(!app.io_pending());
+        app.begin_edit();
+        app.paint_to(Point::new(0, 0));
+        app.end_edit();
+        assert_eq!(app.document().color(Point::new(0, 0)), Some(Color::Black));
+    }
+
+    #[test]
+    fn an_opened_result_adopts_the_file_and_marks_it_clean() {
+        let png = CodelGrid::from_colors(1, 1, vec![Color::Black])
+            .unwrap()
+            .encode_png()
+            .unwrap();
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        assert!(app.is_dirty());
+
+        app.apply_io(IoResult::Opened {
+            bytes: png,
+            path: Some(PathBuf::from("other.png")),
+        });
+        assert_eq!(app.document().width(), 1);
+        assert_eq!(app.document().color(Point::new(0, 0)), Some(Color::Black));
+        assert!(!app.is_dirty());
+        assert_eq!(app.file_name(), Some("other.png"));
+        assert!(!app.io_pending());
+    }
+
+    #[test]
+    fn a_failed_request_reports_and_unblocks() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        app.request_save(Some(PathBuf::from("x.png")));
+        assert!(app.take_request().is_some());
+
+        app.apply_io(IoResult::Failed("disk full".to_owned()));
+        assert!(!app.io_pending());
+        assert_eq!(app.last_error.as_deref(), Some("disk full"));
+        assert!(app.is_dirty(), "a failed save is not a save");
     }
 
     #[test]
