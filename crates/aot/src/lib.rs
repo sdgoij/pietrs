@@ -131,15 +131,24 @@ mod tests {
         assert_eq!(resolve(HOST_TARGET).unwrap(), (HOST_TARGET, HOST_TARGET));
     }
 
+    /// A GNU Linux triple has no runner of its own unless the host *is* that
+    /// triple, so it selects the static musl artifact. On a GNU Linux host the
+    /// gnu triple is the host, and the host runner is the one that exists.
     #[test]
-    fn a_gnu_linux_target_selects_the_musl_artifact() {
-        for (gnu, musl) in [
+    fn a_gnu_linux_target_selects_the_artifact_that_is_embedded() {
+        for (target, musl) in [
             ("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"),
             ("aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl"),
             ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-musl"),
             ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-musl"),
         ] {
-            assert_eq!(resolve(gnu).unwrap(), (musl, musl), "{gnu}");
+            let (runner, codegen) = resolve(target).unwrap();
+            let (expected, expected_codegen) = if target == HOST_TARGET {
+                (HOST_TARGET, HOST_TARGET)
+            } else {
+                (musl, musl)
+            };
+            assert_eq!((runner, codegen), (expected, expected_codegen), "{target}");
         }
     }
 
