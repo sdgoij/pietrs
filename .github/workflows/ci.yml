@@ -52,11 +52,11 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup show
       # `aot/build.rs` cross-compiles a runner for both musl targets on every
-      # host, so both standard libraries have to be present. The toolchain file
-      # lists them; naming them here means an image that already has the
-      # toolchain cannot leave them out.
-      - name: Add the musl targets
-        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+      # host, and the wasm gate links the editor for `wasm32-unknown-unknown`.
+      # The toolchain file lists all three; naming them here means an image
+      # that already has the toolchain cannot leave them out.
+      - name: Add the cross targets
+        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # The licence case runs `cargo deny`, so it has to be on the path. A
       # prebuilt binary is a download; `cargo install` is a two-minute compile

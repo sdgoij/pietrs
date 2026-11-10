@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pietrs</title>
+    <link rel="stylesheet" href="pietrs.css">
+  </head>
+  <body>
+    <canvas id="pietrs"></canvas>
+    <div id="error" hidden></div>
+    <script type="module">
+      import init, { WebHandle } from "./pietrs.js";
+
+      const show = (message) => {
+        const box = document.getElementById("error");
+        box.hidden = false;
+        box.textContent = message;
+      };
+
+      await init();
+      const handle = new WebHandle();
+      window.pietrs = handle;
+      try {
+        await handle.start(document.getElementById("pietrs"));
+      } catch (error) {
+        show(String(error));
+      }
+      window.addEventListener("error", (event) => show(event.message));
+    </script>
+  </body>
+</html>

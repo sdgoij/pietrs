@@ -1,0 +1,25 @@
+/* The canvas needs an explicit size: eframe observes it with a ResizeObserver
+   and renders into whatever box the page gives it. Without this it would be
+   the default 300x150. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: #1b1b1b;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#error {
+  position: fixed;
+  inset: auto 0 0 0;
+  padding: 1rem;
+  background: #4a1010;
+  color: #f4dede;
+  font: 14px/1.4 ui-monospace, monospace;
+  white-space: pre-wrap;
+}

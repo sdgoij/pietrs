@@ -55,6 +55,11 @@ eframe = { version = "0.37", default-features = false, features = [
     "wayland",
 ] }
 rfd = "0.17"
+# The browser build. `wasm-bindgen` must match the CLI exactly, and `web-sys`
+# moves with it; one deliberate bump updates both.
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "=0.3.107", features = ["HtmlCanvasElement"] }
 object = "0.40"
 gif = "0.14"
 png = "0.18"
