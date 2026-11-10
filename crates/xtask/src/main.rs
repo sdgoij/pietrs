@@ -31,6 +31,8 @@ enum Task {
     Conformance(ConformanceArgs),
     /// Build and run every case, comparing it with its goldens.
     E2e(E2eArgs),
+    /// Build the browser bundle into `target/web`.
+    Wasm,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -109,12 +111,32 @@ enum Error {
 
     #[error("expected npiet {EXPECTED_NPIET}, but {path} reported: {reported}")]
     WrongVersion { path: PathBuf, reported: String },
+
+    #[error("Cargo.lock has no wasm-bindgen package")]
+    NoWasmBindgen,
+
+    #[error(
+        "cannot find `wasm-bindgen` on PATH; install it with `cargo install wasm-bindgen-cli --version {version}`"
+    )]
+    MissingWasmBindgen { version: String },
+
+    #[error(
+        "expected wasm-bindgen {expected}, but the CLI reported {reported}; run `cargo install -f wasm-bindgen-cli --version {expected}`"
+    )]
+    WrongWasmBindgen { expected: String, reported: String },
+
+    #[error("`cargo build` for wasm32 failed")]
+    BuildFailed,
+
+    #[error("`wasm-bindgen` failed")]
+    WasmBindgenFailed,
 }
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Task::Conformance(args) => conformance(&args),
         Task::E2e(args) => e2e(&args),
+        Task::Wasm => wasm().map(|()| false),
     };
     match result {
         Ok(failed) => {
@@ -469,6 +491,110 @@ fn workspace_root() -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .map_or_else(|| PathBuf::from("."), PathBuf::from)
+}
+
+/// Builds the browser bundle: the release wasm, the wasm-bindgen glue, and the
+/// page, all in `target/web`.
+///
+/// `wasm-bindgen` is not vendored. It is named when it is missing, and its
+/// version is checked against the lock before anything is built, because a
+/// mismatch is only reported by the tool itself, halfway through.
+fn wasm() -> Result<(), Error> {
+    let workspace = workspace_root();
+    let version = locked_wasm_bindgen(&workspace)?;
+    check_wasm_bindgen(&version)?;
+
+    let build = Command::new("cargo")
+        .current_dir(&workspace)
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "-p",
+            "gui",
+            "--no-default-features",
+            "--features",
+            "web",
+            "--target",
+            "wasm32-unknown-unknown",
+        ])
+        .status()
+        .map_err(|source| Error::Spawn {
+            program: "cargo".to_owned(),
+            source,
+        })?;
+    if !build.success() {
+        return Err(Error::BuildFailed);
+    }
+
+    let out = workspace.join("target/web");
+    std::fs::create_dir_all(&out)?;
+    let module = workspace.join("target/wasm32-unknown-unknown/release/gui.wasm");
+    let bindgen = Command::new("wasm-bindgen")
+        .current_dir(&workspace)
+        .args(["--target", "web", "--out-name", "pietrs", "--out-dir"])
+        .arg(&out)
+        .arg(&module)
+        .status()
+        .map_err(|source| Error::Spawn {
+            program: "wasm-bindgen".to_owned(),
+            source,
+        })?;
+    if !bindgen.success() {
+        return Err(Error::WasmBindgenFailed);
+    }
+
+    for name in ["index.html", "pietrs.css"] {
+        std::fs::copy(workspace.join("crates/gui/web").join(name), out.join(name))?;
+    }
+
+    eprintln!("wrote {}", out.join("index.html").display());
+    Ok(())
+}
+
+/// The `wasm-bindgen` version the lock pins.
+fn locked_wasm_bindgen(workspace: &Path) -> Result<String, Error> {
+    let lock = std::fs::read_to_string(workspace.join("Cargo.lock"))?;
+    let mut in_package = false;
+    for line in lock.lines() {
+        let line = line.trim();
+        if line.starts_with("[[package]]") {
+            in_package = false;
+        } else if line == "name = \"wasm-bindgen\"" {
+            in_package = true;
+        } else if in_package && let Some(version) = line.strip_prefix("version = \"") {
+            return Ok(version.trim_end_matches('"').to_owned());
+        }
+    }
+    Err(Error::NoWasmBindgen)
+}
+
+/// Fails, by name, when the CLI is missing or is not the version of the crate.
+fn check_wasm_bindgen(version: &str) -> Result<(), Error> {
+    let output = match Command::new("wasm-bindgen").arg("--version").output() {
+        Ok(output) => output,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::MissingWasmBindgen {
+                version: version.to_owned(),
+            });
+        }
+        Err(source) => {
+            return Err(Error::Spawn {
+                program: "wasm-bindgen".to_owned(),
+                source,
+            });
+        }
+    };
+    let reported = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let found = reported.rsplit(' ').next().unwrap_or_default();
+    if found == version {
+        Ok(())
+    } else {
+        Err(Error::WrongWasmBindgen {
+            expected: version.to_owned(),
+            reported,
+        })
+    }
 }
 
 fn build_npiet(workspace: &Path) -> Result<PathBuf, Error> {
