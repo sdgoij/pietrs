@@ -19,6 +19,15 @@ mkdir -p "$logs"
 
 status=0
 count=0
+
+# CI redirects each case to a log the runner cannot see, so a FAIL line alone
+# leaves nothing to debug. Print the tail of the case that failed; the verdict
+# lines stay one per case.
+show_log() {
+    printf '  --- %s ---\n' "$1"
+    tail -n 100 "$1" | sed 's/^/  /'
+}
+
 for case in "$cases_dir"/*.sh; do
     [ -f "$case" ] || continue
     count=$((count + 1))
@@ -36,15 +45,18 @@ for case in "$cases_dir"/*.sh; do
                 printf '%s\n' "$verdict"
             else
                 printf 'FAIL: %s (exit %s after its verdict)\n' "$name" "$code"
+                show_log "$log"
                 status=1
             fi
             ;;
         "FAIL: "*)
             printf '%s\n' "$verdict"
+            show_log "$log"
             status=1
             ;;
         *)
             printf 'FAIL: %s (no verdict)\n' "$name"
+            show_log "$log"
             status=1
             ;;
     esac
