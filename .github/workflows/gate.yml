@@ -1,8 +1,16 @@
 name: gate
 
+# Branches and pull requests. A tag push is a release and is handled by
+# release.yml, which runs this same gate before it publishes anything.
+
 on:
   push:
+    branches: ["**"]
   pull_request:
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gate:

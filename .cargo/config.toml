@@ -1,0 +1,12 @@
+# The release artefacts are static Linux binaries. Linking them with the
+# toolchain's own linker and its bundled musl CRT means a release build needs no
+# C toolchain on the build host, which is the same arrangement the AOT runner
+# uses (`aot/build.rs`). Without this, cargo reaches for `cc`.
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]

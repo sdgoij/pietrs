@@ -49,7 +49,7 @@ enum Commands {
     Trace(TraceArgs),
     /// Run the program and print its output.
     Run(RunArgs),
-    /// Emit and link a standalone executable.
+    /// Write a standalone executable, with no external tools.
     Build(BuildArgs),
     /// Run every corpus case through each execution path and compare them.
     Selftest(SelftestArgs),
@@ -121,7 +121,7 @@ struct BuildArgs {
 
 #[derive(Debug, Args)]
 struct SelftestArgs {
-    /// Directory of `.png` cases; a sibling `.in` file supplies input.
+    /// Directory of `.png` or `.gif` cases; a sibling `.in` file supplies input.
     corpus: PathBuf,
     /// Stop each path after this many transitions.
     #[arg(long, default_value_t = 100_000)]
