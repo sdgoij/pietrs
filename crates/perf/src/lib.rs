@@ -211,10 +211,24 @@ static TEST_COUNTER: Counter = Counter::new();
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// The counter is process wide and `cargo test` runs these cases in
+    /// parallel. They must not observe each other's allocations, or a free on
+    /// one thread can decrement the live count another thread is asserting on.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn the_counter_sees_its_own_allocations() {
+        let _guard = serial();
         let (value, measurement) = measure(&TEST_COUNTER, || vec![0u8; 4096]);
         assert_eq!(value.len(), 4096);
         assert!(measurement.counts.allocations >= 1);
@@ -224,7 +238,9 @@ mod tests {
 
     #[test]
     fn a_grid_is_square_and_uses_every_colour() {
+        let _guard = serial();
         let grid = grid(16);
+
         assert_eq!(grid.width(), 16);
         assert_eq!(grid.height(), 16);
         let mut seen = [false; 20];
@@ -240,6 +256,7 @@ mod tests {
 
     #[test]
     fn a_rate_is_integer_and_zero_safe() {
+        let _guard = serial();
         assert_eq!(
             per_second(1_000_000, Duration::from_millis(1000)),
             1_000_000
