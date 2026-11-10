@@ -15,6 +15,7 @@ aot = { workspace = true, optional = true }
 canvas.workspace = true
 clap.workspace = true
 codegen = { workspace = true, optional = true }
+gui = { workspace = true, optional = true }
 interp.workspace = true
 runtime.workspace = true
 tempfile = { workspace = true, optional = true }
@@ -22,8 +23,9 @@ tessera.workspace = true
 thiserror.workspace = true
 
 [features]
-default = ["codegen"]
-codegen = ["dep:codegen", "dep:aot", "dep:tempfile"]
+default = ["codegen", "editor"]
+codegen = ["dep:codegen", "dep:aot", "dep:tempfile", "gui?/codegen"]
+editor = ["dep:gui", "gui/native"]
 
 [dev-dependencies]
 testkit.workspace = true

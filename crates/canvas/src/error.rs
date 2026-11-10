@@ -22,11 +22,17 @@ pub enum Error {
         codel_size: u32,
     },
 
+    #[error("the codel size must be at least 1")]
+    ZeroCodelSize,
+
     #[error("codel ({x}, {y}) is not a single colour")]
     NonMonochromeCodel { x: u32, y: u32 },
 
     #[error("PNG decoding failed: {0}")]
     Png(String),
+
+    #[error("PNG encoding failed: {0}")]
+    PngEncode(String),
 
     #[error("GIF decoding failed: {0}")]
     Gif(String),

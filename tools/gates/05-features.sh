@@ -11,6 +11,9 @@ fail() {
 }
 
 cargo test -p cli --no-default-features || fail "cargo test -p cli --no-default-features"
+cargo test -p cli --no-default-features --features codegen || fail "cargo test -p cli --no-default-features --features codegen"
+cargo test -p cli --no-default-features --features editor || fail "cargo test -p cli --no-default-features --features editor"
+cargo test -p gui --no-default-features || fail "cargo test -p gui --no-default-features"
 cargo test -p codegen --no-default-features || fail "cargo test -p codegen --no-default-features"
 
 printf 'OK: %s\n' "$name"

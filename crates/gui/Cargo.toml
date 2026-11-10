@@ -1,0 +1,34 @@
+[package]
+name = "gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aot = { workspace = true, optional = true }
+canvas.workspace = true
+codegen = { workspace = true, optional = true }
+editor.workspace = true
+egui.workspace = true
+tessera.workspace = true
+thiserror.workspace = true
+
+eframe = { workspace = true, optional = true }
+rfd = { workspace = true, optional = true }
+
+[features]
+default = ["native", "codegen"]
+native = ["dep:eframe", "dep:rfd"]
+codegen = ["dep:codegen", "dep:aot"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# egui's geometry is f32; the language pipeline stays integer-only. Cargo
+# cannot merge a package lint table with `workspace = true`, so the two
+# workspace lints are restated here next to the one override.
+float_arithmetic = "allow"
+unwrap_used = "warn"

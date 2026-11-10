@@ -62,16 +62,35 @@ pub fn start(blocks: &Blocks) -> Start {
 
 /// Resolves one step of the movement rules.
 pub fn exit(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> Exit {
-    let Some(block) = blocks.block(block_id) else {
-        return Exit::Terminate;
-    };
+    match resolve(blocks, block_id, dp, cc) {
+        Some((_, exit)) => exit,
+        None => Exit::Terminate,
+    }
+}
+
+/// The codel the movement rules leave from, or `None` when no attempt finds an
+/// edge.
+///
+/// This is the same resolution [`exit`] performs, so a debugger can draw the
+/// direction pointer against the codel the move actually leaves.
+pub fn edge_codel(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> Option<Point> {
+    resolve(blocks, block_id, dp, cc).map(|(edge, _)| edge)
+}
+
+fn resolve(
+    blocks: &Blocks,
+    block_id: BlockId,
+    dp: Direction,
+    cc: Chooser,
+) -> Option<(Point, Exit)> {
+    let block = blocks.block(block_id)?;
     if !block.color().is_chromatic() {
-        return Exit::Terminate;
+        return None;
     }
 
     for index in 0..8u32 {
         let (candidate_dp, candidate_cc) = attempt(dp, cc, index);
-        let Some(edge) = edge_codel(block, candidate_dp, candidate_cc) else {
+        let Some(edge) = block_edge_codel(block, candidate_dp, candidate_cc) else {
             continue;
         };
         let Some(next) = step(edge, candidate_dp) else {
@@ -80,7 +99,7 @@ pub fn exit(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> E
         match blocks.grid().get(next) {
             None | Some(Color::Black) => continue,
             Some(Color::White) => {
-                return match slide(blocks, next, candidate_dp, candidate_cc) {
+                let exit = match slide(blocks, next, candidate_dp, candidate_cc) {
                     Slide::Move { target, dp, cc } => Exit::Move {
                         target,
                         dp,
@@ -89,22 +108,26 @@ pub fn exit(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> E
                     },
                     Slide::Terminate => Exit::Terminate,
                 };
+                return Some((edge, exit));
             }
             Some(to) => {
                 let Some(target) = blocks.block_id_at(next) else {
                     continue;
                 };
-                return Exit::Move {
-                    target,
-                    dp: candidate_dp,
-                    cc: candidate_cc,
-                    command: command(block.color(), to),
-                };
+                return Some((
+                    edge,
+                    Exit::Move {
+                        target,
+                        dp: candidate_dp,
+                        cc: candidate_cc,
+                        command: command(block.color(), to),
+                    },
+                ));
             }
         }
     }
 
-    Exit::Terminate
+    None
 }
 
 /// The `(DP, CC)` a fallback attempt tries.
@@ -159,7 +182,7 @@ fn slide(blocks: &Blocks, start: Point, dp: Direction, cc: Chooser) -> Slide {
     }
 }
 
-fn edge_codel(block: &Block, dp: Direction, cc: Chooser) -> Option<Point> {
+fn block_edge_codel(block: &Block, dp: Direction, cc: Chooser) -> Option<Point> {
     let codels = block.codels();
     let first = codels.first()?;
     let mut edge = primary(*first, dp);
@@ -275,7 +298,7 @@ mod tests {
         ];
         for (dp, cc, expected) in cases {
             assert_eq!(
-                edge_codel(block, dp, cc),
+                block_edge_codel(block, dp, cc),
                 Some(expected),
                 "dp={dp:?} cc={cc:?}"
             );
@@ -361,6 +384,61 @@ mod tests {
     }
 
     #[test]
+    fn the_public_edge_names_the_codel_the_move_leaves() {
+        let blocks = blocks(&["rrgg"]);
+        let red = id_at(&blocks, 0, 0);
+        let green = id_at(&blocks, 3, 0);
+        assert_eq!(
+            exit(&blocks, red, Direction::Right, Chooser::Left),
+            Exit::Move {
+                target: green,
+                dp: Direction::Right,
+                cc: Chooser::Left,
+                command: Some(Command::Divide),
+            }
+        );
+        assert_eq!(
+            edge_codel(&blocks, red, Direction::Right, Chooser::Left),
+            Some(Point::new(1, 0))
+        );
+
+        // Green's first attempt leaves to the right, off the image; the
+        // fallback finds red to its left.
+        assert_eq!(
+            edge_codel(&blocks, green, Direction::Right, Chooser::Left),
+            Some(Point::new(2, 0))
+        );
+    }
+
+    #[test]
+    fn a_block_with_no_exit_has_no_edge() {
+        let lone = blocks(&["rr"]);
+        let red = id_at(&lone, 0, 0);
+        for dp in Direction::ALL {
+            for cc in [Chooser::Left, Chooser::Right] {
+                assert_eq!(exit(&lone, red, dp, cc), Exit::Terminate);
+                assert_eq!(edge_codel(&lone, red, dp, cc), None, "{dp:?} {cc:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_slide_dead_end_still_names_its_entry_codel() {
+        // The movement terminates on the dead-end retrace, but it did choose a
+        // codel to enter, and the debugger's arrow points at it.
+        let blocks = blocks(&["r.", "#."]);
+        let red = id_at(&blocks, 0, 0);
+        assert_eq!(
+            exit(&blocks, red, Direction::Right, Chooser::Left),
+            Exit::Terminate
+        );
+        assert_eq!(
+            edge_codel(&blocks, red, Direction::Right, Chooser::Left),
+            Some(Point::new(0, 0))
+        );
+    }
+
+    #[test]
     fn a_block_with_no_neighbour_terminates() {
         let lone = blocks(&["rr"]);
         let lone_red = id_at(&lone, 0, 0);
@@ -383,11 +461,11 @@ mod tests {
         let block = blocks.block(id_at(&blocks, 0, 0)).unwrap();
         assert_eq!(block.size(), 11);
         assert_eq!(
-            edge_codel(block, Direction::Up, Chooser::Left),
+            block_edge_codel(block, Direction::Up, Chooser::Left),
             Some(Point::new(0, 0))
         );
         assert_eq!(
-            edge_codel(block, Direction::Up, Chooser::Right),
+            block_edge_codel(block, Direction::Up, Chooser::Right),
             Some(Point::new(4, 0))
         );
     }
@@ -399,16 +477,16 @@ mod tests {
         assert_eq!(ring.size(), 8, "the hole is not a codel of the block");
         for dp in Direction::ALL {
             for cc in [Chooser::Left, Chooser::Right] {
-                let point = edge_codel(ring, dp, cc).unwrap();
+                let point = block_edge_codel(ring, dp, cc).unwrap();
                 assert_ne!(point, Point::new(1, 1), "the hole is never an edge");
             }
         }
         assert_eq!(
-            edge_codel(ring, Direction::Up, Chooser::Left),
+            block_edge_codel(ring, Direction::Up, Chooser::Left),
             Some(Point::new(0, 0))
         );
         assert_eq!(
-            edge_codel(ring, Direction::Up, Chooser::Right),
+            block_edge_codel(ring, Direction::Up, Chooser::Right),
             Some(Point::new(2, 0))
         );
     }

@@ -91,45 +91,106 @@ pub fn run_traced(
     Ok((result, trace))
 }
 
-fn run_inner(
-    blocks: &Blocks,
-    io: &mut dyn Io,
-    options: &Options,
-    mut trace: Option<&mut Vec<Step>>,
-) -> Result<Run, Error> {
-    let Start::State(mut state) = start(blocks) else {
-        return Ok(Run {
-            reason: ExitReason::Terminated,
-            steps: 0,
-        });
-    };
-    let mut stack = Stack::new(options.stack_capacity);
-    let mut steps = 0u64;
+/// One step of a [`Machine`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Progress {
+    /// The machine executed a transition.
+    Moved {
+        from: State,
+        to: State,
+        command: Option<Command>,
+        target: canvas::BlockId,
+    },
+    /// The program stopped. `from` is `None` when it could not start at all,
+    /// which records no step.
+    Terminated { from: Option<State> },
+    /// The step limit was reached before a transition.
+    StepLimit,
+}
 
-    loop {
-        if let Some(limit) = options.max_steps
-            && steps >= limit
-        {
-            return Ok(Run {
-                reason: ExitReason::StepLimit,
-                steps,
-            });
+impl Progress {
+    /// The transition the trace records, if any.
+    pub fn step(&self) -> Option<Step> {
+        match self {
+            Self::Moved {
+                from,
+                command,
+                target,
+                ..
+            } => Some(Step {
+                block: from.block,
+                dp: from.dp,
+                cc: from.cc,
+                command: *command,
+                target: Some(*target),
+            }),
+            Self::Terminated { from: Some(from) } => Some(Step {
+                block: from.block,
+                dp: from.dp,
+                cc: from.cc,
+                command: None,
+                target: None,
+            }),
+            Self::Terminated { from: None } | Self::StepLimit => None,
         }
-        match tessera::exit(blocks, state.block, state.dp, state.cc) {
+    }
+}
+
+/// The execution state, independent of the blocks it walks.
+///
+/// `run` and `run_traced` drive a machine; so does the debugger. There is one
+/// step implementation.
+#[derive(Debug)]
+pub struct Machine {
+    state: Option<State>,
+    stack: Stack,
+    steps: u64,
+    max_steps: Option<u64>,
+    division: Division,
+    finished: bool,
+}
+
+impl Machine {
+    pub fn new(blocks: &Blocks, options: Options) -> Self {
+        let state = match start(blocks) {
+            Start::State(state) => Some(state),
+            Start::Terminate => None,
+        };
+        Self {
+            state,
+            stack: Stack::new(options.stack_capacity),
+            steps: 0,
+            max_steps: options.max_steps,
+            division: options.division,
+            finished: false,
+        }
+    }
+
+    /// Runs one transition.
+    ///
+    /// `blocks` must be the partition the machine was created from. `Ok(None)`
+    /// means the machine had already finished and nothing changed.
+    pub fn step(&mut self, blocks: &Blocks, io: &mut dyn Io) -> Result<Option<Progress>, Error> {
+        if self.finished {
+            return Ok(None);
+        }
+        if let Some(limit) = self.max_steps
+            && self.steps >= limit
+        {
+            self.finished = true;
+            return Ok(Some(Progress::StepLimit));
+        }
+        let Some(current) = self.state else {
+            self.finished = true;
+            return Ok(Some(Progress::Terminated { from: None }));
+        };
+        match tessera::exit(blocks, current.block, current.dp, current.cc) {
             Exit::Terminate => {
-                if let Some(trace) = trace.as_deref_mut() {
-                    trace.push(Step {
-                        block: state.block,
-                        dp: state.dp,
-                        cc: state.cc,
-                        command: None,
-                        target: None,
-                    });
-                }
-                return Ok(Run {
-                    reason: ExitReason::Terminated,
-                    steps,
-                });
+                self.finished = true;
+                self.state = None;
+                Ok(Some(Progress::Terminated {
+                    from: Some(current),
+                }))
             }
             Exit::Move {
                 target,
@@ -137,33 +198,92 @@ fn run_inner(
                 cc,
                 command,
             } => {
-                if let Some(trace) = trace.as_deref_mut() {
-                    trace.push(Step {
-                        block: state.block,
-                        dp: state.dp,
-                        cc: state.cc,
-                        command,
-                        target: Some(target),
-                    });
-                }
                 let block_size = blocks
-                    .block(state.block)
+                    .block(current.block)
                     .map_or(0, |block| block.size() as Value);
-                let (dp, cc) = execute_with(
+                let (dp, cc) = match execute_with(
                     command,
                     block_size,
                     dp,
                     cc,
-                    &mut stack,
+                    &mut self.stack,
                     io,
-                    options.division,
-                )?;
-                state = State {
+                    self.division,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.finished = true;
+                        return Err(error);
+                    }
+                };
+                let to = State {
                     block: target,
                     dp,
                     cc,
                 };
-                steps += 1;
+                self.state = Some(to);
+                self.steps += 1;
+                Ok(Some(Progress::Moved {
+                    from: current,
+                    to,
+                    command,
+                    target,
+                }))
+            }
+        }
+    }
+
+    /// The state the next step starts from, or `None` when the machine is
+    /// finished.
+    pub fn state(&self) -> Option<State> {
+        self.state
+    }
+
+    pub fn stack(&self) -> &Stack {
+        &self.stack
+    }
+
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+fn run_inner(
+    blocks: &Blocks,
+    io: &mut dyn Io,
+    options: &Options,
+    mut trace: Option<&mut Vec<Step>>,
+) -> Result<Run, Error> {
+    let mut machine = Machine::new(blocks, *options);
+    loop {
+        let Some(progress) = machine.step(blocks, io)? else {
+            return Ok(Run {
+                reason: ExitReason::Terminated,
+                steps: machine.steps(),
+            });
+        };
+        if let Some(trace) = trace.as_deref_mut()
+            && let Some(step) = progress.step()
+        {
+            trace.push(step);
+        }
+        match progress {
+            Progress::Moved { .. } => {}
+            Progress::Terminated { .. } => {
+                return Ok(Run {
+                    reason: ExitReason::Terminated,
+                    steps: machine.steps(),
+                });
+            }
+            Progress::StepLimit => {
+                return Ok(Run {
+                    reason: ExitReason::StepLimit,
+                    steps: machine.steps(),
+                });
             }
         }
     }
@@ -269,7 +389,28 @@ fn binary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use canvas::{CodelGrid, Color, Hue, Lightness};
     use runtime::BufferIo;
+
+    fn blocks(rows: &[&str]) -> Blocks {
+        let height = rows.len() as u32;
+        let width = rows.first().map_or(0, |row| row.len() as u32);
+        let mut codels = Vec::with_capacity((width as usize) * (height as usize));
+        for row in rows {
+            assert_eq!(row.len() as u32, width, "rows must be rectangular");
+            for cell in row.chars() {
+                codels.push(match cell {
+                    '.' => Color::White,
+                    '#' => Color::Black,
+                    'r' => Color::chromatic(Hue::Red, Lightness::Normal),
+                    'g' => Color::chromatic(Hue::Green, Lightness::Normal),
+                    'd' => Color::chromatic(Hue::Red, Lightness::Dark),
+                    other => panic!("unknown cell {other:?}"),
+                });
+            }
+        }
+        Blocks::partition(CodelGrid::from_colors(width, height, codels).unwrap())
+    }
 
     fn context() -> (Stack, BufferIo) {
         (Stack::new(8), BufferIo::new(""))
@@ -548,5 +689,87 @@ mod tests {
             terminal.to_string(),
             "block=1 dp=Up cc=Left command=none target=none"
         );
+    }
+
+    #[test]
+    fn stepping_matches_the_recorded_trace() {
+        let blocks = blocks(&["rg", "gg"]);
+        let options = Options::default();
+        let (result, trace) = run_traced(&blocks, &mut BufferIo::new(""), &options).unwrap();
+
+        let mut machine = Machine::new(&blocks, options);
+        let mut io = BufferIo::new("");
+        let mut stepped = Vec::new();
+        while let Some(progress) = machine.step(&blocks, &mut io).unwrap() {
+            if let Some(step) = progress.step() {
+                stepped.push(step);
+            }
+            if matches!(progress, Progress::Terminated { .. } | Progress::StepLimit) {
+                break;
+            }
+        }
+
+        assert_eq!(stepped, trace);
+        assert_eq!(machine.steps(), result.steps);
+        assert!(machine.is_finished());
+    }
+
+    #[test]
+    fn a_step_limit_is_checked_before_a_transition() {
+        let blocks = blocks(&["rg"]);
+        let options = Options {
+            max_steps: Some(0),
+            ..Options::default()
+        };
+        let mut machine = Machine::new(&blocks, options);
+        let mut io = BufferIo::new("");
+        assert_eq!(
+            machine.step(&blocks, &mut io).unwrap(),
+            Some(Progress::StepLimit)
+        );
+        assert_eq!(machine.steps(), 0);
+        assert!(machine.is_finished());
+        assert_eq!(machine.step(&blocks, &mut io).unwrap(), None);
+    }
+
+    #[test]
+    fn a_program_that_cannot_start_terminates_without_a_step() {
+        let blocks = blocks(&["#"]);
+        let mut machine = Machine::new(&blocks, Options::default());
+        assert_eq!(machine.state(), None);
+
+        let mut io = BufferIo::new("");
+        assert_eq!(
+            machine.step(&blocks, &mut io).unwrap(),
+            Some(Progress::Terminated { from: None })
+        );
+        assert_eq!(machine.steps(), 0);
+        assert!(machine.is_finished());
+    }
+
+    #[test]
+    fn the_machine_exposes_the_stack_between_transitions() {
+        // Red normal to red dark is `push`, and the red block is one codel.
+        let blocks = blocks(&["rd"]);
+        let mut machine = Machine::new(&blocks, Options::default());
+        assert_eq!(machine.stack().as_slice(), &[]);
+
+        let mut io = BufferIo::new("");
+        machine.step(&blocks, &mut io).unwrap();
+        assert_eq!(machine.stack().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn an_overflow_finishes_the_machine() {
+        let blocks = blocks(&["rd"]);
+        let options = Options {
+            stack_capacity: 0,
+            ..Options::default()
+        };
+        let mut machine = Machine::new(&blocks, options);
+        let mut io = BufferIo::new("");
+        assert!(machine.step(&blocks, &mut io).is_err());
+        assert!(machine.is_finished());
+        assert_eq!(machine.step(&blocks, &mut io).unwrap(), None);
     }
 }

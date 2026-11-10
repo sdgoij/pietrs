@@ -5,6 +5,8 @@ members = [
     "crates/tessera",
     "crates/runtime",
     "crates/interp",
+    "crates/editor",
+    "crates/gui",
     "crates/codegen",
     "crates/aot",
     "crates/cli",
@@ -26,6 +28,8 @@ canvas = { path = "crates/canvas" }
 tessera = { path = "crates/tessera" }
 runtime = { path = "crates/runtime" }
 interp = { path = "crates/interp" }
+editor = { path = "crates/editor" }
+gui = { path = "crates/gui", default-features = false }
 codegen = { path = "crates/codegen" }
 aot = { path = "crates/aot" }
 runner = { path = "crates/runner" }
@@ -39,6 +43,18 @@ cranelift-native = "0.137"
 cranelift-object = "0.137"
 
 clap = { version = "4", features = ["derive"] }
+egui = "0.37"
+eframe = { version = "0.37", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "persistence",
+    "accesskit",
+    "clipboard",
+    "links",
+    "x11",
+    "wayland",
+] }
+rfd = "0.17"
 object = "0.40"
 gif = "0.14"
 png = "0.18"

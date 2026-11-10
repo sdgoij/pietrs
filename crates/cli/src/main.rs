@@ -43,6 +43,9 @@ impl From<DivisionArg> for runtime::Division {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Open the visual editor and debugger.
+    Editor(EditorArgs),
+
     /// Load the image and report the grid, blocks, and start state.
     Check(CheckArgs),
     /// Run the interpreter and print its transition trace.
@@ -59,6 +62,15 @@ enum Commands {
 struct ImageArgs {
     /// The Piet program image.
     image: PathBuf,
+    /// Override the detected codel size.
+    #[arg(long)]
+    codel_size: Option<u32>,
+}
+
+#[derive(Debug, Args)]
+struct EditorArgs {
+    /// The image to open. Without one, the editor starts a blank document.
+    image: Option<PathBuf>,
     /// Override the detected codel size.
     #[arg(long)]
     codel_size: Option<u32>,
@@ -161,6 +173,14 @@ enum Error {
     #[error("this pietrs was built without the codegen feature")]
     Unavailable,
 
+    #[cfg(feature = "editor")]
+    #[error(transparent)]
+    Gui(#[from] gui::Error),
+
+    #[cfg(not(feature = "editor"))]
+    #[error("this pietrs was built without the editor feature")]
+    NoEditor,
+
     #[error("no .png cases in {0}")]
     NoCases(PathBuf),
 }
@@ -170,6 +190,7 @@ fn main() -> ExitCode {
         return help();
     };
     let result = match command {
+        Commands::Editor(args) => editor(&args),
         Commands::Check(args) => check(&args).map(|()| ExitCode::SUCCESS),
         Commands::Trace(args) => trace(&args).map(|()| ExitCode::SUCCESS),
         Commands::Run(args) => run_program(&args),
@@ -194,6 +215,22 @@ fn help() -> ExitCode {
     }
     println!();
     ExitCode::SUCCESS
+}
+
+/// Opens the editor. The image and its input are decoded before a window
+/// exists, so a bad path is a CLI error rather than a blank window.
+#[cfg(feature = "editor")]
+fn editor(args: &EditorArgs) -> Result<ExitCode, Error> {
+    gui::run(gui::Args {
+        image: args.image.clone(),
+        codel_size: args.codel_size,
+    })?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(not(feature = "editor"))]
+fn editor(_args: &EditorArgs) -> Result<ExitCode, Error> {
+    Err(Error::NoEditor)
 }
 
 fn load(image: &ImageArgs) -> Result<CodelGrid, Error> {

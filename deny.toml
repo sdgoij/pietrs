@@ -3,6 +3,10 @@
 # dual-licensed crate is taken under the GPL-compatible arm, not the
 # Apache-2.0 arm, which is not compatible with GPL-2.0-only. The LLVM exception
 # on the cranelift crates is the one that permits combining them with GPL code.
+#
+# The GUI adds BSL-1.0 (clipboard-win, error-code), ISC (libloading), and the
+# default-font licences: OFL-1.1 and Ubuntu-font-1.0. All are permissive and
+# GPL-compatible; the fonts are data, not linked code.
 
 [graph]
 targets = []
@@ -12,6 +16,16 @@ no-default-features = false
 [advisories]
 version = 2
 yanked = "deny"
+# accesskit_unix -> atspi -> zbus_names / zvariant / zvariant_derive are
+# unmaintained (RUSTSEC-2026-0370/0371/0372): the crates were merged into
+# zbus 6, which egui 0.37's accesskit does not use. These are unmaintained
+# notices, not vulnerabilities, and there is no upgrade path inside the
+# pinned egui version. Revisit with the next egui bump.
+ignore = [
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]
 
 [bans]
 multiple-versions = "allow"
@@ -27,9 +41,13 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
+    "BSL-1.0",
     "GPL-2.0-only",
+    "ISC",
     "LGPL-2.1-or-later",
     "MIT",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",

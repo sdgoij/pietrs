@@ -655,3 +655,33 @@ fn build_reports_the_missing_feature() {
     assert!(!run.status.success());
     assert!(String::from_utf8_lossy(&run.stderr).contains("without the codegen feature"));
 }
+
+#[test]
+fn editor_is_listed_in_help() {
+    let output = run_ok(pietrs().args(["editor", "--help"]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Open the visual editor"), "{stdout}");
+}
+
+#[cfg(feature = "editor")]
+#[test]
+fn a_bad_editor_image_fails_before_a_window_opens() {
+    let missing = "this-image-does-not-exist.png";
+    let output = pietrs().args(["editor", missing]).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot read"), "{stderr}");
+    assert!(stderr.contains(missing), "{stderr}");
+}
+
+#[cfg(not(feature = "editor"))]
+#[test]
+fn editor_without_the_feature_is_a_diagnostic() {
+    let output = pietrs().arg("editor").output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("built without the editor feature"),
+        "{stderr}"
+    );
+}

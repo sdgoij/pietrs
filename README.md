@@ -55,6 +55,9 @@ pietrs trace program.png --max-steps 200
 # Compile it to a standalone executable.
 pietrs build program.png -o program
 ./program
+
+# Open the visual editor and debugger.
+pietrs editor program.png
 ```
 
 `pietrs build` writes the whole executable: the program, plus a runner that is
@@ -65,6 +68,7 @@ you build a program, which is why a cross build needs no target toolchain.
 
 | Command | What it does |
 |---|---|
+| `editor` | opens the visual editor and debugger; compiled in by default, absent from a `--no-default-features` build |
 | `check` | decodes, partitions, and builds the state graph without executing; reports whether any reachable state terminates |
 | `trace` | runs the reference interpreter and prints every transition |
 | `run` | runs the program through the JIT and prints its output |
@@ -125,6 +129,8 @@ change must not break — is [`AGENTS.md`](AGENTS.md). Design notes live in
 | `tessera` | movement, white slides, and the `(block, DP, CC)` state graph |
 | `runtime` | stack, I/O, floored arithmetic |
 | `interp` | the reference interpreter: trace, oracle, no codegen |
+| `editor` | the document, undo, analysis cache, and debug session; no UI |
+| `gui` | the egui editor and debugger; `pietrs editor` |
 | `codegen` | Cranelift lowering; JIT and object emission |
 | `aot` | packages an object plus an embedded runner into an executable |
 | `runner` | the embedded runner: maps the payload and calls `piet_main` |

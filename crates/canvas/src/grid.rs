@@ -128,6 +128,22 @@ impl CodelGrid {
 
     /// Builds a grid directly from codels, with a codel size of one.
     pub fn from_colors(width: u32, height: u32, codels: Vec<Color>) -> Result<Self, Error> {
+        Self::from_colors_with_codel_size(width, height, 1, codels)
+    }
+
+    /// Builds a grid directly from codels and an explicit codel size.
+    ///
+    /// The codels are the grid; the codel size is the pixel scale each one is
+    /// drawn at. It must be at least one.
+    pub fn from_colors_with_codel_size(
+        width: u32,
+        height: u32,
+        codel_size: u32,
+        codels: Vec<Color>,
+    ) -> Result<Self, Error> {
+        if codel_size == 0 {
+            return Err(Error::ZeroCodelSize);
+        }
         if width == 0 || height == 0 {
             return Err(Error::EmptyImage);
         }
@@ -143,7 +159,7 @@ impl CodelGrid {
         Ok(Self {
             width,
             height,
-            codel_size: 1,
+            codel_size,
             codels,
             unknown: Vec::new(),
         })
@@ -188,6 +204,68 @@ impl CodelGrid {
         let end = start + (self.width as usize);
         self.codels.get(start..end)
     }
+
+    /// Expands every codel to a `codel_size` x `codel_size` RGBA tile.
+    pub fn to_rgba(&self) -> Result<Vec<u8>, Error> {
+        let pixel_width = self
+            .width
+            .checked_mul(self.codel_size)
+            .ok_or(Error::ImageTooLarge)?;
+        let pixel_height = self
+            .height
+            .checked_mul(self.codel_size)
+            .ok_or(Error::ImageTooLarge)?;
+        let length = expected_len(pixel_width, pixel_height)?;
+        if length > MAX_RGBA {
+            return Err(Error::ImageTooLarge);
+        }
+        let width = self.width as usize;
+        let mut rgba = Vec::with_capacity(length);
+        for y in 0..self.height as usize {
+            let row = &self.codels[y * width..(y + 1) * width];
+            for _ in 0..self.codel_size {
+                for color in row {
+                    let [red, green, blue] = color.rgb();
+                    let pixel = [red, green, blue, 255];
+                    for _ in 0..self.codel_size {
+                        rgba.extend_from_slice(&pixel);
+                    }
+                }
+            }
+        }
+        debug_assert_eq!(rgba.len(), length);
+        Ok(rgba)
+    }
+
+    /// Encodes the grid as an 8-bit RGBA PNG.
+    ///
+    /// The image is `width * codel_size` by `height * codel_size` pixels, so a
+    /// round trip through [`CodelGrid::from_image_with_codel_size`] preserves
+    /// both the codels and the scale.
+    pub fn encode_png(&self) -> Result<Vec<u8>, Error> {
+        let pixel_width = self
+            .width
+            .checked_mul(self.codel_size)
+            .ok_or(Error::ImageTooLarge)?;
+        let pixel_height = self
+            .height
+            .checked_mul(self.codel_size)
+            .ok_or(Error::ImageTooLarge)?;
+        let rgba = self.to_rgba()?;
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, pixel_width, pixel_height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder
+                .write_header()
+                .map_err(|error| Error::PngEncode(error.to_string()))?;
+            writer
+                .write_image_data(&rgba)
+                .map_err(|error| Error::PngEncode(error.to_string()))?;
+        }
+        Ok(out)
+    }
 }
 
 /// Finds the largest codel size whose tiles are all one colour.
@@ -213,6 +291,8 @@ pub fn detect_codel_size(rgba: &[u8], pixel_width: u32, pixel_height: u32) -> Re
     }
     Ok(1)
 }
+
+const MAX_RGBA: usize = 1 << 28;
 
 fn expected_len(width: u32, height: u32) -> Result<usize, Error> {
     (width as usize)
@@ -442,5 +522,78 @@ mod tests {
             CodelGrid::from_colors(0, 1, Vec::new()).unwrap_err(),
             Error::EmptyImage
         );
+    }
+
+    #[test]
+    fn an_explicit_codel_size_is_kept() {
+        let grid =
+            CodelGrid::from_colors_with_codel_size(2, 1, 3, vec![Color::White, Color::Black])
+                .unwrap();
+        assert_eq!(grid.width(), 2);
+        assert_eq!(grid.height(), 1);
+        assert_eq!(grid.codel_size(), 3);
+    }
+
+    #[test]
+    fn a_zero_codel_size_is_rejected() {
+        assert_eq!(
+            CodelGrid::from_colors_with_codel_size(1, 1, 0, vec![Color::White]).unwrap_err(),
+            Error::ZeroCodelSize
+        );
+    }
+
+    #[test]
+    fn encoding_lays_out_tiles_in_rows() {
+        let red = Color::chromatic(Hue::Red, Lightness::Normal);
+        let blue = Color::chromatic(Hue::Blue, Lightness::Normal);
+        let grid = CodelGrid::from_colors_with_codel_size(
+            2,
+            2,
+            2,
+            vec![red, Color::White, Color::Black, blue],
+        )
+        .unwrap();
+        let rgba = grid.to_rgba().unwrap();
+        assert_eq!(rgba.len(), 4 * 4 * 4);
+        let pixel = |x: usize, y: usize| -> [u8; 4] {
+            let start = (y * 4 + x) * 4;
+            rgba[start..start + 4].try_into().unwrap()
+        };
+        assert_eq!(pixel(0, 0), [255, 0, 0, 255]);
+        assert_eq!(pixel(1, 0), [255, 0, 0, 255]);
+        assert_eq!(pixel(2, 0), [255, 255, 255, 255]);
+        assert_eq!(pixel(3, 0), [255, 255, 255, 255]);
+        assert_eq!(pixel(0, 1), [255, 0, 0, 255]);
+        assert_eq!(pixel(0, 2), [0, 0, 0, 255]);
+        assert_eq!(pixel(2, 2), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_png_round_trips_every_colour() {
+        let codels = Color::ALL.to_vec();
+        let grid = CodelGrid::from_colors(20, 1, codels.clone()).unwrap();
+        let png = grid.encode_png().unwrap();
+        let decoded = CodelGrid::from_image(&png).unwrap();
+        assert_eq!(decoded.width(), 20);
+        assert_eq!(decoded.height(), 1);
+        assert_eq!(decoded.codel_size(), 1);
+        assert_eq!(decoded.codels(), codels.as_slice());
+    }
+
+    #[test]
+    fn a_png_round_trips_a_scaled_grid() {
+        let codels = vec![
+            Color::chromatic(Hue::Red, Lightness::Normal),
+            Color::White,
+            Color::Black,
+            Color::chromatic(Hue::Blue, Lightness::Dark),
+        ];
+        let grid = CodelGrid::from_colors_with_codel_size(2, 2, 3, codels.clone()).unwrap();
+        let png = grid.encode_png().unwrap();
+        let decoded = CodelGrid::from_image(&png).unwrap();
+        assert_eq!(decoded.width(), 2);
+        assert_eq!(decoded.height(), 2);
+        assert_eq!(decoded.codel_size(), 3);
+        assert_eq!(decoded.codels(), codels.as_slice());
     }
 }
