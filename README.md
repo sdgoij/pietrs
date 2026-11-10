@@ -85,6 +85,25 @@ compares the interpreter with the JIT and builds a standalone executable. The
 image is the document: Save writes it back as a PNG at its codel size. The
 theme choice persists across launches.
 
+### In the browser
+
+The same editor compiles to WebAssembly. Building the bundle needs
+`wasm-bindgen-cli` at the version `Cargo.lock` pins; `xtask` checks it first and
+names the mismatch if it is wrong:
+
+```sh
+cargo run -p xtask -- wasm        # writes target/web
+python -m http.server -d target/web 8000
+```
+
+`target/web` is a static bundle — `index.html`, `pietrs.css`, `pietrs.js`, and
+`pietrs_bg.wasm` — that any file server can host. Opening and saving go through
+the browser's file picker, so a document's identity is its file name and Save is
+a download. The JIT comparison and `build` are absent there: `cranelift-jit`
+cannot target wasm, and a wasm module cannot write an executable. Everything
+else — painting, undo, stepping, breakpoints, the stack, the output, the trail,
+the theme — is the desktop editor's code.
+
 ### Images
 
 PNG and GIF (the first frame) are decoded, at any codel size: the size is
@@ -140,7 +159,7 @@ change must not break — is [`AGENTS.md`](AGENTS.md). Design notes live in
 | `runtime` | stack, I/O, floored arithmetic |
 | `interp` | the reference interpreter: trace, oracle, no codegen |
 | `editor` | the document, undo, analysis cache, and debug session; no UI |
-| `gui` | the egui editor and debugger; `pietrs editor` |
+| `gui` | the egui editor and debugger; `pietrs editor`, and the wasm bundle |
 | `codegen` | Cranelift lowering; JIT and object emission |
 | `aot` | packages an object plus an embedded runner into an executable |
 | `runner` | the embedded runner: maps the payload and calls `piet_main` |

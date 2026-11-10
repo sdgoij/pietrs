@@ -1,8 +1,8 @@
 # The editor in the browser
 
-Status: design proposal. Nothing here is implemented. `gui.md` is the shipped
-desktop design; its "Non-goals for v1" deferred this work, and this note takes
-it up.
+Status: implemented through step 5 of the delivery plan. `cargo run -p xtask --
+wasm` writes `target/web`, `08-wasm.sh` links the wasm target in every gate job,
+and the bundle has been loaded in a browser. Publishing it is still open.
 
 `pietrs` compiles to WebAssembly and runs the same editor, the same debugger,
 and the same interpreter in a browser tab. The canvas is a WebGL surface, the
@@ -160,6 +160,8 @@ pub enum FileRequest {
 pub enum IoResult {
     Opened { bytes: Vec<u8>, path: Option<PathBuf> },
     Saved { path: Option<PathBuf> },
+    /// The user dismissed the dialog; the document is unchanged.
+    Cancelled,
     Failed(String),
 }
 ```
@@ -183,9 +185,9 @@ call, so it is inert.
 
 `open_file`, `save_to`, and `FileError` move to `native.rs`: they are the
 desktop's filesystem, and nothing outside `gui` uses them. `app.rs` loses
-`open_dialog`/`save_dialog` and both of their `cfg` arms. `save_to` splits into
-`write_to(path, bytes)` and `note_saved(path)`, because the bytes are now
-decided by the app and written by the shell.
+`open_dialog`/`save_dialog` and both of their `cfg` arms. The shell finishes
+every operation through `apply_io`, including `IoResult::Saved`, so one method
+owns `io_pending`.
 
 ### The native shell
 
@@ -449,6 +451,7 @@ The output is `target/web/index.html` plus `pietrs.js`, `pietrs_bg.wasm`, and
 | Integration | `gui/native.rs` | the temp-file write/open round trip (moved from `app.rs`) |
 | Build | gate | `cargo build -p gui --no-default-features --features web --target wasm32-unknown-unknown` (debug profile: the gate proves the target links, and a release build adds minutes to every leg for no extra coverage) |
 | Manual | `xtask wasm` + a browser | paint, step, run, breakpoints, open a PNG, save a PNG, switch the theme, reload and confirm the theme persisted, resize the window |
+| Smoke | `xtask wasm` + headless Edge | the page boots, sizes the canvas, and runs frames without panicking |
 | Not in the gate | — | `wasm-bindgen-test` in a headless browser |
 
 The browser test is deliberately out. It needs chromedriver or geckodriver on
@@ -458,6 +461,15 @@ drive, and the wasm-only code is `WebHandle` (four delegating methods) and the
 `EditorApp`, unit-test it there, and keep `web.rs` too small to hide a bug.
 If browser tests are ever wanted, `cargo run -p xtask -- wasm-test` is the
 natural home and still not a gate.
+
+What was run once, by hand, is a headless smoke test. Serve `target/web` over
+HTTP and let `msedge --headless=new --enable-unsafe-swiftshader
+--virtual-time-budget=6000 --dump-dom` load the page: the canvas comes back with
+eframe's `tabindex` and a real `width`/`height`, the `#error` element stays
+hidden, and a probe that calls `has_panicked()` after three seconds reports
+`false`. That covers module load, WebGL context creation, the first frames, and
+the absence of a panic; it does not cover the dialogs or the painting, which
+need a person and a mouse.
 
 The existing perf case in `editor` (partition plus analysis for a 512x512
 document) is a host measurement and stays on the host. A browser repaint of a
@@ -586,11 +598,37 @@ Each step lands green on its own; none depends on an unmerged later one.
    `cargo build -p gui --no-default-features --features web --target
    wasm32-unknown-unknown` green on all three hosts.
 4. **`xtask`.** The `wasm` subcommand with the version check and the named
-   failure; a release bundle in `target/web/` that loads, paints, steps, opens,
-   saves, and persists the theme in a browser by hand.
+   failure; a release bundle in `target/web/`.
 5. **Wiring.** `08-wasm.sh`, `cargo deny` re-run, a README section beside the
    editor's, this note marked implemented, and the optional `web` CI job
    decided.
+
+## Implementation status
+
+Landed, with the full gate green after each step:
+
+- `editor` takes `web-time` for its stepping budget. The time branch of the
+  loop had no test; it has one now, and it fails if the branch is removed.
+- `gui` emits `FileRequest` and applies `IoResult`. `open_file`, `save_to`, and
+  `FileError` live in `native.rs`, the document path has no `rfd` or `std::fs`
+  left in `app.rs` (the AOT build dialog stays native-only, behind `codegen`),
+  and every method that changes the document refuses while a request is in
+  flight. Eight tests cover the request, the result, the cancel and failure
+  paths, and the frozen-edit rule.
+- `gui` builds for `wasm32-unknown-unknown` with the `web` feature and
+  `crate-type = ["rlib", "cdylib"]`; `crates/gui/web/` holds the page.
+- `cargo run -p xtask -- wasm` produces `target/web`. The release bundle is
+  6.6 MB of wasm and 87 KB of JS before `wasm-opt`. Both version-check failures
+  were exercised against a stub: a missing CLI and a 0.2.129 CLI each fail with
+  the exact command that fixes them.
+- `08-wasm.sh` joins the gate on all three runners; `cargo deny` needed no
+  change, as predicted; the README has a browser section and a gate table row.
+- The bundle was loaded in headless Edge: the canvas was sized by eframe, the
+  error element stayed hidden, and a probe reported `panicked=false` after
+  three seconds. Painting, the dialogs, and the theme round trip still want a
+  person.
+
+Still open: the two questions below.
 
 ## Open questions
 

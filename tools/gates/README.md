@@ -21,6 +21,7 @@ The order is the CI order described in `AGENTS.md`:
 | `05-features` | `cargo test -p cli --no-default-features`, `cargo test -p codegen --no-default-features` |
 | `06-doc` | `cargo test --workspace --doc` |
 | `07-deny` | `cargo deny check` |
+| `08-wasm` | `cargo build -p gui --no-default-features --features web --target wasm32-unknown-unknown` |
 
 `just gate` runs the same runner; `.github/workflows/ci.yml` runs it on Linux
 and Windows. The external `xtask conformance` and `xtask e2e` gates are recipes
