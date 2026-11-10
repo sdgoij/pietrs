@@ -77,6 +77,23 @@ pub fn build(
     bytes.extend_from_slice(&payload);
     bytes.extend_from_slice(&footer);
     std::fs::write(output, bytes)?;
+    set_executable(output)?;
+    Ok(())
+}
+
+/// An executable has to be executable. `fs::write` creates it with the caller's
+/// umask, which does not include `+x` on Unix, so a fresh build would be refused
+/// by the shell until it was chmodded by hand.
+fn set_executable(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -159,5 +176,25 @@ mod tests {
             1,
             "the payload is aarch64"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_built_executable_is_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("program");
+        build(
+            &single_block(),
+            &output,
+            None,
+            Division::Floored,
+            HOST_TARGET,
+        )
+        .unwrap();
+
+        let mode = std::fs::metadata(&output).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755, "the shell must be able to run it");
     }
 }
