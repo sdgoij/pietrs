@@ -9,6 +9,12 @@ use wasm_bindgen::prelude::*;
 
 use crate::{EditorApp, FileRequest, IoResult, ThemeChoice};
 
+/// The program the demo opens with, so the page shows a running image instead
+/// of a blank grid. This is the canonical Piet "Hello world!" (30x29 codels),
+/// from the specification page linked in the footer.
+const DEMO_IMAGE: &[u8] = include_bytes!("../web/hello.png");
+const DEMO_NAME: &str = "hello.png";
+
 /// What `index.html` constructs and starts.
 #[wasm_bindgen]
 pub struct WebHandle {
@@ -38,6 +44,7 @@ impl WebHandle {
                 eframe::WebOptions::default(),
                 Box::new(move |cc| {
                     let mut app = EditorApp::new(editor::Document::new(32, 32)?, None)?;
+                    app.open_bytes(DEMO_IMAGE, Some(PathBuf::from(DEMO_NAME)))?;
                     if let Some(storage) = cc.storage
                         && let Some(name) = eframe::get_value::<String>(storage, "theme")
                         && let Ok(theme) = name.parse::<ThemeChoice>()

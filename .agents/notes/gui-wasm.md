@@ -30,6 +30,7 @@ build, and this note explains why that is structural, not a choice deferred.
 | Codegen | the `web` feature never enables `codegen` | `cranelift-jit` does not build for wasm32 (it needs executable memory and `region`) |
 | Tooling | `wasm-bindgen-cli` at the crate's exact version, driven by `cargo run -p xtask -- wasm` | one pinned tool, an explicit failure when the versions differ; Trunk's auto-matching is convenience we do not need |
 | Tests | headless `Context::run_ui` for the app; a wasm **build** in the gate; no browser in CI | the wasm shell is thin, and chromedriver/geckodriver on every runner is a cost with no coverage |
+| Demo | the canonical "Hello world!" image, embedded with `include_bytes!` | the page should open on a running program, not a blank grid |
 
 ## Non-goals
 
@@ -368,10 +369,22 @@ Checked in, no templating, no build-time directive processing:
 </html>
 ```
 
-`pietrs.css` is three rules: the body fills the viewport, the canvas is a block
-that fills it, and `#error` is a readable overlay. The canvas needs an explicit
-size because eframe observes it with a `ResizeObserver`; without CSS the canvas
-is 300x150 and the editor renders into that box.
+`pietrs.css` lays the page out as a column: the canvas takes everything above a
+fixed footer, the footer sits on `#141414`, and `#error` is a readable strip
+above it. The canvas needs an explicit size because eframe observes it with a
+`ResizeObserver`; without CSS the canvas is 300x150 and the editor renders into
+that box.
+
+The footer carries the repository link and a link to the Piet specification.
+The editor opens with the canonical "Hello world!" image (30x29 codels)
+embedded in the bundle with `include_bytes!`, so the first frame shows a real
+program rather than a blank grid — 39 blocks, 25 states, and a termination
+verdict — and the same bytes print `Hello world!` under `pietrs run`.
+
+The image is David Morgan-Mar's, from the specification page the footer links.
+That page states no licence for its images, so whether it stays in the
+repository is the maintainer's call; replacing it is one file and one
+`include_bytes!`.
 
 `ViewportCommand::Title` is still sent by `update_title`. eframe's web backend
 has no title arm, so it falls into the catch-all that logs
@@ -601,6 +614,10 @@ crates.
 9. **`egui` churn.** Already pinned workspace-wide. The web shell uses only
    `WebRunner` and `WebOptions`, the two pieces eframe has kept stable across
    releases.
+10. **The demo image is third-party.** It comes from the specification page,
+    which states no licence for its images. If that is not acceptable, the demo
+    becomes one of our own fixtures or is dropped; it is one file and one
+    `include_bytes!`.
 
 ## Delivery plan
 
@@ -643,6 +660,9 @@ Landed, with the full gate green after each step:
   the exact command that fixes them.
 - `08-wasm.sh` joins the gate on all three runners; `cargo deny` needed no
   change, as predicted; the README has a browser section and a gate table row.
+- The page has a footer linking the repository and the specification, and the
+  editor opens with the canonical hello world embedded in the bundle: 39
+  blocks, 25 states, and `Hello world!` under `pietrs run`.
 
 Found and fixed while testing the bundle in a browser:
 

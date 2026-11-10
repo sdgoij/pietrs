@@ -97,12 +97,14 @@ python -m http.server -d target/web 8000
 ```
 
 `target/web` is a static bundle — `index.html`, `pietrs.css`, `pietrs.js`, and
-`pietrs_bg.wasm` — that any file server can host. Opening and saving go through
-the browser's file picker, so a document's identity is its file name and Save is
-a download. The JIT comparison and `build` are absent there: `cranelift-jit`
-cannot target wasm, and a wasm module cannot write an executable. Everything
-else — painting, undo, stepping, breakpoints, the stack, the output, the trail,
-the theme — is the desktop editor's code.
+`pietrs_bg.wasm` — that any file server can host. The editor opens with the
+canonical "Hello world!" program already loaded, and the footer links back here
+and to the [Piet specification](https://www.dangermouse.net/esoteric/piet.html).
+Opening and saving go through the browser's file picker, so a document's identity
+is its file name and Save is a download. The JIT comparison and `build` are absent
+there: `cranelift-jit` cannot target wasm, and a wasm module cannot write an
+executable. Everything else — painting, undo, stepping, breakpoints, the stack,
+the output, the trail, the theme — is the desktop editor's code.
 
 ### Images
 
