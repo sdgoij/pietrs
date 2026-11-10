@@ -2,7 +2,9 @@
 //! End-to-end tests for the `pietrs` binary.
 
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+#[cfg(feature = "codegen")]
+use std::process::Stdio;
+use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
@@ -16,6 +18,7 @@ const BLUE_LIGHT: [u8; 4] = [192, 192, 255, 255];
 const GREEN_DARK: [u8; 4] = [0, 192, 0, 255];
 const CYAN_LIGHT: [u8; 4] = [192, 255, 255, 255];
 const GREEN_NORMAL: [u8; 4] = [0, 255, 0, 255];
+#[cfg(feature = "codegen")]
 const RED_LIGHT: [u8; 4] = [255, 192, 192, 255];
 const BLUE_DARK: [u8; 4] = [0, 0, 192, 255];
 
@@ -127,6 +130,7 @@ fn the_graph_dump_is_off_unless_set() {
     assert!(output.stderr.is_empty(), "{:?}", output.stderr);
 }
 
+#[cfg(feature = "codegen")]
 #[test]
 fn the_clif_dump_switch_writes_the_lowered_function() {
     let dir = TempDir::new().unwrap();
@@ -143,6 +147,7 @@ fn the_clif_dump_switch_writes_the_lowered_function() {
     assert!(stderr.contains("block0:"), "{stderr}");
 }
 
+#[cfg(feature = "codegen")]
 #[test]
 fn run_uses_the_jit() {
     // `run` is the JIT path, so the disassembly exists there and nowhere else.
@@ -299,6 +304,7 @@ fn selftest_without_cases_is_a_diagnostic() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("no .png cases"));
 }
 
+#[cfg(feature = "codegen")]
 #[test]
 fn build_produces_a_runnable_executable() {
     let dir = TempDir::new().unwrap();
@@ -328,6 +334,7 @@ fn build_produces_a_runnable_executable() {
     assert!(String::from_utf8_lossy(&run.stderr).contains("step limit"));
 }
 
+#[cfg(feature = "codegen")]
 #[test]
 fn a_built_executable_reads_input() {
     let dir = TempDir::new().unwrap();
@@ -360,6 +367,7 @@ fn a_built_executable_reads_input() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "7");
 }
 
+#[cfg(feature = "codegen")]
 #[test]
 fn a_built_executable_rolls_the_stack() {
     let dir = TempDir::new().unwrap();
@@ -395,6 +403,7 @@ fn a_built_executable_rolls_the_stack() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "201030");
 }
 
+#[cfg(feature = "codegen")]
 #[test]
 fn a_built_executable_round_trips_utf8() {
     let dir = TempDir::new().unwrap();
@@ -435,7 +444,7 @@ fn selftest_runs_the_checked_in_corpus() {
 }
 
 #[test]
-fn the_division_flag_selects_the_rounding() {
+fn the_division_flag_selects_the_rounding_on_run() {
     let dir = TempDir::new().unwrap();
     let rgba: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, BLUE_DARK, CYAN_LIGHT]
         .into_iter()
@@ -461,6 +470,19 @@ fn the_division_flag_selects_the_rounding() {
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&run.stdout), expected, "{mode}");
     }
+}
+
+#[cfg(feature = "codegen")]
+#[test]
+fn the_division_flag_selects_the_rounding_on_build() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, BLUE_DARK, CYAN_LIGHT]
+        .into_iter()
+        .flatten()
+        .collect();
+    let image = write_png(&dir, "divide.png", 5, 1, &rgba);
+    let input = dir.path().join("divide.in");
+    std::fs::write(&input, "-7 3").unwrap();
 
     for (mode, expected) in [("floored", "-3"), ("truncating", "-2")] {
         let output = dir.path().join(format!("divide-{mode}"));
@@ -485,6 +507,20 @@ fn the_division_flag_selects_the_rounding() {
     }
 }
 
+#[cfg(not(feature = "codegen"))]
+#[test]
+fn build_reports_the_missing_feature() {
+    let dir = TempDir::new().unwrap();
+    let image = write_png(&dir, "one.png", 1, 1, &RED);
+    let run = pietrs()
+        .args(["build", image.to_str().unwrap(), "-o", "out"])
+        .output()
+        .unwrap();
+    assert!(!run.status.success());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("without the codegen feature"));
+}
+
+#[cfg(feature = "codegen")]
 #[test]
 fn build_names_a_missing_compiler() {
     let dir = TempDir::new().unwrap();

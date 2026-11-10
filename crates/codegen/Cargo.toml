@@ -13,13 +13,17 @@ cranelift-frontend.workspace = true
 cranelift-jit.workspace = true
 cranelift-module.workspace = true
 cranelift-native.workspace = true
-cranelift-object.workspace = true
+cranelift-object = { workspace = true, optional = true }
 runtime.workspace = true
 tessera.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 interp.workspace = true
+
+[features]
+default = ["object"]
+object = ["dep:cranelift-object"]
 
 [lints.rust]
 unsafe_code = "allow"

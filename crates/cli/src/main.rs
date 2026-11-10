@@ -2,8 +2,11 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
+#[cfg(feature = "codegen")]
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+#[cfg(feature = "codegen")]
 use std::time::{Duration, Instant};
 
 use canvas::{Blocks, CodelGrid};
@@ -44,7 +47,7 @@ enum Commands {
     Check(CheckArgs),
     /// Run the interpreter and print its transition trace.
     Trace(TraceArgs),
-    /// Run the program through the JIT and print its output.
+    /// Run the program and print its output.
     Run(RunArgs),
     /// Emit and link a standalone executable.
     Build(BuildArgs),
@@ -135,6 +138,7 @@ enum Error {
     #[error(transparent)]
     Interp(#[from] interp::Error),
 
+    #[cfg(feature = "codegen")]
     #[error(transparent)]
     Codegen(#[from] codegen::Error),
 
@@ -148,8 +152,13 @@ enum Error {
     #[error("cannot write stdout: {0}")]
     Write(#[from] std::io::Error),
 
+    #[cfg(feature = "codegen")]
     #[error(transparent)]
     Aot(#[from] aot::Error),
+
+    #[cfg(not(feature = "codegen"))]
+    #[error("this pietrs was built without the codegen feature")]
+    Unavailable,
 
     #[error("no .png cases in {0}")]
     NoCases(PathBuf),
@@ -263,6 +272,7 @@ fn trace(args: &TraceArgs) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(feature = "codegen")]
 fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
@@ -296,16 +306,50 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
     }
 }
 
+#[cfg(not(feature = "codegen"))]
+fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
+    let grid = load(&args.image)?;
+    let blocks = Blocks::partition(grid);
+    let input = match &args.input {
+        Some(path) => std::fs::read_to_string(path).map_err(|source| Error::Read {
+            path: path.clone(),
+            source,
+        })?,
+        None => String::new(),
+    };
+    let mut io = BufferIo::new(input);
+    let options = Options {
+        max_steps: args.max_steps,
+        division: args.division.into(),
+        ..Options::default()
+    };
+    let result = run(&blocks, &mut io, &options)?;
+    let mut stdout = std::io::stdout();
+    stdout.write_all(io.output().as_bytes())?;
+    stdout.flush()?;
+    match result.reason {
+        ExitReason::Terminated => Ok(ExitCode::SUCCESS),
+        ExitReason::StepLimit => {
+            eprintln!("pietrs: step limit reached after {} steps", result.steps);
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
 fn selftest(args: &SelftestArgs) -> Result<ExitCode, Error> {
     let cases = cases_in(&args.corpus)?;
     if cases.is_empty() {
         return Err(Error::NoCases(args.corpus.clone()));
     }
 
+    #[cfg(feature = "codegen")]
     let compiler = aot::find_compiler(args.compiler.as_deref());
+    #[cfg(feature = "codegen")]
     if compiler.is_none() {
         eprintln!("pietrs: no Rust compiler found (tried rustc); the AOT path is skipped");
     }
+    #[cfg(not(feature = "codegen"))]
+    let compiler: Option<String> = None;
 
     let mut failures = 0usize;
     for path in &cases {
@@ -415,14 +459,39 @@ fn check_case(
     let interpreted =
         run(&blocks, &mut interpreted_io, &options).map_err(|error| error.to_string())?;
 
+    #[cfg(feature = "codegen")]
+    check_paths(
+        &blocks,
+        &input,
+        max_steps,
+        division,
+        &interpreted_io,
+        interpreted,
+        compiler,
+    )?;
+
+    #[cfg(not(feature = "codegen"))]
+    let _ = (interpreted, interpreted_io, compiler);
+    Ok(())
+}
+
+#[cfg(feature = "codegen")]
+fn check_paths(
+    blocks: &Blocks,
+    input: &str,
+    max_steps: u64,
+    division: runtime::Division,
+    interpreted_io: &BufferIo,
+    interpreted: interp::Run,
+    compiler: Option<&str>,
+) -> Result<(), String> {
     let jit_options = codegen::Options {
         stack_capacity: 1 << 20,
         max_steps: Some(max_steps),
         division,
     };
-    let mut jit_io = BufferIo::new(input.as_str());
-    let jit =
-        codegen::run(&blocks, &mut jit_io, &jit_options).map_err(|error| error.to_string())?;
+    let mut jit_io = BufferIo::new(input);
+    let jit = codegen::run(blocks, &mut jit_io, &jit_options).map_err(|error| error.to_string())?;
 
     let interpreted_output = interpreted_io.output();
     let jit_output = jit_io.output();
@@ -459,8 +528,8 @@ fn check_case(
 
     if let Some(compiler) = compiler {
         check_aot(
-            &blocks,
-            &input,
+            blocks,
+            input,
             max_steps,
             division,
             compiler,
@@ -471,6 +540,7 @@ fn check_case(
     Ok(())
 }
 
+#[cfg(feature = "codegen")]
 fn check_aot(
     blocks: &Blocks,
     input: &str,
@@ -511,6 +581,7 @@ fn check_aot(
     }
 }
 
+#[cfg(feature = "codegen")]
 fn run_executable(
     executable: &Path,
     input: &str,
@@ -554,6 +625,7 @@ fn run_executable(
     }
 }
 
+#[cfg(feature = "codegen")]
 fn build_program(args: &BuildArgs) -> Result<(), Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
@@ -572,12 +644,20 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(not(feature = "codegen"))]
+fn build_program(args: &BuildArgs) -> Result<(), Error> {
+    let _ = args;
+    Err(Error::Unavailable)
+}
+
+#[cfg(feature = "codegen")]
 fn default_output(image: &Path) -> PathBuf {
     image
         .file_stem()
         .map_or_else(|| PathBuf::from("a.out"), PathBuf::from)
 }
 
+#[cfg(feature = "codegen")]
 fn executable_path(mut path: PathBuf) -> PathBuf {
     let suffix = std::env::consts::EXE_SUFFIX;
     if !suffix.is_empty() && path.extension().is_none() {

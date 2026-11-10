@@ -21,6 +21,7 @@ use cranelift_codegen::settings;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
+#[cfg(feature = "object")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use runtime::{BufferIo, Division, Input, Output};
 use tessera::{Command, Edge, State, StateGraph};
@@ -234,6 +235,7 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
 /// The object calls the host symbols `piet_out_char`, `piet_out_number`,
 /// `piet_in_char`, `piet_in_number`, and `piet_roll`, which the linker must
 /// provide.
+#[cfg(feature = "object")]
 pub fn emit_object(blocks: &Blocks, division: Division) -> Result<Vec<u8>, Error> {
     if std::mem::size_of::<usize>() != 8 {
         return Err(Error::UnsupportedTarget);
@@ -290,6 +292,7 @@ fn pointer_signature<M: Module>(module: &mut M) -> Signature {
     signature
 }
 
+#[cfg(feature = "object")]
 fn build_object_module() -> Result<ObjectModule, Error> {
     let isa_builder =
         cranelift_native::builder().map_err(|error| Error::Cranelift(error.to_string()))?;
@@ -1008,6 +1011,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "object")]
     fn the_object_is_not_empty() {
         let blocks = canvas::Blocks::partition(
             canvas::CodelGrid::from_colors(

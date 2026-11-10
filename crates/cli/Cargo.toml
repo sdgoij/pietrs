@@ -11,18 +11,23 @@ name = "pietrs"
 path = "src/main.rs"
 
 [dependencies]
-aot.workspace = true
+aot = { workspace = true, optional = true }
 canvas.workspace = true
 clap.workspace = true
-codegen.workspace = true
+codegen = { workspace = true, optional = true }
 interp.workspace = true
 runtime.workspace = true
-tempfile.workspace = true
+tempfile = { workspace = true, optional = true }
 tessera.workspace = true
 thiserror.workspace = true
 
+[features]
+default = ["codegen"]
+codegen = ["dep:codegen", "dep:aot", "dep:tempfile"]
+
 [dev-dependencies]
 png.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

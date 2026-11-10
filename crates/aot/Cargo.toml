@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 canvas.workspace = true
-codegen.workspace = true
+codegen = { workspace = true, features = ["object"] }
 runtime.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
