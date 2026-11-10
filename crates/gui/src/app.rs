@@ -784,6 +784,8 @@ impl EditorApp {
             ThemeChoice::Light => ThemePreference::Light,
             ThemeChoice::Dark => ThemePreference::Dark,
         });
+        ui.ctx()
+            .all_styles_mut(|style| style.interaction.selectable_labels = false);
         self.update_title(ui.ctx());
         #[cfg(feature = "codegen")]
         self.poll_job(ui.ctx());
@@ -962,8 +964,6 @@ impl EditorApp {
     }
 
     fn tools(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Editor");
-        ui.label("Tool");
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.tool, Tool::Pencil, "Pencil");
             ui.selectable_value(&mut self.tool, Tool::Rectangle, "Rect");
@@ -1736,6 +1736,15 @@ mod tests {
         assert!(!output.shapes.is_empty());
         assert_eq!(app.analysis().report().blocks, 2);
         assert!(app.document().color(Point::new(0, 0)).is_some());
+    }
+
+    #[test]
+    fn labels_are_not_selectable() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.ui_on(ui));
+        output.textures_delta.clear();
+        assert!(!ctx.global_style().interaction.selectable_labels);
     }
 
     #[test]
