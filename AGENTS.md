@@ -48,8 +48,9 @@ be run.
 
 ## Verification gates
 
-These commands are the contract. When a `Justfile` lands, `just gate` runs them
-in this order; if the two ever disagree, CI is the truth.
+These commands are the contract. `just gate` runs `tools/gates.sh`, which runs
+them in this order; `.github/workflows/gate.yml` runs the same runner on Linux
+and Windows. If the two ever disagree, CI is the truth.
 
 Before the first command, refresh editor diagnostics project-wide. A diagnostic
 is a failure just like a compiler warning, in every language the project uses:

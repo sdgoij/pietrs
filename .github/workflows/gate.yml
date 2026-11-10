@@ -1,0 +1,22 @@
+name: gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    name: gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Run the gate
+        shell: bash
+        run: sh tools/gates.sh
