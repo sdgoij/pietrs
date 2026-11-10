@@ -2,29 +2,37 @@ name: pietrs
 
 # Everything, in one place.
 #
-# Branches and pull requests run the gate on Linux and Windows. A `v<version>`
-# tag additionally checks the tag against the workspace version, then builds one
-# archive per platform and publishes the release. The build jobs depend on the
-# gate, so a tag cannot publish a commit that does not pass.
-
+# Branches and pull requests run the gate on Linux and Windows, in the same order
+# a developer sees locally. A `v*` tag adds three jobs on top: `tag` compares the
+# tag with the workspace version, `build` produces the archives for the three
+# targets, and `publish` attaches them to the release. The build needs the gate
+# *and* `tag`, so a mistyped tag fails in seconds and a red gate cannot publish.
+#
+# The action pins are commit hashes with the release in a trailing comment,
+# following the sibling repositories. The majors are the first of each action
+# that run on Node 24: Node 20 was removed from the runners on 2026-09-23.
 on:
   push:
     branches: ["**"]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull-request runs are pointless; a branch or tag run is not, so it
+  # queues instead of being cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
 
 permissions:
   contents: read
 
-# Superseded pull-request runs are pointless; a branch or tag run is not, so it
-# queues instead of being cancelled.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   gate:
-    name: gate (${{ matrix.os }})
+    name: Gate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -32,23 +40,39 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked --version 0.20.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # `rust-toolchain.toml` pins the channel and the clippy and rustfmt
+      # components; `rustup show` materialises it and logs what was used.
+      - name: Install the pinned toolchain
+        run: rustup show
+      # `aot/build.rs` cross-compiles a runner for both musl targets on every
+      # host, so both standard libraries have to be present. The toolchain file
+      # lists them; naming them here means an image that already has the
+      # toolchain cannot leave them out.
+      - name: Add the musl targets
+        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # The licence case runs `cargo deny`, so it has to be on the path. A
+      # prebuilt binary is a download; `cargo install` is a two-minute compile
+      # in every matrix leg.
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        with:
+          tool: cargo-deny@0.20.2
       - name: Run the gate
         shell: bash
         run: sh tools/gates.sh
 
-  # Runs beside the gate so a mistyped tag fails in seconds rather than after
-  # forty-five minutes. Skipped on branches; a skipped job skips everything that
-  # needs it, which is what keeps `linux`, `windows`, and `publish` off branches.
+  # Runs beside the gate rather than after it, so a tag that does not match the
+  # version costs seconds. Skipped off tags; a skipped job skips everything that
+  # needs it, which is what keeps the build and the release off `main`.
   tag:
-    name: tag
+    name: Tag matches the version
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - name: The tag must match the workspace version
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Compare the tag with the workspace version
         run: |
           set -eu
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
@@ -57,91 +81,98 @@ jobs:
             exit 1
           fi
 
-  linux:
-    name: linux (${{ matrix.target }})
+  # One job, three targets: everything but the packaging is the same on both
+  # hosts, and the packaging is a `runner.os` switch. `--target` is explicit even
+  # on Windows, so every leg writes `target/<triple>/release/pietrs[.exe]` and no
+  # step needs a host special case.
+  #
+  # The Linux targets are static: no C library to match, and `.cargo/config.toml`
+  # links them with the toolchain's own linker and bundled CRT, so aarch64 needs
+  # no cross C toolchain -- the same arrangement `aot/build.rs` uses for the
+  # embedded runners.
+  build:
+    name: Build (${{ matrix.target }})
     needs: [gate, tag]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        # Static binaries: no C library to match, and `.cargo/config.toml` links
-        # them with the toolchain's own linker, so no cross C toolchain is needed.
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    env:
+      NAME: pietrs-${{ github.ref_name }}-${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install the pinned toolchain
+        run: rustup show
       - name: Add the target
         run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build
         run: cargo build --release --locked -p cli --target ${{ matrix.target }}
-      - name: Package
+      # The archive holds one directory, so unpacking it in a downloads folder
+      # leaves a named one rather than three loose files.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -eu
-          name="pietrs-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/${name}"
-          cp "target/${{ matrix.target }}/release/pietrs" "dist/${name}/"
-          chmod 755 "dist/${name}/pietrs"
-          cp README.md LICENSE.md "dist/${name}/"
-          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-          rm -rf "dist/${name}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
-  windows:
-    name: windows (x86_64-pc-windows-msvc)
-    needs: [gate, tag]
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: cargo build --release --locked -p cli
-      - name: Package
+          mkdir -p "dist/${NAME}"
+          cp "target/${{ matrix.target }}/release/pietrs" "dist/${NAME}/"
+          chmod 755 "dist/${NAME}/pietrs"
+          cp README.md LICENSE.md "dist/${NAME}/"
+          tar -C dist -czf "dist/${NAME}.tar.gz" "${NAME}"
+          rm -rf "dist/${NAME}"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "pietrs-$env:GITHUB_REF_NAME-x86_64-pc-windows-msvc"
-          New-Item -ItemType Directory -Path "dist/$name" -Force | Out-Null
-          Copy-Item "target/release/pietrs.exe" "dist/$name/"
-          Copy-Item README.md, LICENSE.md "dist/$name/"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          Remove-Item -Recurse -Force "dist/$name"
-      - uses: actions/upload-artifact@v4
+          New-Item -ItemType Directory -Path "dist/$env:NAME" -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/pietrs.exe" "dist/$env:NAME/"
+          Copy-Item README.md, LICENSE.md "dist/$env:NAME/"
+          Compress-Archive -Path "dist/$env:NAME" -DestinationPath "dist/$env:NAME.zip"
+          Remove-Item -Recurse -Force "dist/$env:NAME"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: windows
-          path: dist/*.zip
+          name: ${{ matrix.target }}
+          path: dist/*
           if-no-files-found: error
 
   publish:
-    name: publish
-    needs: [linux, windows]
+    name: Publish release
+    needs: [build]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: dist
           merge-multiple: true
-      - name: Checksums
+      - name: List the archives
+        run: ls -la dist
+      # One checksum file for every archive, attached by explicit pattern so a
+      # future job's artifacts cannot slip into the release.
+      - name: Write SHA256SUMS
         working-directory: dist
-        run: sha256sum *.tar.gz *.zip > SHA256SUMS
-      - name: Create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            # A re-run of the workflow for the same tag updates the assets
-            # instead of failing on the existing release.
-            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-          else
-            gh release create "${GITHUB_REF_NAME}" dist/* \
-              --title "${GITHUB_REF_NAME}" \
-              --generate-notes
-          fi
+          sha256sum *.zip *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true
+          draft: false
+          # A semver prerelease (`v0.2.0-rc.1`) publishes as a prerelease;
+          # `v0.2.0` stays a normal release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
