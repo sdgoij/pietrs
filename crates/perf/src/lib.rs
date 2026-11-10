@@ -157,14 +157,9 @@ pub fn measure<T>(counter: &Counter, work: impl FnOnce() -> T) -> (T, Measuremen
     let start = Instant::now();
     let value = work();
     let elapsed = start.elapsed();
+    let counts = counter.read();
     drop(guard);
-    (
-        value,
-        Measurement {
-            elapsed,
-            counts: counter.read(),
-        },
-    )
+    (value, Measurement { elapsed, counts })
 }
 
 /// Prints a measurement in integer units, because this repo denies float
@@ -231,9 +226,11 @@ mod tests {
         let _guard = serial();
         let (value, measurement) = measure(&TEST_COUNTER, || vec![0u8; 4096]);
         assert_eq!(value.len(), 4096);
+        // Allocations and bytes only grow after the reset. `live` is
+        // process-wide, and the test harness can free an allocation made before
+        // the reset while this test runs, so it is not a stable assertion.
         assert!(measurement.counts.allocations >= 1);
         assert!(measurement.counts.bytes >= 4096);
-        assert!(measurement.counts.live >= 4096);
     }
 
     #[test]
