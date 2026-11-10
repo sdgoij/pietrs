@@ -76,3 +76,15 @@ fn a_malformed_png_is_a_diagnostic_not_a_panic() {
     let error = CodelGrid::from_png(b"not a png").unwrap_err();
     assert!(matches!(error, canvas::Error::Png(_)));
 }
+
+#[test]
+fn a_png_that_declares_too_many_pixels_is_a_diagnostic() {
+    // A 55-byte header declaring 2 x 67 108 864 pixels: 512 MiB of RGBA from a
+    // file smaller than the seed corpus. This is the input the `png` fuzz target
+    // found as an out-of-memory abort.
+    let bytes = include_bytes!("../fixtures/huge-header/program.png");
+    assert_eq!(
+        CodelGrid::from_png(bytes).unwrap_err(),
+        canvas::Error::ImageTooLarge
+    );
+}
