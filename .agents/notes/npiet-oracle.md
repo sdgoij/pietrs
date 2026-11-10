@@ -26,21 +26,9 @@ committed.
   `cc`/`gcc`/`clang`, a wrong npiet version, a nonzero exit, or a timeout by
   name; never turn a missing tool into a silent pass.
 
-## Known deviations
+## Divergences
 
-npiet is not the specification. `pietrs` follows the clarified 2018 spec where
-they differ, and records each deviation here.
-
-- Division and modulo: npiet truncates toward zero; `pietrs` floors by default
-  (Python `//`, `%`). Run conformance with `--division truncating` (the gate
-  default) to compare the same rounding.
-- Divide/modulo by zero: npiet consumes both operands and pushes `99999999`;
-  `pietrs` consumes both operands and pushes nothing.
-- Integers: npiet uses C `long`, which is 32-bit on Windows; `pietrs` uses
-  `i64` on every target.
-- Character I/O: npiet treats a character as a byte (`& 0xff`, `% 0xff`);
-  `pietrs` uses Unicode codepoints.
-
-The conformance corpus must either avoid these cases or name them as expected
-differences. Do not re-baseline a `pietrs` golden to match npiet in a case that
-exercises a recorded deviation.
+npiet is not the specification. Every observable difference is recorded in
+`divergences.md` in this directory; this note only covers how the gate behaves.
+Do not re-baseline a `pietrs` golden to match npiet in a case that exercises a
+recorded divergence.

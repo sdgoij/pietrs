@@ -218,8 +218,9 @@ journal; do not gate on a machine-dependent number.
 ## Project invariants
 
 - The target is the clarified 2018 Piet specification
-  (`dangermouse.net/esoteric/piet.html`), `npiet`-compatible where the two
-  disagree. Every deviation is recorded in `.agents/notes/`.
+  (`dangermouse.net/esoteric/piet.html`). npiet v1.3h is the conformance oracle,
+  but the specification wins where they disagree. Every observable deviation is
+  recorded in `.agents/notes/divergences.md`.
 - Integers are `i64` in v1. `pointer`/`switch` use `rem_euclid`; division and
   modulo are floored (Python `//` and `%`) by default, and `--division
   truncating` selects C/npiet rounding; `MIN / -1` and divide-by-zero are

@@ -22,4 +22,4 @@ with the goldens. `conformance` defaults to `--division truncating` to match
 npiet; `selftest` and `e2e` default to `floored`. A case whose output depends on
 rounding needs a mode-specific golden or should stay out of the shared corpus.
 Values outside 32-bit range and non-ASCII character I/O remain npiet
-deviations. The recorded deviations are in `.agents/notes/npiet-oracle.md`.
+deviations. The recorded deviations are in `.agents/notes/divergences.md`.
