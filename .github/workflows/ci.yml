@@ -3,11 +3,11 @@ name: pietrs
 # Everything, in one place.
 #
 # Branches and pull requests run the gate on Linux x86-64, Linux arm64, and
-# Windows, in the same order a developer sees locally. A `v*` tag adds three jobs
-# on top: `tag` compares the tag with the workspace version, `build` produces the
-# archives for the three targets, and `publish` attaches them to the release. The
-# build needs the gate *and* `tag`, so a mistyped tag fails in seconds and a red
-# gate cannot publish.
+# Windows, and then build the three release archives, so a release that would not
+# compile is caught before anything is tagged. A `v*` tag adds two jobs on top:
+# `tag` compares the tag with the workspace version, and `publish` attaches the
+# archives to the release. Only `publish` needs `tag`, so a mistyped tag fails in
+# seconds and a red gate or a broken build cannot publish.
 #
 # Every action is pinned to a commit hash with its release in a trailing comment,
 # following the sibling repositories. The majors are current -- `checkout` v7,
@@ -69,8 +69,8 @@ jobs:
         run: sh tools/gates.sh
 
   # Runs beside the gate rather than after it, so a tag that does not match the
-  # version costs seconds. Skipped off tags; a skipped job skips everything that
-  # needs it, which is what keeps the build and the release off `main`.
+  # version costs seconds. Skipped off tags, and only `publish` needs it, which is
+  # what keeps the release off `main` without holding the build back.
   tag:
     name: Tag matches the version
     if: startsWith(github.ref, 'refs/tags/v')
@@ -87,18 +87,16 @@ jobs:
             exit 1
           fi
 
-  # One job, three targets: everything but the packaging is the same on both
-  # hosts, and the packaging is a `runner.os` switch. `--target` is explicit even
+  # One job, three targets: everything but the packaging is the same on every
+  # host, and the packaging is a `runner.os` switch. `--target` is explicit even
   # on Windows, so every leg writes `target/<triple>/release/pietrs[.exe]` and no
   # step needs a host special case.
   #
-  # The Linux targets are static: no C library to match, and `.cargo/config.toml`
-  # links them with the toolchain's own linker and bundled CRT, so aarch64 needs
-  # no cross C toolchain -- the same arrangement `aot/build.rs` uses for the
-  # embedded runners.
+  # It runs on branches as well as tags, so a release that would not compile is
+  # caught by the push that broke it rather than by the tag that ships it.
   build:
     name: Build (${{ matrix.target }})
-    needs: [gate, tag]
+    needs: [gate]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -151,10 +149,13 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+          # Branches upload too, so keep them from piling up; a release's own
+          # assets are unaffected.
+          retention-days: 7
 
   publish:
     name: Publish release
-    needs: [build]
+    needs: [build, tag]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
