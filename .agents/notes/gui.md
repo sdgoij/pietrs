@@ -706,17 +706,21 @@ Landed, with tests, in the first implementation pass:
   `Analysis` with a revision-keyed cache and `Report`, `Session` with
   breakpoints, budgets, reset, trail, and trace export.
 - `gui`: `EditorApp` with the palette-fixed canvas, fit/pan/zoom, the check
-  panel, and the `System`/`Light`/`Dark` switch; a headless frame test.
+  panel, the `System`/`Light`/`Dark` switch, and the debugger panel. The
+  debugger shows the state, pending command, stack, output, step count, and
+  stop reason; it steps with F10, runs and pauses with F5, resets, sets a
+  breakpoint on the current or selected block, overlays the current block, and
+  draws the visited trail. A click selects a block.
 - `cli`: `pietrs editor [IMAGE] [--codel-size N]`, the `editor` feature, the
   named missing-feature error, and tests in both shapes.
 - Gates: `05-features.sh` runs the six shapes; `deny.toml` records the new
   licences and the three unmaintained-advisory ignores.
 
-Still to build: the editing tools and palette, the debugger panels and
-breakpoint UI, import/export and the JIT/build actions, theme persistence, and
-the README's editor section. The release question in the risks is still open:
-the GUI has been compiled and tested on Windows; the static musl artefact and
-the two Linux runners have not been exercised here, so CI is the first proof.
+Still to build: the editing tools and palette, import/export and the JIT/build
+actions, theme persistence, and the README's editor section. The release
+question in the risks is still open: the GUI has been compiled and tested on
+Windows; the static musl artefact and the two Linux runners have not been
+exercised here, so CI is the first proof.
 
 ## Invariants this proposal keeps
 

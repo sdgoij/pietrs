@@ -1782,6 +1782,7 @@ dependencies = [
  "editor",
  "eframe",
  "egui",
+ "interp",
  "rfd",
  "tessera",
  "thiserror 2.0.21",

@@ -65,6 +65,20 @@ pub struct Breakpoints {
 }
 
 impl Breakpoints {
+    /// Adds the block if it is absent, removes it if it is present.
+    pub fn toggle_block(&mut self, block: BlockId) {
+        if !self.blocks.remove(&block) {
+            self.blocks.insert(block);
+        }
+    }
+
+    /// The block breakpoints in id order, for a stable list.
+    pub fn sorted_blocks(&self) -> Vec<BlockId> {
+        let mut blocks: Vec<BlockId> = self.blocks.iter().copied().collect();
+        blocks.sort();
+        blocks
+    }
+
     pub fn matches(&self, blocks: &Blocks, state: Option<State>) -> bool {
         let Some(state) = state else {
             return false;
@@ -479,5 +493,16 @@ mod tests {
 
         document.set(Point::new(0, 0), Color::Black);
         assert!(!session.is_valid_for(&document));
+    }
+
+    #[test]
+    fn block_breakpoints_toggle_and_sort() {
+        let mut breakpoints = Breakpoints::default();
+        breakpoints.toggle_block(BlockId(3));
+        breakpoints.toggle_block(BlockId(1));
+        assert_eq!(breakpoints.sorted_blocks(), vec![BlockId(1), BlockId(3)]);
+
+        breakpoints.toggle_block(BlockId(3));
+        assert_eq!(breakpoints.sorted_blocks(), vec![BlockId(1)]);
     }
 }
