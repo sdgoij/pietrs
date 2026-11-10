@@ -711,16 +711,22 @@ Landed, with tests, in the first implementation pass:
   stop reason; it steps with F10, runs and pauses with F5, resets, sets a
   breakpoint on the current or selected block, overlays the current block, and
   draws the visited trail. A click selects a block.
+- `gui` editing: pencil with line interpolation, rectangle with a preview,
+  4-connected fill, eyedropper, a 20-colour palette, undo and redo (Ctrl/Cmd+Z,
+  Shift, and Y), and a dirty marker in the window title. A stroke is one undo
+  entry; an edit refreshes the analysis, invalidates the session, and rebinds
+  the texture on the same frame. Panning is right or middle drag, or Space plus
+  drag, so the primary button paints.
 - `cli`: `pietrs editor [IMAGE] [--codel-size N]`, the `editor` feature, the
   named missing-feature error, and tests in both shapes.
 - Gates: `05-features.sh` runs the six shapes; `deny.toml` records the new
   licences and the three unmaintained-advisory ignores.
 
-Still to build: the editing tools and palette, import/export and the JIT/build
-actions, theme persistence, and the README's editor section. The release
-question in the risks is still open: the GUI has been compiled and tested on
-Windows; the static musl artefact and the two Linux runners have not been
-exercised here, so CI is the first proof.
+Still to build: import/export and the JIT/build actions, theme persistence, and
+a fuller README editor section. The release question in the risks is still
+open: the GUI has been compiled and tested on Windows; the static musl artefact
+and the two Linux runners have not been exercised here, so CI is the first
+proof.
 
 ## Invariants this proposal keeps
 

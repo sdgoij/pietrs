@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use canvas::{BlockId, Point};
+use canvas::{BlockId, Color, Hue, Lightness, Point};
 use editor::{Analysis, Breakpoints, Budget, Document, Session, Stop};
 use egui::{CornerRadius, TextureHandle, TextureOptions, ThemePreference};
 use interp::Options;
@@ -30,6 +30,14 @@ enum DebugAction {
     ToggleBreak(BlockId),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tool {
+    Pencil,
+    Rectangle,
+    Fill,
+    Eyedropper,
+}
+
 /// The editor's state and panels.
 ///
 /// `ui_on` takes the root `Ui` eframe hands the app, and is also what a test
@@ -53,11 +61,21 @@ pub struct EditorApp {
     overlay_state: Option<State>,
     overlay_revision: u64,
     last_error: Option<String>,
+    tool: Tool,
+    colour: Color,
+    stroke_active: bool,
+    stroke_changed: bool,
+    last_paint: Option<Point>,
+    rect_start: Option<Point>,
+    rect_end: Option<Point>,
+    dirty: bool,
+    window_title: String,
 }
 
 impl EditorApp {
     pub fn new(document: Document, path: Option<PathBuf>) -> Result<Self, canvas::Error> {
         let analysis = Analysis::build(&document)?;
+        let dirty = path.is_none();
         Ok(Self {
             document,
             analysis,
@@ -77,6 +95,15 @@ impl EditorApp {
             overlay_state: None,
             overlay_revision: 0,
             last_error: None,
+            tool: Tool::Pencil,
+            colour: Color::chromatic(Hue::Red, Lightness::Normal),
+            stroke_active: false,
+            stroke_changed: false,
+            last_paint: None,
+            rect_start: None,
+            rect_end: None,
+            dirty,
+            window_title: String::new(),
         })
     }
 
@@ -191,6 +218,123 @@ impl EditorApp {
         self.last_error = None;
     }
 
+    pub fn colour(&self) -> Color {
+        self.colour
+    }
+
+    pub fn set_colour(&mut self, colour: Color) {
+        self.colour = colour;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Starts a freehand stroke.
+    pub fn begin_edit(&mut self) {
+        self.document.begin_stroke();
+        self.stroke_active = true;
+        self.stroke_changed = false;
+        self.last_paint = None;
+    }
+
+    /// Paints from the previous point to this one, so a fast drag leaves no
+    /// gaps between sampled codels.
+    pub fn paint_to(&mut self, point: Point) {
+        if !self.stroke_active {
+            self.begin_edit();
+        }
+        let from = self.last_paint.unwrap_or(point);
+        for codel in line(from, point) {
+            self.stroke_changed |= self.document.set(codel, self.colour);
+        }
+        self.last_paint = Some(point);
+    }
+
+    /// Ends a freehand stroke, recording it as one undo entry.
+    pub fn end_edit(&mut self) {
+        if !self.stroke_active {
+            return;
+        }
+        self.stroke_active = false;
+        self.last_paint = None;
+        self.document.end_stroke();
+        if std::mem::take(&mut self.stroke_changed) {
+            self.after_edit();
+        }
+    }
+
+    pub fn fill_at(&mut self, point: Point) {
+        if self.document.fill(point, self.colour) {
+            self.after_edit();
+        }
+    }
+
+    pub fn pick_at(&mut self, point: Point) {
+        if let Some(colour) = self.document.color(point) {
+            self.colour = colour;
+        }
+    }
+
+    /// Paints the inclusive rectangle in one undo entry.
+    pub fn apply_rect(&mut self, from: Point, to: Point) {
+        self.document.begin_stroke();
+        let mut changed = false;
+        for y in from.y.min(to.y)..=from.y.max(to.y) {
+            for x in from.x.min(to.x)..=from.x.max(to.x) {
+                changed |= self.document.set(Point::new(x, y), self.colour);
+            }
+        }
+        self.document.end_stroke();
+        if changed {
+            self.after_edit();
+        }
+    }
+
+    pub fn undo(&mut self) -> bool {
+        if self.stroke_active {
+            self.stroke_active = false;
+            self.stroke_changed = false;
+            self.last_paint = None;
+            self.document.end_stroke();
+        }
+        if !self.document.undo() {
+            return false;
+        }
+        self.after_edit();
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        if !self.document.redo() {
+            return false;
+        }
+        self.after_edit();
+        true
+    }
+
+    fn after_edit(&mut self) {
+        self.dirty = true;
+        self.debug_reset();
+        self.rect_start = None;
+        self.rect_end = None;
+        if let Err(error) = self.analysis.refresh(&self.document) {
+            self.last_error = Some(error.to_string());
+        }
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let title = format!(
+            "pietrs - {}{}",
+            self.title(),
+            if self.dirty { " *" } else { "" }
+        );
+        if self.window_title != title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
+    }
+
     /// Renders the panels and applies the theme.
     pub fn ui_on(&mut self, ui: &mut egui::Ui) {
         ui.ctx().set_theme(match self.theme {
@@ -198,10 +342,33 @@ impl EditorApp {
             ThemeChoice::Light => ThemePreference::Light,
             ThemeChoice::Dark => ThemePreference::Dark,
         });
+        self.update_title(ui.ctx());
+
+        if !ui.ctx().text_edit_focused() {
+            let (undo, redo) = ui.input(|input| {
+                let command = input.modifiers.command;
+                (
+                    command && !input.modifiers.shift && input.key_pressed(egui::Key::Z),
+                    command
+                        && (input.key_pressed(egui::Key::Y)
+                            || (input.modifiers.shift && input.key_pressed(egui::Key::Z))),
+                )
+            });
+            if undo {
+                self.undo();
+            }
+            if redo {
+                self.redo();
+            }
+        }
+
         if self.running {
             self.debug_run(ui.ctx());
         }
 
+        egui::Panel::left("tools")
+            .default_size(190.0)
+            .show(ui, |ui| self.tools(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::right("report")
             .default_size(280.0)
@@ -305,6 +472,95 @@ impl EditorApp {
             .and_then(|name| name.to_str())
             .unwrap_or("untitled")
             .to_owned()
+    }
+
+    fn tools(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Editor");
+        ui.label("Tool");
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.tool, Tool::Pencil, "Pencil");
+            ui.selectable_value(&mut self.tool, Tool::Rectangle, "Rect");
+            ui.selectable_value(&mut self.tool, Tool::Fill, "Fill");
+            ui.selectable_value(&mut self.tool, Tool::Eyedropper, "Pick");
+        });
+
+        ui.separator();
+        ui.label("Colour");
+        self.palette(ui);
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.document.can_undo(), egui::Button::new("Undo"))
+                .clicked()
+            {
+                self.undo();
+            }
+            if ui
+                .add_enabled(self.document.can_redo(), egui::Button::new("Redo"))
+                .clicked()
+            {
+                self.redo();
+            }
+        });
+
+        ui.separator();
+        ui.label(format!(
+            "{}x{} codels, codel size {}",
+            self.document.width(),
+            self.document.height(),
+            self.document.codel_size()
+        ));
+        if let Some(block) = self
+            .selected
+            .and_then(|block| self.analysis.blocks().block(block))
+        {
+            ui.label(format!(
+                "selected: block {} ({:?})",
+                block.id().0,
+                block.color()
+            ));
+        }
+    }
+
+    fn palette(&mut self, ui: &mut egui::Ui) {
+        let size = egui::vec2(24.0, 24.0);
+        for row in 0..6 {
+            ui.horizontal(|ui| {
+                for column in 0..3 {
+                    let index = row * 3 + column;
+                    if let Some(colour) = Color::ALL.get(index).copied() {
+                        self.swatch(ui, colour, size);
+                    }
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            self.swatch(ui, Color::White, size);
+            self.swatch(ui, Color::Black, size);
+        });
+    }
+
+    fn swatch(&mut self, ui: &mut egui::Ui, colour: Color, size: egui::Vec2) {
+        let [red, green, blue] = colour.rgb();
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let painter = ui.painter();
+        painter.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            egui::Color32::from_rgb(red, green, blue),
+        );
+        if colour == self.colour {
+            outline(
+                painter,
+                rect,
+                egui::Stroke::new(2.0, ui.visuals().strong_text_color()),
+            );
+        }
+        if response.clicked() {
+            self.colour = colour;
+        }
+        response.on_hover_text(format!("{colour:?}"));
     }
 
     fn right_panel(&mut self, ui: &mut egui::Ui) {
@@ -532,9 +788,6 @@ impl EditorApp {
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui) {
-        self.refresh_texture(ui.ctx());
-        self.refresh_overlay(ui.ctx());
-
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
 
@@ -558,7 +811,12 @@ impl EditorApp {
         if response.hovered() && scroll != 0.0 {
             self.zoom = (self.zoom * (scroll * 0.001).exp()).clamp(0.5, 64.0);
         }
-        if response.dragged() {
+
+        let space = ui.input(|input| input.key_down(egui::Key::Space));
+        let panning = response.dragged_by(egui::PointerButton::Secondary)
+            || response.dragged_by(egui::PointerButton::Middle)
+            || (space && response.dragged_by(egui::PointerButton::Primary));
+        if panning {
             self.pan += response.drag_delta();
         }
 
@@ -570,21 +828,31 @@ impl EditorApp {
         let image_rect = egui::Rect::from_center_size(center, size);
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
 
-        if response.clicked()
-            && let Some(pointer) = response.interact_pointer_pos()
-            && image_rect.contains(pointer)
+        let pointer = response
+            .interact_pointer_pos()
+            .or_else(|| response.hover_pos());
+        let hovered = pointer.and_then(|pointer| {
+            codel_at(
+                image_rect,
+                pointer,
+                self.zoom,
+                self.document.width(),
+                self.document.height(),
+            )
+        });
+
+        if let Some(point) = hovered
+            && (response.clicked() || response.drag_started_by(egui::PointerButton::Primary))
         {
-            let x = (pointer.x - image_rect.min.x) / self.zoom;
-            let y = (pointer.y - image_rect.min.y) / self.zoom;
-            if x >= 0.0
-                && y >= 0.0
-                && x < self.document.width() as f32
-                && y < self.document.height() as f32
-            {
-                let point = Point::new(x as u32, y as u32);
-                self.selected = self.analysis.blocks().block_id_at(point);
-            }
+            self.selected = self.analysis.blocks().block_id_at(point);
         }
+        if !panning {
+            self.handle_tool(&response, hovered);
+        }
+
+        // An edit changed the document this frame; rebuild before painting.
+        self.refresh_texture(ui.ctx());
+        self.refresh_overlay(ui.ctx());
 
         if let Some(texture) = &self.texture {
             painter.image(texture.id(), image_rect, uv, egui::Color32::WHITE);
@@ -597,12 +865,21 @@ impl EditorApp {
             .selected
             .and_then(|block| self.analysis.blocks().block(block))
         {
-            let outline = block_rect(image_rect, block.codels(), self.zoom);
-            let stroke = egui::Stroke::new(1.5, ui.visuals().selection.bg_fill);
-            painter.line_segment([outline.left_top(), outline.right_top()], stroke);
-            painter.line_segment([outline.right_top(), outline.right_bottom()], stroke);
-            painter.line_segment([outline.right_bottom(), outline.left_bottom()], stroke);
-            painter.line_segment([outline.left_bottom(), outline.left_top()], stroke);
+            outline(
+                &painter,
+                block_rect(image_rect, block.codels(), self.zoom),
+                egui::Stroke::new(1.5, ui.visuals().selection.bg_fill),
+            );
+        }
+
+        if self.tool == Tool::Rectangle
+            && let (Some(from), Some(to)) = (self.rect_start, self.rect_end)
+        {
+            outline(
+                &painter,
+                codel_rect(image_rect, from, to, self.zoom),
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+            );
         }
 
         if let Some(session) = &self.session {
@@ -616,6 +893,72 @@ impl EditorApp {
                     painter.line_segment([previous, current], stroke);
                 }
                 previous = Some(current);
+            }
+        }
+    }
+
+    fn handle_tool(&mut self, response: &egui::Response, hovered: Option<Point>) {
+        let primary = egui::PointerButton::Primary;
+        match self.tool {
+            Tool::Pencil => {
+                if response.drag_started_by(primary) {
+                    self.begin_edit();
+                    if let Some(point) = hovered {
+                        self.paint_to(point);
+                    }
+                } else if response.dragged_by(primary)
+                    && self.stroke_active
+                    && let Some(point) = hovered
+                {
+                    self.paint_to(point);
+                }
+                if response.drag_stopped() && self.stroke_active {
+                    self.end_edit();
+                }
+                if response.clicked()
+                    && let Some(point) = hovered
+                {
+                    self.begin_edit();
+                    self.paint_to(point);
+                    self.end_edit();
+                }
+            }
+            Tool::Rectangle => {
+                if response.drag_started_by(primary) {
+                    self.rect_start = hovered;
+                    self.rect_end = hovered;
+                } else if response.dragged_by(primary)
+                    && self.rect_start.is_some()
+                    && let Some(point) = hovered
+                {
+                    self.rect_end = Some(point);
+                }
+                if response.drag_stopped() {
+                    let start = self.rect_start.take();
+                    let end = self.rect_end.take();
+                    if let (Some(from), Some(to)) = (start, end) {
+                        self.apply_rect(from, to);
+                    }
+                }
+                if response.clicked()
+                    && let Some(point) = hovered
+                {
+                    self.apply_rect(point, point);
+                }
+            }
+            Tool::Fill => {
+                if response.clicked()
+                    && let Some(point) = hovered
+                {
+                    self.fill_at(point);
+                }
+            }
+            Tool::Eyedropper => {
+                if response.clicked()
+                    && let Some(point) = hovered
+                {
+                    self.pick_at(point);
+                }
             }
         }
     }
@@ -683,6 +1026,72 @@ impl EditorApp {
     }
 }
 
+fn codel_at(
+    image_rect: egui::Rect,
+    pointer: egui::Pos2,
+    zoom: f32,
+    width: u32,
+    height: u32,
+) -> Option<Point> {
+    if !image_rect.contains(pointer) {
+        return None;
+    }
+    let x = (pointer.x - image_rect.min.x) / zoom;
+    let y = (pointer.y - image_rect.min.y) / zoom;
+    if x < 0.0 || y < 0.0 || x >= width as f32 || y >= height as f32 {
+        return None;
+    }
+    Some(Point::new(x as u32, y as u32))
+}
+
+fn codel_rect(image_rect: egui::Rect, from: Point, to: Point, zoom: f32) -> egui::Rect {
+    let min_x = from.x.min(to.x);
+    let min_y = from.y.min(to.y);
+    let max_x = from.x.max(to.x);
+    let max_y = from.y.max(to.y);
+    egui::Rect::from_min_max(
+        image_rect.min + egui::vec2(min_x as f32 * zoom, min_y as f32 * zoom),
+        image_rect.min + egui::vec2((max_x + 1) as f32 * zoom, (max_y + 1) as f32 * zoom),
+    )
+}
+
+fn outline(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    painter.line_segment([rect.left_top(), rect.right_top()], stroke);
+    painter.line_segment([rect.right_top(), rect.right_bottom()], stroke);
+    painter.line_segment([rect.right_bottom(), rect.left_bottom()], stroke);
+    painter.line_segment([rect.left_bottom(), rect.left_top()], stroke);
+}
+
+/// Every codel on the inclusive line, so a fast drag does not leave gaps.
+fn line(from: Point, to: Point) -> Vec<Point> {
+    let mut points = Vec::new();
+    let mut x = from.x as i64;
+    let mut y = from.y as i64;
+    let end_x = to.x as i64;
+    let end_y = to.y as i64;
+    let dx = (end_x - x).abs();
+    let dy = -(end_y - y).abs();
+    let step_x = if x < end_x { 1 } else { -1 };
+    let step_y = if y < end_y { 1 } else { -1 };
+    let mut error = dx + dy;
+    loop {
+        points.push(Point::new(x as u32, y as u32));
+        if x == end_x && y == end_y {
+            break;
+        }
+        let twice = 2 * error;
+        if twice >= dy {
+            error += dy;
+            x += step_x;
+        }
+        if twice <= dx {
+            error += dx;
+            y += step_y;
+        }
+    }
+    points
+}
+
 fn codel_center(image_rect: egui::Rect, point: Point, zoom: f32) -> egui::Pos2 {
     image_rect.min + egui::vec2((point.x as f32 + 0.5) * zoom, (point.y as f32 + 0.5) * zoom)
 }
@@ -728,6 +1137,14 @@ mod tests {
         codels.push(Color::chromatic(Hue::Red, Lightness::Dark));
         codels.push(Color::chromatic(Hue::Magenta, Lightness::Normal));
         Document::from_grid(&CodelGrid::from_colors(67, 1, codels).unwrap())
+    }
+
+    fn red() -> Color {
+        Color::chromatic(Hue::Red, Lightness::Normal)
+    }
+
+    fn green() -> Color {
+        Color::chromatic(Hue::Green, Lightness::Normal)
     }
 
     fn render(app: &mut EditorApp) -> egui::FullOutput {
@@ -817,5 +1234,69 @@ mod tests {
         let output = render(&mut app);
         assert!(!output.shapes.is_empty());
         assert!(app.session().unwrap().steps() >= 1);
+    }
+
+    #[test]
+    fn the_pencil_paints_a_line_and_undoes_as_one_stroke() {
+        let mut app =
+            EditorApp::new(small_document(&["rrr"]), Some(PathBuf::from("x.png"))).unwrap();
+        assert!(!app.is_dirty());
+        app.set_colour(Color::Black);
+
+        app.begin_edit();
+        app.paint_to(Point::new(0, 0));
+        app.paint_to(Point::new(2, 0));
+        app.end_edit();
+
+        assert_eq!(app.document().color(Point::new(1, 0)), Some(Color::Black));
+        assert!(app.is_dirty());
+        assert!(app.undo());
+        assert_eq!(app.document().color(Point::new(1, 0)), Some(red()));
+        assert!(!app.document().can_undo());
+    }
+
+    #[test]
+    fn the_rectangle_fills_its_span_as_one_edit() {
+        let mut app = EditorApp::new(small_document(&["rrr", "rrr"]), None).unwrap();
+        app.set_colour(Color::Black);
+        app.apply_rect(Point::new(0, 0), Point::new(1, 1));
+
+        assert_eq!(app.document().color(Point::new(1, 1)), Some(Color::Black));
+        assert_eq!(app.document().color(Point::new(2, 0)), Some(red()));
+        assert!(app.undo());
+        assert_eq!(app.document().color(Point::new(1, 1)), Some(red()));
+    }
+
+    #[test]
+    fn the_fill_replaces_the_4_connected_region() {
+        let mut app = EditorApp::new(small_document(&["rrr", "rgr"]), None).unwrap();
+        app.set_colour(Color::Black);
+        app.fill_at(Point::new(0, 0));
+
+        assert_eq!(app.document().color(Point::new(2, 0)), Some(Color::Black));
+        assert_eq!(app.document().color(Point::new(2, 1)), Some(Color::Black));
+        assert_eq!(app.document().color(Point::new(1, 1)), Some(green()));
+    }
+
+    #[test]
+    fn the_eyedropper_adopts_the_codel_colour() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        assert_eq!(app.colour(), red());
+        app.pick_at(Point::new(1, 0));
+        assert_eq!(app.colour(), green());
+    }
+
+    #[test]
+    fn an_edit_invalidates_the_debug_session() {
+        let mut app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+        app.debug_step().unwrap();
+        assert!(app.session().is_some());
+
+        app.set_colour(Color::Black);
+        app.begin_edit();
+        app.paint_to(Point::new(0, 0));
+        app.end_edit();
+
+        assert!(app.session().is_none());
     }
 }
