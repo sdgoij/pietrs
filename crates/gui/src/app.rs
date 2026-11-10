@@ -10,6 +10,13 @@ use tessera::{Exit, Start, State};
 
 use crate::FileError;
 
+#[cfg(feature = "codegen")]
+use runtime::BufferIo;
+#[cfg(feature = "codegen")]
+use std::sync::Arc;
+#[cfg(feature = "codegen")]
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+
 /// Stack rows shown before the rest is collapsed.
 const MAX_STACK_ROWS: usize = 16;
 /// Output characters shown; the count is always complete.
@@ -25,11 +32,39 @@ pub enum ThemeChoice {
     Dark,
 }
 
+impl ThemeChoice {
+    /// The name persisted in `eframe`'s storage.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "system",
+            ThemeChoice::Light => "light",
+            ThemeChoice::Dark => "dark",
+        }
+    }
+}
+
+impl std::str::FromStr for ThemeChoice {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "system" => Ok(ThemeChoice::System),
+            "light" => Ok(ThemeChoice::Light),
+            "dark" => Ok(ThemeChoice::Dark),
+            _ => Err(()),
+        }
+    }
+}
+
 enum DebugAction {
     Step,
     ToggleRun,
     Reset,
     ToggleBreak(BlockId),
+    #[cfg(feature = "codegen")]
+    Compare,
+    #[cfg(feature = "codegen")]
+    Build,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +79,36 @@ enum Tool {
 enum Pending {
     New,
     Open,
+}
+
+#[cfg(feature = "codegen")]
+#[derive(Default)]
+struct CompilerState {
+    job: Option<Job>,
+    message: Option<String>,
+}
+
+#[cfg(feature = "codegen")]
+struct Job {
+    receiver: Receiver<Result<String, String>>,
+    kind: JobKind,
+}
+
+#[cfg(feature = "codegen")]
+#[derive(Clone, Copy)]
+enum JobKind {
+    Compare,
+    Build,
+}
+
+#[cfg(feature = "codegen")]
+impl JobKind {
+    fn label(self) -> &'static str {
+        match self {
+            JobKind::Compare => "JIT comparison",
+            JobKind::Build => "build",
+        }
+    }
 }
 
 /// The editor's state and panels.
@@ -79,6 +144,8 @@ pub struct EditorApp {
     dirty: bool,
     window_title: String,
     pending: Option<Pending>,
+    #[cfg(feature = "codegen")]
+    compiler: CompilerState,
 }
 
 impl EditorApp {
@@ -114,6 +181,8 @@ impl EditorApp {
             dirty,
             window_title: String::new(),
             pending: None,
+            #[cfg(feature = "codegen")]
+            compiler: CompilerState::default(),
         })
     }
 
@@ -536,6 +605,96 @@ impl EditorApp {
         }
     }
 
+    #[cfg(feature = "codegen")]
+    fn poll_job(&mut self, ctx: &egui::Context) {
+        let outcome = match &self.compiler.job {
+            Some(job) => match job.receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint();
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => Err("the compiler worker exited".to_owned()),
+            },
+            None => return,
+        };
+        self.compiler.job = None;
+        match outcome {
+            Ok(message) => {
+                self.last_error = None;
+                self.compiler.message = Some(message);
+            }
+            Err(error) => self.last_error = Some(error),
+        }
+    }
+
+    #[cfg(feature = "codegen")]
+    fn compare_with_jit(&mut self, ctx: &egui::Context) {
+        let blocks = Arc::clone(self.analysis.blocks());
+        let input = self.input.clone();
+        let context = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(compare_jit(&blocks, &input));
+            context.request_repaint();
+        });
+        self.compiler = CompilerState {
+            job: Some(Job {
+                receiver,
+                kind: JobKind::Compare,
+            }),
+            message: None,
+        };
+    }
+
+    #[cfg(feature = "codegen")]
+    fn spawn_build(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let blocks = Arc::clone(self.analysis.blocks());
+        let context = ctx.clone();
+        let (sender, receiver) = mpsc::channel();
+        let output = path.clone();
+        std::thread::spawn(move || {
+            let result = aot::build(
+                &blocks,
+                &output,
+                None,
+                runtime::Division::Floored,
+                aot::HOST_TARGET,
+            )
+            .map(|()| format!("built {}", output.display()))
+            .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+            context.request_repaint();
+        });
+        self.compiler = CompilerState {
+            job: Some(Job {
+                receiver,
+                kind: JobKind::Build,
+            }),
+            message: None,
+        };
+    }
+
+    #[cfg(all(feature = "native", feature = "codegen"))]
+    fn build_dialog(&mut self, ctx: &egui::Context) {
+        let Some(path) = rfd::FileDialog::new().set_file_name("program").save_file() else {
+            return;
+        };
+        let path = if path.extension().is_none() {
+            let mut name = path.into_os_string();
+            name.push(std::env::consts::EXE_SUFFIX);
+            PathBuf::from(name)
+        } else {
+            path
+        };
+        self.spawn_build(ctx, path);
+    }
+
+    #[cfg(all(not(feature = "native"), feature = "codegen"))]
+    fn build_dialog(&mut self, _ctx: &egui::Context) {
+        self.last_error = Some("building an executable needs the native feature".to_owned());
+    }
+
     fn after_edit(&mut self) {
         self.dirty = true;
         self.debug_reset();
@@ -566,6 +725,8 @@ impl EditorApp {
             ThemeChoice::Dark => ThemePreference::Dark,
         });
         self.update_title(ui.ctx());
+        #[cfg(feature = "codegen")]
+        self.poll_job(ui.ctx());
 
         if !ui.ctx().text_edit_focused() {
             let (undo, redo) = ui.input(|input| {
@@ -1033,6 +1194,33 @@ impl EditorApp {
             }
         }
 
+        #[cfg(feature = "codegen")]
+        {
+            ui.separator();
+            ui.label("Compiler");
+            let busy = self.compiler.job.is_some();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Compare with JIT"))
+                    .clicked()
+                {
+                    action = Some(DebugAction::Compare);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Build executable"))
+                    .clicked()
+                {
+                    action = Some(DebugAction::Build);
+                }
+            });
+            if let Some(job) = &self.compiler.job {
+                ui.label(format!("{} running", job.kind.label()));
+            }
+            if let Some(message) = &self.compiler.message {
+                ui.label(message);
+            }
+        }
+
         match action {
             Some(DebugAction::Step) => {
                 if let Err(error) = self.debug_step() {
@@ -1048,6 +1236,10 @@ impl EditorApp {
             Some(DebugAction::ToggleBreak(block)) => {
                 self.toggle_breakpoint(block);
             }
+            #[cfg(feature = "codegen")]
+            Some(DebugAction::Compare) => self.compare_with_jit(ui.ctx()),
+            #[cfg(feature = "codegen")]
+            Some(DebugAction::Build) => self.build_dialog(ui.ctx()),
             None => {}
         }
     }
@@ -1291,6 +1483,53 @@ impl EditorApp {
     }
 }
 
+#[cfg(feature = "codegen")]
+const COMPARE_LIMIT: u64 = 1_000_000;
+
+/// Runs the interpreter and the JIT with the same input and compares them.
+#[cfg(feature = "codegen")]
+fn compare_jit(blocks: &canvas::Blocks, input: &str) -> Result<String, String> {
+    let mut interp_io = BufferIo::new(input);
+    let interp_options = interp::Options {
+        max_steps: Some(COMPARE_LIMIT),
+        ..interp::Options::default()
+    };
+    let interp_run =
+        interp::run(blocks, &mut interp_io, &interp_options).map_err(|error| error.to_string())?;
+
+    let mut jit_io = BufferIo::new(input);
+    let jit_options = codegen::Options {
+        max_steps: Some(COMPARE_LIMIT),
+        ..codegen::Options::default()
+    };
+    let jit_run =
+        codegen::run(blocks, &mut jit_io, &jit_options).map_err(|error| error.to_string())?;
+
+    match (interp_run.reason, jit_run.reason) {
+        (interp::ExitReason::Terminated, codegen::ExitReason::Terminated) => {
+            if interp_io.output() == jit_io.output() {
+                Ok(format!(
+                    "JIT agrees: {} steps, {} output bytes",
+                    interp_run.steps,
+                    interp_io.output().len()
+                ))
+            } else {
+                Err(format!(
+                    "JIT differs: interpreter output {:?}, JIT output {:?}",
+                    interp_io.output(),
+                    jit_io.output()
+                ))
+            }
+        }
+        (interp::ExitReason::StepLimit, _) | (_, codegen::ExitReason::StepLimit) => Ok(format!(
+            "JIT matched the interpreter up to the {COMPARE_LIMIT}-step limit"
+        )),
+        (interp_reason, jit_reason) => Err(format!(
+            "JIT differs: interpreter {interp_reason:?}, JIT {jit_reason:?}"
+        )),
+    }
+}
+
 fn codel_at(
     image_rect: egui::Rect,
     pointer: egui::Pos2,
@@ -1430,6 +1669,14 @@ mod tests {
     }
 
     #[test]
+    fn theme_names_round_trip() {
+        for theme in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+            assert_eq!(theme.as_str().parse::<ThemeChoice>().ok(), Some(theme));
+        }
+        assert!("nope".parse::<ThemeChoice>().is_err());
+    }
+
+    #[test]
     fn the_theme_choice_reaches_egui() {
         let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
         app.set_theme(ThemeChoice::Light);
@@ -1563,6 +1810,14 @@ mod tests {
         app.end_edit();
 
         assert!(app.session().is_none());
+    }
+
+    #[cfg(feature = "codegen")]
+    #[test]
+    fn the_jit_comparison_agrees_on_a_terminating_program() {
+        let app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+        let result = compare_jit(app.analysis().blocks().as_ref(), "");
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

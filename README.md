@@ -80,8 +80,10 @@ you build a program, which is why a cross build needs no target toolchain.
 `pietrs editor` opens a PNG or GIF and paints on the twenty-colour palette with
 pencil, rectangle, fill, and eyedropper; undo, redo, and the window title's
 dirty marker are there. The debugger steps with F10, runs and pauses with F5,
-sets block breakpoints, and shows the stack and the output. The image is the
-document: Save writes it back as a PNG at its codel size.
+sets block breakpoints, and shows the stack and the output. The Compiler panel
+compares the interpreter with the JIT and builds a standalone executable. The
+image is the document: Save writes it back as a PNG at its codel size. The
+theme choice persists across launches.
 
 ### Images
 

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::{EditorApp, FileError};
+use crate::{EditorApp, FileError, ThemeChoice};
 
 /// What `pietrs editor` starts with.
 #[derive(Debug, Clone)]
@@ -36,7 +36,16 @@ pub fn run(args: Args) -> Result<(), Error> {
     eframe::run_native(
         "pietrs",
         options,
-        Box::new(move |_cc| Ok(Box::new(NativeApp { app }))),
+        Box::new(move |cc| {
+            let mut app = app;
+            if let Some(storage) = cc.storage
+                && let Some(name) = eframe::get_value::<String>(storage, "theme")
+                && let Ok(theme) = name.parse::<ThemeChoice>()
+            {
+                app.set_theme(theme);
+            }
+            Ok(Box::new(NativeApp { app }))
+        }),
     )?;
     Ok(())
 }
@@ -48,5 +57,9 @@ struct NativeApp {
 impl eframe::App for NativeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui_on(ui);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, "theme", &self.app.theme().as_str());
     }
 }

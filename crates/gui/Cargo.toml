@@ -13,6 +13,7 @@ codegen = { workspace = true, optional = true }
 editor.workspace = true
 egui.workspace = true
 interp.workspace = true
+runtime.workspace = true
 tessera.workspace = true
 thiserror.workspace = true
 
