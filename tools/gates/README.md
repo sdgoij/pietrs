@@ -22,7 +22,7 @@ The order is the CI order described in `AGENTS.md`:
 | `06-doc` | `cargo test --workspace --doc` |
 | `07-deny` | `cargo deny check` |
 
-`just gate` runs the same runner; `.github/workflows/gate.yml` runs it on Linux
+`just gate` runs the same runner; `.github/workflows/ci.yml` runs it on Linux
 and Windows. The external `xtask conformance` and `xtask e2e` gates are recipes
 in the `Justfile` and are also exercised by the long tests.
 

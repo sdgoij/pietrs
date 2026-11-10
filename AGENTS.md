@@ -49,10 +49,10 @@ be run.
 ## Verification gates
 
 These commands are the contract. `just gate` runs `tools/gates.sh`, which runs
-them in this order; `.github/workflows/gate.yml` runs the same runner on Linux
-and Windows. `.github/workflows/release.yml` runs it again on a `v` tag, against
-the workspace version, before it publishes that tag's archives. If the two ever
-disagree, CI is the truth.
+them in this order; `.github/workflows/ci.yml` runs the same runner on Linux and
+Windows, and on a `v` tag it also checks the tag against the workspace version,
+builds the release archives, and publishes them. If the two ever disagree, CI is
+the truth.
 
 Before the first command, refresh editor diagnostics project-wide. A diagnostic
 is a failure just like a compiler warning, in every language the project uses:
