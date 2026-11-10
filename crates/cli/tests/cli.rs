@@ -122,10 +122,10 @@ fn the_graph_dump_is_off_unless_set() {
 #[test]
 fn the_clif_dump_switch_writes_the_lowered_function() {
     let dir = TempDir::new().unwrap();
-    write_png(&dir, "one.png", 1, 1, &RED);
+    let path = write_png(&dir, "one.png", 1, 1, &RED);
     let output = run_ok(pietrs().env("PIETRS_DUMP_CLIF", "1").args([
-        "selftest",
-        dir.path().to_str().unwrap(),
+        "run",
+        path.to_str().unwrap(),
         "--max-steps",
         "1",
     ]));
@@ -136,12 +136,13 @@ fn the_clif_dump_switch_writes_the_lowered_function() {
 }
 
 #[test]
-fn the_disassembly_switch_writes_the_jit_machine_code() {
+fn run_uses_the_jit() {
+    // `run` is the JIT path, so the disassembly exists there and nowhere else.
     let dir = TempDir::new().unwrap();
-    write_png(&dir, "one.png", 1, 1, &RED);
+    let path = write_png(&dir, "one.png", 1, 1, &RED);
     let output = run_ok(pietrs().env("PIETRS_JIT_DISASM", "1").args([
-        "selftest",
-        dir.path().to_str().unwrap(),
+        "run",
+        path.to_str().unwrap(),
         "--max-steps",
         "1",
     ]));

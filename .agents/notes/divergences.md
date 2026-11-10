@@ -20,8 +20,7 @@ truncating` selects npiet's rounding on `run`, `trace`, `build`, and
 does; `xtask e2e` and `selftest` default to `floored`.
 
 Machine-checked by `runtime` unit tests, `interp`/`codegen` differential tests,
-and a CLI test that runs both modes through the interpreter and a linked
-executable.
+and a CLI test that runs both modes through the JIT and a linked executable.
 
 ## Zero divisors and `MIN / -1`
 

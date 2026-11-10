@@ -44,7 +44,7 @@ enum Commands {
     Check(CheckArgs),
     /// Run the interpreter and print its transition trace.
     Trace(TraceArgs),
-    /// Run the interpreter and print the program's output.
+    /// Run the program through the JIT and print its output.
     Run(RunArgs),
     /// Emit and link a standalone executable.
     Build(BuildArgs),
@@ -134,6 +134,9 @@ enum Error {
 
     #[error(transparent)]
     Interp(#[from] interp::Error),
+
+    #[error(transparent)]
+    Codegen(#[from] codegen::Error),
 
     #[error("cannot read {path}: {source}")]
     Read {
@@ -266,19 +269,23 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
         None => String::new(),
     };
     let mut io = BufferIo::new(input);
-    let options = Options {
+    let options = codegen::Options {
         max_steps: args.max_steps,
         division: args.division.into(),
-        ..Options::default()
+        ..codegen::Options::default()
     };
-    let result = run(&blocks, &mut io, &options)?;
+    let result = codegen::run(&blocks, &mut io, &options)?;
     let mut stdout = std::io::stdout();
     stdout.write_all(io.output().as_bytes())?;
     stdout.flush()?;
     match result.reason {
-        ExitReason::Terminated => Ok(ExitCode::SUCCESS),
-        ExitReason::StepLimit => {
+        codegen::ExitReason::Terminated => Ok(ExitCode::SUCCESS),
+        codegen::ExitReason::StepLimit => {
             eprintln!("pietrs: step limit reached after {} steps", result.steps);
+            Ok(ExitCode::FAILURE)
+        }
+        codegen::ExitReason::StackOverflow => {
+            eprintln!("pietrs: the stack overflowed");
             Ok(ExitCode::FAILURE)
         }
     }
