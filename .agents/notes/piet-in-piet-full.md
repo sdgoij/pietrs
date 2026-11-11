@@ -517,34 +517,48 @@ The measured cost: the canonical hello world (30 x 29 codels, 39 blocks, a
 worth partitioning this way — the ring is 240 000 cells and every neighbour roll
 rotates all of it — so the completeness claim stops at the small image.
 
-**What remains is the movement rules, and the shape they take.** Everything below
-is data the ring already holds.
+**The edge codel is built too** (`loom::block_edge`). Given a block and a state
+it prints the codel that state's own direction and chooser select — the single
+attempt, which is `tessera::block_edge` and not `tessera::edge_codel`, because
+the latter keeps trying until a move leaves the block. Every block of a row, a
+diagonal, a ring with a hole, a mixed 4x5 grid and a plus shape agrees with
+`tessera` in all eight `(dp, cc)` states.
 
-- *The edge codel.* For a state `(label, dp, cc)`, scan the ring once. A cell
-  belongs to the block when its label matches. The primary is `x` for `right`
-  and `left`, `y` for `down` and `up`; take the maximum for `right`/`down`, the
-  minimum for `left`/`up`, then among the cells on that edge take the maximum or
-  minimum secondary by `choose_max(dp, cc)`. The scan needs the codel's
-  coordinates, so track the ring index and take `index % (stride/4)` and
-  `index / (stride/4)` — two divisions, not a lookup.
-- *The start state* is the block of ring index `stride/4 + 1`, which is two
-  `stride/4`-sized steps from cell zero; sliding through a white upper-left codel
-  reuses the slide below.
+The trick is the score. Each cell of the block is worth
+`primary * big + secondary`, where `big` is the ring's cell count, so the two
+halves cannot carry into each other. Each half is flipped (`row cells - value`)
+when the state wants a minimum, which turns max-primary/min-secondary,
+min-primary/max-secondary and the rest into the same single rule: keep the
+larger score. The eight cases then differ only in which half is flipped and
+whether the row or column is the primary, so each is one small block of constants
+and the scan itself is shared. Decoding the winner is a division and a remainder.
+
+That also settled an interface question: `tessera::edge_codel` is not "the edge
+for this state" but "the codel a move leaves from", fallback included. The raw
+selection is now public as `tessera::block_edge` so both levels can be tested
+against the same oracle.
+
+**What remains is the rest of the movement rules.** Everything below is data the
+ring already holds.
+
+- *The start state* is the block of ring index `stride/4 + 1`, one `stride` and
+  one cell from cell zero; sliding through a white upper-left codel reuses the
+  slide below.
 - *The step, the fallback and the slide.* The next codel is `edge ± 4` or
   `± stride`; its label and colour decide. A black or absent neighbour means the
   next attempt; a white one means the slide walk, which moves along white cells
   until a colour is reached and gives up on retracing the same `(codel, dp)`. The
-  eight attempts are `attempt(dp, cc, index)` from `tessera`, still cheap enough
-  to unroll as a block per index.
+  eight attempts are `attempt(dp, cc, index)` from `tessera`; since the edge
+  stage already selects one, the fallback is eight calls to it.
 - *The command* is the colour transition between the two blocks, and the dispatch,
   the value stack and the handlers are exactly what `walker.rs` already runs. The
   end state is therefore: partition, compute `exit`, append the record the walker
   would have been given, and hand over — no host-side tessellation at all.
 
 The staging is deliberate. Each step above is a scan over the ring plus a batch
-of comparisons, and each can be checked against `tessera::edge_codel` or
-`tessera::exit` on the small fixtures before the next is added, which is the same
-way the walker was built.
+of comparisons, and each can be checked against `tessera::block_edge`,
+`tessera::edge_codel` or `tessera::exit` on the small fixtures before the next is
+added, which is the same way the walker was built.
 
 ## Recommendation
 
@@ -565,6 +579,7 @@ What is left is not capability but cost, and it is worth saying which is which.
   the graph decides its reads at run time and the stream has to be unambiguous.
   That is an interface wart, not a semantic one.
 
-S4 is half built: the partition is in the image and agrees with `canvas::Blocks`
-on every fixture; the movement rules are designed above and remain. Deciding
-whether to finish them is a separate call, and the cost says small images only.
+S4 is half built: the partition and the edge codel are in the image and agree
+with `canvas::Blocks` and `tessera` on every fixture; the step, the fallback and
+the slide remain. Deciding whether to finish them is a separate call, and the
+cost says small images only.

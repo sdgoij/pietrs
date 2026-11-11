@@ -7,10 +7,11 @@
 
 use std::collections::HashMap;
 
-use canvas::{Blocks, CodelGrid, Color, Hue, Lightness, Point};
+use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
-use loom::splitter;
+use loom::{block_edge, splitter};
 use runtime::BufferIo;
+use tessera::{Chooser, Direction};
 
 fn run(grid: &CodelGrid, input: &str, steps: u64) -> (String, Run) {
     let blocks = Blocks::partition(grid.clone());
@@ -154,6 +155,63 @@ fn the_image_is_the_same_for_every_grid() {
     let (small, _) = splitter(&grid(&["r"])).unwrap();
     let (large, _) = splitter(&grid(&["rgggr", "rg.gd", "rg.gg", "rrrrd"])).unwrap();
     assert_eq!(small, large);
+}
+
+/// Every state of every block of `rows`, against the same selection in
+/// `tessera`.
+fn check_edges(rows: &[&str], blocks_to_check: Option<usize>) {
+    let grid = grid(rows);
+    let blocks = Blocks::partition(grid.clone());
+    let reached = blocks_to_check.unwrap_or(usize::MAX);
+    for block in blocks.blocks().iter().take(reached) {
+        for dp in Direction::ALL {
+            for cc in [Chooser::Left, Chooser::Right] {
+                let (image, stream) = block_edge(&grid, block.id(), dp, cc).unwrap();
+                let (output, result) = run(&image, &stream, 40_000_000);
+                assert_eq!(result.reason, ExitReason::Terminated);
+                let found: Vec<i64> = output
+                    .split_whitespace()
+                    .map(|token| token.parse().unwrap())
+                    .collect();
+                let expected = tessera::block_edge(&blocks, block.id(), dp, cc);
+                let what = format!("{rows:?} block {} {dp:?} {cc:?}", block.id().0);
+                match expected {
+                    Some(point) => assert_eq!(
+                        found,
+                        vec![i64::from(point.x), i64::from(point.y)],
+                        "{what}"
+                    ),
+                    None => assert!(found.is_empty(), "{what}: unexpected {found:?}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_edge_codel_matches_tessera() {
+    // A two-codel block, every direction and chooser; the sweep below covers
+    // the other shapes.
+    check_edges(&["rrgg"], Some(1));
+}
+
+#[test]
+#[ignore = "the full sweep: cargo test -p loom --release --test grid -- --ignored"]
+fn the_edge_codel_matches_tessera_everywhere() {
+    check_edges(&["rrgg"], None);
+    check_edges(&["rg", "gr"], None);
+    check_edges(&["rrr", "r.r", "rrr"], None);
+    check_edges(&["rgggr", "rg.gd", "rg.gg", "rrrrd"], None);
+    check_edges(&[".r.", "rrr", ".r."], None);
+}
+
+#[test]
+fn the_edge_stage_is_the_same_image_for_every_grid() {
+    let small = grid(&["r"]);
+    let large = grid(&["rgggr", "rg.gd", "rg.gg", "rrrrd"]);
+    let (a, _) = block_edge(&small, BlockId(0), Direction::Right, Chooser::Left).unwrap();
+    let (b, _) = block_edge(&large, BlockId(0), Direction::Right, Chooser::Left).unwrap();
+    assert_eq!(a, b);
 }
 
 #[test]

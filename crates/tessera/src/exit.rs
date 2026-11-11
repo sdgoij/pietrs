@@ -77,6 +77,16 @@ pub fn edge_codel(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser
     resolve(blocks, block_id, dp, cc).map(|(edge, _)| edge)
 }
 
+/// The block's own edge codel for `(dp, cc)`, before the eight-attempt
+/// fallback.
+///
+/// [`edge_codel`] is the codel a *move* leaves from, so it keeps trying until an
+/// attempt leaves the block. This is the single attempt: the codel the state's
+/// own direction and chooser select, whether or not it leads anywhere.
+pub fn block_edge(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> Option<Point> {
+    block_edge_codel(blocks.block(block_id)?, dp, cc)
+}
+
 fn resolve(
     blocks: &Blocks,
     block_id: BlockId,
@@ -280,6 +290,27 @@ mod tests {
 
     fn id_at(blocks: &Blocks, x: u32, y: u32) -> BlockId {
         blocks.block_id_at(Point::new(x, y)).unwrap()
+    }
+
+    #[test]
+    fn block_edge_is_the_single_attempt() {
+        // A row of two reds. The block's own edge for `left` is its leftmost
+        // codel, even though no move leaves the block that way: `edge_codel`
+        // falls back to the right and reports the other codel.
+        let blocks = blocks(&["rrgg"]);
+        let red = id_at(&blocks, 0, 0);
+        assert_eq!(
+            block_edge(&blocks, red, Direction::Left, Chooser::Left),
+            Some(Point::new(0, 0))
+        );
+        assert_eq!(
+            block_edge(&blocks, red, Direction::Right, Chooser::Left),
+            Some(Point::new(1, 0))
+        );
+        assert_eq!(
+            edge_codel(&blocks, red, Direction::Left, Chooser::Left),
+            Some(Point::new(1, 0))
+        );
     }
 
     #[test]
