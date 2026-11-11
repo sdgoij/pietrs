@@ -412,8 +412,23 @@ dispatch. What it buys is that every in-page access becomes a small roll, and
 top. A page *below* the ring does not do this: the depths are static, but the
 values are not at the top, so `Roll` still cannot act on them.
 
+**A fixed ring size does not work either, and this is worth recording because it
+looks as though it should.** The idea is to weave the image for one capacity and
+pad or tile the stream up to it, so every roll amount is a constant and one image
+runs every program. It fails on the jump. The ring is a cycle, so a jump is a
+`roll` whose amount is taken modulo the program's own record count; for the head
+to land on the right record after wrapping, the ring's size has to be a **multiple
+of that count**. A fixed capacity is a multiple of one program's count and not of
+another's, so a cyclic program drifts one record per wrap and stops on a record
+that was never its successor. Measured: the loop fixture and the branching
+fixtures pass, and *Piet's Quest* — 20 110 records, ring 49 152 — prints three
+characters and halts.
+
 The invariant to remember: after a data-dependent lift, nothing below the lifted
-values can be addressed, so any amount needed for the put-back must have been
+values can be addressed, so any amount needed for the put-back must live above the
+ring and survive the `Roll` — and a `Roll` consumes its operands. For the jump,
+any fixed-capacity ring has to be a multiple of the program's record count, which
+is what makes the image per-program in the first place.
 stored *above* the ring and must survive the `Roll` — and a `Roll` consumes its
 operands. Either the page exists, or the put-back amount has to be recomputed
 from the stack, which is the same wall.
