@@ -170,9 +170,10 @@ fn the_walker_width_does_not_grow_with_the_program() {
     let long: Vec<Instruction> = (0..64).map(push).collect();
     let (large, _) = walker(&long, "").unwrap();
     assert_eq!(small.width(), large.width());
-    assert!(small.width() <= 256, "width {}", small.width());
-    assert!(small.height() <= 192, "height {}", small.height());
-    assert!(large.height() <= 192, "height {}", large.height());
+    // 63 blocks of dispatch table, five cells each.
+    assert!(small.width() <= 384, "width {}", small.width());
+    assert!(small.height() <= 320, "height {}", small.height());
+    assert!(large.height() <= 320, "height {}", large.height());
 }
 
 #[test]
@@ -243,6 +244,82 @@ fn a_zero_divisor_leaves_the_depth_counter_exact() {
     }
 }
 
+#[test]
+fn a_roll_rotates_the_top_values() {
+    // 10 20 30, then a depth of 3 and the rolls. Output pops, so it reads the
+    // stack from the top down.
+    for (rolls, expected) in [(1, "201030"), (2, "103020"), (3, "302010")] {
+        let mut program = vec![push(10), push(20), push(30), push(3), push(rolls)];
+        program.push(step(Command::Roll));
+        for _ in 0..3 {
+            program.push(step(Command::OutNumber));
+        }
+        let (output, _) = walk(&program);
+        assert_eq!(output, expected, "rolls {rolls}");
+        let (reference, _) = straight_line(&program, "");
+        assert_eq!(output, reference, "rolls {rolls}");
+    }
+}
+
+#[test]
+fn a_roll_of_each_depth_the_table_covers_agrees() {
+    for depth in 2..=8 {
+        let mut program = (1..=depth).map(push).collect::<Vec<_>>();
+        program.extend([push(depth), push(1), step(Command::Roll)]);
+        for _ in 0..depth {
+            program.push(step(Command::OutNumber));
+        }
+        let (output, _) = walk(&program);
+        let (reference, _) = straight_line(&program, "");
+        assert_eq!(output, reference, "depth {depth}");
+    }
+}
+
+#[test]
+fn a_roll_of_one_is_a_no_op_but_consumes_its_operands() {
+    let program = [
+        push(7),
+        push(1),
+        push(1),
+        step(Command::Roll),
+        step(Command::OutNumber),
+    ];
+    let (output, _) = walk(&program);
+    assert_eq!(output, "7");
+    let (reference, _) = straight_line(&program, "");
+    assert_eq!(output, reference);
+}
+
+#[test]
+fn a_roll_deeper_than_the_values_is_ignored() {
+    // Depth 5 with one value left: the reference ignores it and consumes both.
+    let program = [
+        push(7),
+        push(5),
+        push(1),
+        step(Command::Roll),
+        step(Command::OutNumber),
+    ];
+    let (output, _) = walk(&program);
+    assert_eq!(output, "7");
+    let (reference, _) = straight_line(&program, "");
+    assert_eq!(output, reference);
+}
+
+#[test]
+fn a_roll_past_the_table_stops() {
+    // Nine is deeper than the table covers. Stopping is the documented boundary:
+    // the alternative is rotating the ring instead of the values.
+    let mut program = (1..=9).map(push).collect::<Vec<_>>();
+    program.extend([push(9), push(1), step(Command::Roll)]);
+    for _ in 0..9 {
+        program.push(step(Command::OutNumber));
+    }
+    let (output, result) = walk(&program);
+    assert_eq!(output, "", "it stops before printing anything");
+    assert_eq!(result.reason, ExitReason::Terminated);
+}
+
 /// A deterministic generator, so a failure names a seed that reproduces it.
 struct XorShift(u64);
 
@@ -303,10 +380,11 @@ fn the_walker_agrees_with_the_straight_line_reference() {
 
 #[test]
 fn a_command_without_a_handler_is_refused() {
+    // `pointer` and `switch` have no opcode: a straight line cannot run them.
     assert!(matches!(
-        walker(&[step(Command::Roll)], ""),
+        walker(&[step(Command::Pointer)], ""),
         Err(Error::NoHandler {
-            command: Command::Roll
+            command: Command::Pointer
         })
     ));
 }

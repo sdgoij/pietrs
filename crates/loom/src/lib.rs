@@ -57,4 +57,4 @@ pub use graph::compile;
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
-pub use walker::{COMMAND_DEPTH, RECORD, skeleton, walker};
+pub use walker::{COMMAND_DEPTH, RECORD, graph_walker, skeleton, walker};

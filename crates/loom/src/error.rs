@@ -55,6 +55,9 @@ pub enum Error {
     #[error("a ring of {cells} cells is not a whole number of records")]
     Ring { cells: u32 },
 
+    #[error("the graph has no start state")]
+    NoStart,
+
     #[error("no layout keeps every block separate")]
     NoLayout,
 

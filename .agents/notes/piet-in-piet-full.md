@@ -309,10 +309,10 @@ height moves only with the digits of the ring size.
 
 **Input landed with the same twelve commands.** The interpreted program's stream
 follows the ring, one event per read, in the order the program runs them: a space
-and then the value. The space is what keeps the two reads apart — `in number`
-skips it, and `in char` reads it as a separator and then reads the character — so
-a digit is never mistaken for a number. The ring deliberately ends without a
-trailing space so the first event has exactly one.
+and then the value. A character is written as its **code point**, not as itself,
+so that the one handler serves a graph, whose reads are chosen at run time; for a
+straight line the builder knows the order and refuses a program whose reads
+outrun the input (`Error::InputExhausted`).
 
 The handlers are small: `in number` is `in number` plus an insert; `in char` is
 `in char`, `pop`, `in char`, insert. Neither needs a guard, and both raise the
@@ -326,8 +326,47 @@ reads; a character, then a number, then a character arrive in order; and 24
 generated reading programs agree with the reference, on an input built alongside
 so every read has something to read.
 
-Non-vacuity: dropping the separator handling fails four cases, and leaving the
-depth counter unchanged for the reads fails five.
+Non-vacuity: leaving the depth counter unchanged for the reads fails five cases.
+
+**The graph is the program.** `graph_walker(&graph, &blocks, input)` compiles a
+state graph into records, which is what makes the image follow a program it was
+not woven around. One record per state, with the state's outgoing command; a
+deterministic state's offset is the cell distance to its successor; a branch
+state's trampolines — one per successor — go directly after its own record, so
+the handler only widens the popped value into `3 * (1 + index)` and replaces the
+offset cell, which is the top cell and therefore a two-command poke. Three codes
+are not Piet commands: `nop` for a trampoline, `pointer` and `switch` for the
+branches. An empty stack is the one place a branch is not a skip — the reference
+pops nothing and uses zero — so the guard's other side takes the first
+successor.
+
+Checkpoints, all against `interp` on the original image: the canonical *Hello
+world!*; the `pointer` fixture, which uses both `pointer` and `switch` and so
+selects successors at run time; the single-codel fixture, which halts without
+running anything; and the looping fixture, as a matching prefix.
+
+**`roll`, with a bound.** The depth is the one operand that decides the work, and
+doing it with a depth known only at run time is the case that needs a put-back
+amount which cannot survive the lift. With the depth known at weave time there is
+no such problem: `roll(d+N+3, N+1)` lifts the values and both operands above the
+ring, the `roll` command rotates the values, and `roll(d+N+1, d)` puts them back —
+three constant rotations. So the handler is a table with one case per depth from
+two to eight, selected arithmetically from the popped value, and a deeper roll
+stops the walker instead of rotating ring cells.
+
+Checkpoints, against the straight-line reference: rotations of one, two and three
+of three values; every depth from two to eight; a depth of one, which is a no-op
+that still consumes its operands; a depth beyond the stack, which is ignored; and
+a depth past the table, which stops. Non-vacuity, observed and reverted: shortening
+the lift window by one cell fails both rotation cases.
+
+**Piet's Quest runs.** Measured on 2026-11-11, debug build, this machine: 17 964
+states and 19 352 edges become a ring of about 30 000 records — a 158 KB stream —
+and the image is 337 x 394. Run from the ring it prints its title screen and seven
+menus before the input runs out: 205 116 868 machine steps in 54.5 s, which is
+about 0.3 million interpreted commands at 5 300 per second. That matches the
+estimate of 300 000 steps for six menus, and it is the first time the project has
+run that program from anything but `interp`.
 
 **`roll` is not implemented, and it is one dynamic amount away.** The operands
 are easy: they are the top two values, so one rotation each brings them up.
