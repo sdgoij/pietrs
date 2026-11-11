@@ -49,14 +49,14 @@ fn grid(rows: &[&str]) -> CodelGrid {
 /// The labels the splitter should print: the lowest ring position in each
 /// component, with each guard its own component.
 fn expected(grid: &CodelGrid) -> Vec<u32> {
-    let width = grid.width();
-    let row = width + 1;
-    let cells = row * (grid.height() + 1);
+    let (width, height) = (grid.width(), grid.height());
+    let row = width + 2;
+    let cells = row * (height + 2);
     let blocks = Blocks::partition(grid.clone());
 
     let mut lowest: HashMap<_, u32> = HashMap::new();
     for index in 0..cells {
-        let Some(point) = codel(width, index) else {
+        let Some(point) = codel(width, height, index) else {
             continue;
         };
         let id = blocks.block_id_at(point).unwrap();
@@ -64,7 +64,7 @@ fn expected(grid: &CodelGrid) -> Vec<u32> {
     }
 
     (0..cells)
-        .map(|index| match codel(width, index) {
+        .map(|index| match codel(width, height, index) {
             Some(point) => lowest[&blocks.block_id_at(point).unwrap()],
             None => index,
         })
@@ -72,10 +72,10 @@ fn expected(grid: &CodelGrid) -> Vec<u32> {
 }
 
 /// The codel a ring index stands for, mirroring the module's layout.
-fn codel(width: u32, index: u32) -> Option<Point> {
-    let row = index / (width + 1);
-    let column = index % (width + 1);
-    if row == 0 || column == 0 {
+fn codel(width: u32, height: u32, index: u32) -> Option<Point> {
+    let row = index / (width + 2);
+    let column = index % (width + 2);
+    if row == 0 || row > height || column == 0 || column > width {
         return None;
     }
     Some(Point::new(column - 1, row - 1))
@@ -135,9 +135,10 @@ fn the_guard_row_does_not_join_the_last_row_to_the_first() {
     // The top and bottom rows are both red but not connected.
     let grid = grid(&["r", "g", "r"]);
     let labels = labels(&grid, 40_000_000);
-    assert_ne!(labels[3], labels[7], "rows wrap through the ring");
-    assert_eq!(labels[3], 3);
-    assert_eq!(labels[7], 7);
+    // (0, 0) and (0, 2) are three rows apart in a three-row-wide ring.
+    assert_ne!(labels[4], labels[10], "rows wrap through the ring");
+    assert_eq!(labels[4], 4);
+    assert_eq!(labels[10], 10);
 }
 
 #[test]

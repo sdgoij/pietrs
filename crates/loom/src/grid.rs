@@ -12,20 +12,22 @@
 //!
 //! # The ring
 //!
-//! The grid is laid out row-major with a guard column on the left and a whole
-//! guard row on top, so a cell's four neighbours are always ring cells:
+//! The grid is laid out row-major with a border of guards on every side, so a
+//! cell's four neighbours are always ring cells and a step off the grid lands on
+//! a guard rather than on another row:
 //!
 //! ```text
-//!   index = row * (width + 1) + column     row 0 and column 0 are guards
-//!   real codel (x, y) is index (y + 1) * (width + 1) + (x + 1)
-//!   up   = index - (width + 1)             left = index - 1
-//!   down = index + (width + 1)             right = index + 1
+//!   index = row * (width + 2) + column     the border is guards
+//!   real codel (x, y) is index (y + 1) * (width + 2) + (x + 1)
+//!   up   = index - stride                  left  = index - 4
+//!   down = index + stride                  right = index + 4
 //! ```
 //!
 //! The guards are what make the neighbour arithmetic total: no edge test, no
-//! special case. Each guard carries a colour code no codel and no other guard
-//! has, so a guard can never merge, and wrapping from index 0 leftwards cannot
-//! join two codels.
+//! special case, and a step that leaves the grid is a guard, which the movement
+//! rules treat like black. Each guard carries a colour code no codel and no other
+//! guard has, so a guard can never merge, and wrapping round the ring from index
+//! zero cannot join two codels.
 //!
 //! A record is four cells, pushed `ring size, stride, colour, label`, so at the
 //! head the label is the top cell:
@@ -155,22 +157,23 @@ pub fn block_edge(
 
 /// The ring position of a codel.
 fn ring_index(grid: &CodelGrid, point: Point) -> u32 {
-    (point.y + 1) * (grid.width() + 1) + (point.x + 1)
+    (point.y + 1) * (grid.width() + 2) + (point.x + 1)
 }
 
 /// The grid half of the stream.
 fn stream_of(grid: &CodelGrid) -> Result<String, Error> {
     let width = grid.width();
-    let row = width + 1;
-    let cells = u32::try_from((row as usize) * ((grid.height() + 1) as usize))
-        .map_err(|_| Error::TooLarge)?;
+    let height = grid.height();
+    let row = width + 2;
+    let cells =
+        u32::try_from((row as usize) * ((height + 2) as usize)).map_err(|_| Error::TooLarge)?;
     let ring = cells.checked_mul(PER_CELL).ok_or(Error::TooLarge)?;
 
     let mut stream = cells.to_string();
     let stride = row * PER_CELL;
     // Highest index first: the last record read is cell zero, the head.
     for index in (0..cells).rev() {
-        let colour = match codel_of(width, index) {
+        let colour = match codel_of(width, height, index) {
             Some(point) => {
                 let Some(color) = grid.get(point) else {
                     return Err(Error::TooLarge);
@@ -185,10 +188,10 @@ fn stream_of(grid: &CodelGrid) -> Result<String, Error> {
 }
 
 /// The codel a ring index stands for, or `None` when the index is a guard.
-fn codel_of(width: u32, index: u32) -> Option<Point> {
-    let row = index / (width + 1);
-    let column = index % (width + 1);
-    if row == 0 || column == 0 {
+fn codel_of(width: u32, height: u32, index: u32) -> Option<Point> {
+    let row = index / (width + 2);
+    let column = index % (width + 2);
+    if row == 0 || row > height || column == 0 || column > width {
         return None;
     }
     Some(Point::new(column - 1, row - 1))
