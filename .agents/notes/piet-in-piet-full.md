@@ -129,9 +129,28 @@ with a multi-codel block (one command instead of up to twelve), and give
 
 ### S2. Walk the state graph
 
-The image is now data-driven in the only way that matters: it keeps a program
-counter and follows successors, so loops run at run time rather than being baked
-into the input.
+**First slice: the tape — done.** `crates/loom/tests/tape.rs` fills a tape with
+1..=n and prints it in order, which means reaching the oldest value every time
+at a depth that changes as the tape drains. It does that with a `roll` whose
+depth is computed from the remaining length, so the roll is not a fixed-depth
+move any more.
+
+The layout it establishes, which the interpreter reuses:
+
+```text
+  [ value 1, value 2, …, value len, len ]
+```
+
+The length sits *on top*, so it is always reachable, and `value 1` is at
+depth `len + 1`. Rolling exactly that many moves the length to depth two and
+`value 1` to the top; one pop and one decrement leave the tape one shorter with
+the length still on top. The invariant held for n from −3 to 40, and the case
+was proved non-vacuous by breaking the computed depth, which swaps the output
+order for every n above one.
+
+The tape program lays out at 57 x 42. The remaining work is the walker: records
+of `(command, block size, successors)` in the tape, a program counter, and the
+command handlers, so a loop runs from the program rather than from the trace.
 
 Checkpoint: `crates/xtask/fixtures/hello`, which loops forever, compared byte
 for byte with a bounded `interp` run; plus the canonical *Hello world!*.

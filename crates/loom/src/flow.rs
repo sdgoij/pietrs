@@ -57,6 +57,8 @@ pub enum Node {
     Dup,
     /// Swap the top two values.
     Swap,
+    /// Rotate the top `depth` values right by `rolls`.
+    Roll(u32, u32),
     /// Duplicate the value `depth` slots down, counting the top as one.
     DupLocal(u32),
 }
@@ -368,6 +370,7 @@ fn node_commands(node: Node, commands: &mut Vec<Command>) {
         Node::Command(command) => commands.push(command),
         Node::Dup => commands.push(Command::Duplicate),
         Node::Swap => commands.extend(roll(2, 1)),
+        Node::Roll(depth, rolls) => commands.extend(roll(depth, rolls)),
         Node::DupLocal(depth) => {
             commands.extend(roll(depth, depth - 1));
             commands.push(Command::Duplicate);
