@@ -13,6 +13,7 @@ members = [
     "crates/perf",
     "crates/runner",
     "crates/testkit",
+    "crates/loom",
     "crates/xtask",
 ]
 
@@ -28,6 +29,7 @@ canvas = { path = "crates/canvas" }
 tessera = { path = "crates/tessera" }
 runtime = { path = "crates/runtime" }
 interp = { path = "crates/interp" }
+loom = { path = "crates/loom" }
 editor = { path = "crates/editor" }
 gui = { path = "crates/gui", default-features = false }
 codegen = { path = "crates/codegen" }

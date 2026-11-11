@@ -1,0 +1,21 @@
+[package]
+name = "loom"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Weaves a Piet program that interprets other Piet programs"
+
+[dependencies]
+canvas.workspace = true
+interp.workspace = true
+runtime.workspace = true
+tessera.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+testkit.workspace = true
+
+[lints]
+workspace = true

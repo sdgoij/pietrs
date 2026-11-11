@@ -114,6 +114,16 @@ there: `cranelift-jit` cannot target wasm, and a wasm module cannot write an
 executable. Everything else — painting, undo, stepping, breakpoints, the stack,
 the output, the trail, the theme — is the desktop editor's code.
 
+### A Piet interpreter in Piet
+
+`pietrs` ships the language's reference interpreter as a Rust crate. It also
+*generates* one as an image: `loom` weaves a Piet program that reads another
+Piet program from its input and runs it. It interprets the language's
+straight-line fragment — the fifteen commands that leave the direction pointer
+alone — and the image is laid out by search rather than drawn, because a
+command is a colour transition and a layout is a colour walk. See
+[`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md).
+
 ### Images
 
 PNG and GIF (the first frame) are decoded, at any codel size: the size is
@@ -168,6 +178,7 @@ change must not break — is [`AGENTS.md`](AGENTS.md). Design notes live in
 | `tessera` | movement, white slides, and the `(block, DP, CC)` state graph |
 | `runtime` | stack, I/O, floored arithmetic |
 | `interp` | the reference interpreter: trace, oracle, no codegen |
+| `loom` | generates a Piet program that interprets linear Piet programs |
 | `editor` | the document, undo, analysis cache, and debug session; no UI |
 | `gui` | the egui editor and debugger; `pietrs editor`, and the wasm bundle |
 | `codegen` | Cranelift lowering; JIT and object emission |
