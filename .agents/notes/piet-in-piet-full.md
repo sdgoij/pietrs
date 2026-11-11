@@ -365,17 +365,19 @@ Dead ends, checked so they are not retried:
   moves the values as a block and cannot rotate them internally, because the
   required permutation is not a cyclic shift of any window containing the ring.
 
-The way through is a **page of values**, but not above the ring: a jump rolls
-exactly the ring, so a block stored above it would be torn in half by the first
-rotation. The anchor has to be *below* the ring — a small register file holding
-the top `P` values, with the rest of the stack below it and paged in on demand.
-That makes `roll` with `d <= P` a plain `Roll(d, r)` and every other access
-cheaper, but it is a restructure of the handlers rather than one addition, and it
-is a slice of its own.
+The way through is a **page of values above the ring**, and it is not cheap: a
+jump rolls exactly the ring, so a page above it would be torn unless it is pushed
+into the value stack before every jump — one ring rotation per page cell, `P` per
+dispatch. What it buys is that every in-page access becomes a small roll, and
+`roll` with `d <= P` becomes a plain `Roll(d, r)` with the values already at the
+top. A page *below* the ring does not do this: the depths are static, but the
+values are not at the top, so `Roll` still cannot act on them.
 
 The invariant to remember: after a data-dependent lift, nothing below the lifted
 values can be addressed, so any amount needed for the put-back must have been
-stored *below the ring* before the lift.
+stored *above* the ring and must survive the `Roll` — and a `Roll` consumes its
+operands. Either the page exists, or the put-back amount has to be recomputed
+from the stack, which is the same wall.
 
 ### S4. Interpret the grid (optional)
 
