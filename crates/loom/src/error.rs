@@ -22,6 +22,15 @@ pub enum Error {
     #[error("a block cannot have zero codels")]
     EmptyBlock,
 
+    #[error("a structured program needs at least one block")]
+    EmptyProgram,
+
+    #[error("block {id} does not exist: the program has {count}")]
+    BlockId { id: u32, count: u32 },
+
+    #[error("a local depth counts from one")]
+    LocalDepth,
+
     #[error("a push operand of {operand} does not fit in a block")]
     BlockTooLarge { operand: u64 },
 

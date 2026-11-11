@@ -87,23 +87,45 @@ Each stage is independently useful and independently checkable. The checkpoints
 are the cases that go into the gate; a stage is not done until they pass against
 `interp`, not against itself.
 
-### S1. A structured backend
+### S1. A structured backend — done
 
-`loom` can lay out straight-line commands and one dispatch. It cannot express a
-loop, a two-way branch, or a named temporary. Every later stage needs all three,
-so this is the real work and the real risk.
+`crates/loom/src/flow.rs` compiles `Program { blocks, entry }` to an image. The
+decision that removed the risk is that **no block branches**: a block computes
+the id of its successor and hands it to one shared dispatcher, which is the
+temporary-chain dispatcher the trace interpreter already used, unchanged. `if`
+is not a jump either — the condition is normalised with two `not`s and the
+successor is selected arithmetically,
 
-- IR: commands, named temporaries, `if`/`else`, `while`, and a dispatch on a
-  value (the existing bus).
-- Layout: reuse the bus, lane, and shared-return architecture, with one lane per
-  basic block and jumps as dispatch ids.
+```text
+next = otherwise + m * (then - otherwise)
+```
 
-Checkpoint: generated programs that sum 1..n, run a nested loop, and branch both
-ways, each compared with a Rust model of the same loop.
+so the only control-flow geometry in the image is the dispatcher. `halt` pushes
+an id no block has and falls through it.
 
-Risk: the layout is where this can stall. If the branch/merge geometry does not
-generalise, S1 has no smaller fallback, and the honest outcome is to stop at the
-current trace interpreter.
+The ladder is reused as-is: a prologue between the launcher and the head carries
+the entry id, each block is one lane, and the return path cancels the value the
+head is entered with, exactly as the trace interpreter does.
+
+Checkpoints, all green:
+
+- a loop summing 1..=n against `(1..=n).sum()`, for n up to 100;
+- a loop whose body takes both arms of an `if`, against a Rust map-sum;
+- a nested loop, n(n+1)/2;
+- constants, including zero, negatives and 1 000.
+
+The layout costs, measured: the four-block sum lays out at 42 x 41, the
+seven-block alternating sum at 57 x 38, the seven-block nested loop at 57 x 39 —
+about 2 000 codels. The bus is five cells per block, and the lane height is set
+by the longest block, which is longer than it looks because a constant expands
+to up to twelve commands and `dup local` to twelve more.
+
+That is the lever for S2. A sixty-block interpreter would be roughly 320 columns
+and, with blocks of that complexity, 60 to 100 rows: 20 000 to 30 000 codels,
+ten times the current image. Two cheap wins before writing it: push a constant
+with a multi-codel block (one command instead of up to twelve), and give
+`dup local` a shorter form. Neither changes the IR.
+
 
 ### S2. Walk the state graph
 
@@ -136,11 +158,12 @@ program.
 
 ## Recommendation
 
-S1 and S2 together are the milestone worth committing to: they are what turns
-the image from a replayer into a program that follows its own control flow. S3
-then closes the gap to full Piet for compiled programs, and is small once S1
-exists. S4 is a separate, optional build and should be decided on its own.
+S1 landed and its checkpoint passed, so the layout risk that gated everything
+else is gone. The next move is S2, and its first slice is the tape: a stack in
+memory addressed by a computed depth, proven by a program that pushes n values
+and reads them back in reverse. Without that, a loop can only carry state in a
+fixed shape, which is enough for the checkpoints and not enough for an
+interpreter.
 
-The number that decides whether this is worth it is S1's: if the structured
-backend lands and the loop case passes, every later stage is engineering with a
-known shape. If it does not, no amount of tape design helps.
+S3 then closes the gap to full Piet for compiled programs, and is small once S1
+exists. S4 is a separate, optional build and should be decided on its own.

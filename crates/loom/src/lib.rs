@@ -16,6 +16,11 @@
 //! chromatic colours; [`interpreter`] retries the free colours until the
 //! partition has exactly the blocks the path needs.
 //!
+//! [`Program`] is the way past straight lines. It is a structured program —
+//! basic blocks that compute their successor id and hand it to a shared
+//! dispatcher — so loops and branches can be generated without ever laying out
+//! a branch. A block that needs two successors selects one arithmetically.
+//!
 //! ```
 //! use canvas::Blocks;
 //! use interp::Options;
@@ -33,6 +38,7 @@
 //! ```
 
 mod error;
+mod flow;
 mod interpreter;
 mod linear;
 mod paint;
@@ -40,6 +46,7 @@ mod program;
 mod shade;
 
 pub use error::Error;
+pub use flow::{Block, End, Node, Program};
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
