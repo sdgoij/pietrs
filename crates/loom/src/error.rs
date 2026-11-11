@@ -31,8 +31,11 @@ pub enum Error {
     #[error("the command {0:?} changes control flow and cannot be interpreted")]
     Unsupported(Command),
 
-    #[error("the program is not linear: it runs through white")]
-    NotLinear,
+    #[error("block {block} runs {command:?}, so the program is not linear")]
+    NotLinear { block: u32, command: Command },
+
+    #[error("the program does not terminate within {0} steps")]
+    StepLimit(u64),
 
     #[error("the interpreted program needs input the stream does not carry")]
     InputExhausted,

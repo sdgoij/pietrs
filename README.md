@@ -130,7 +130,8 @@ target/debug/pietrs run target/weave/interpreter.png --input target/weave/progra
 ```
 
 See [`crates/loom/fixtures/hello-world/`](crates/loom/fixtures/hello-world/)
-and [`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md).
+and [`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md). A program
+that is not linear is refused before it runs, naming the block that branches.
 
 ### Images
 

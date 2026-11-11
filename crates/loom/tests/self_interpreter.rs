@@ -2,9 +2,9 @@
 //! The interpreter runs programs, and agrees with the reference interpreter on
 //! the programs it claims to interpret.
 
-use canvas::{Blocks, CodelGrid};
+use canvas::{Blocks, CodelGrid, Color, Hue, Lightness};
 use interp::{ExitReason, Options, Run};
-use loom::{Instruction, assemble, encode, instructions, interpreter, linear_program};
+use loom::{Error, Instruction, assemble, encode, instructions, interpreter, linear_program};
 use runtime::BufferIo;
 use tessera::Command;
 
@@ -70,6 +70,76 @@ fn the_interpreter_runs_the_canonical_hello_world() {
     let (actual, result) = run(&interpreter().unwrap(), &stream);
     assert_eq!(actual, expected);
     assert_eq!(result.reason, ExitReason::Terminated);
+}
+
+#[test]
+fn a_slide_runs_no_instruction() {
+    // A launcher of 65 codels, one white codel, a 65-codel block and one more,
+    // then the terminator: the slide into the second block runs no command, so
+    // the trace is push, out char.
+    let width = 132;
+    let height = 3;
+    let a = Color::chromatic(Hue::Red, Lightness::Normal);
+    let b = Color::chromatic(Hue::Red, Lightness::Light);
+    let c = Color::chromatic(Hue::Red, Lightness::Normal);
+    let bar = Color::chromatic(Hue::Magenta, Lightness::Light);
+    let mut codels = vec![Color::Black; (width * height) as usize];
+    let mut paint = |x: u32, y: u32, color: Color| codels[(y * width + x) as usize] = color;
+    paint(0, 0, a);
+    paint(0, 1, a);
+    for x in 1..=63 {
+        paint(x, 1, a);
+    }
+    paint(64, 1, Color::White);
+    for x in 65..=129 {
+        paint(x, 1, b);
+    }
+    paint(130, 1, c);
+    for y in 0..3 {
+        paint(131, y, bar);
+    }
+    let program = CodelGrid::from_colors(width, height, codels).unwrap();
+
+    let blocks = Blocks::partition(program.clone());
+    let mut io = BufferIo::new("");
+    let trace = instructions(&blocks, &mut io, &bounded()).unwrap();
+    assert_eq!(trace.len(), 2);
+    assert_eq!(trace[0].command, Command::Push);
+    assert_eq!(trace[0].block_size, 65);
+    assert_eq!(trace[1].command, Command::OutChar);
+
+    let (expected, _) = run(&program, "");
+    assert_eq!(expected, "A");
+    let (actual, _) = run(&interpreter().unwrap(), &encode(&trace, "").unwrap());
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn a_pointer_is_refused_with_its_block() {
+    // The generated interpreter is not linear: its dispatch bus runs pointer.
+    let blocks = Blocks::partition(interpreter().unwrap());
+    let mut io = BufferIo::new("");
+    match instructions(&blocks, &mut io, &bounded()) {
+        Err(Error::NotLinear { command, .. }) => assert_eq!(command, Command::Pointer),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_program_that_does_not_terminate_is_refused() {
+    // The next slot back and forth forever: every step slides through white.
+    let image = include_bytes!("../../xtask/fixtures/white/program.png");
+    let program = CodelGrid::from_image(image).unwrap();
+    let blocks = Blocks::partition(program);
+    let mut io = BufferIo::new("");
+    let options = Options {
+        max_steps: Some(1_000),
+        ..Options::default()
+    };
+    assert!(matches!(
+        instructions(&blocks, &mut io, &options),
+        Err(Error::StepLimit(1_000))
+    ));
 }
 
 #[test]

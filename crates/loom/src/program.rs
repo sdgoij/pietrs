@@ -53,29 +53,39 @@ pub struct Instruction {
 
 /// The instructions a program runs, in order, read from its trace.
 ///
-/// A run that terminates records a last step with no command; that step is not
-/// an instruction. A run that slides through white has no instruction for the
-/// slide either, and is refused because the interpreter cannot model it.
+/// A slide through white runs no command, so it becomes no instruction: the
+/// movement does not touch the stack and the interpreter never sees it. A
+/// `pointer` or `switch` is refused because it changes the interpreted
+/// program's control flow, which the interpreter cannot model; the error names
+/// the block to look at. A run that hits the step limit has no finite
+/// instruction sequence to encode.
 pub fn instructions(
     blocks: &Blocks,
     io: &mut dyn Io,
     options: &Options,
 ) -> Result<Vec<Instruction>, Error> {
-    let (_, trace) = interp::run_traced(blocks, io, options)?;
+    let mut machine = interp::Machine::new(blocks, *options);
     let mut instructions = Vec::new();
-    for step in &trace {
-        match (step.command, step.target) {
-            (Some(command), Some(_)) => {
+    while let Some(progress) = machine.step(blocks, io)? {
+        match progress {
+            interp::Progress::Moved { from, command, .. } => {
+                let Some(command) = command else {
+                    continue;
+                };
+                opcode(command).ok_or(Error::NotLinear {
+                    block: from.block.0,
+                    command,
+                })?;
                 let block_size = blocks
-                    .block(step.block)
+                    .block(from.block)
                     .map_or(0, |block| block.size() as u64);
                 instructions.push(Instruction {
                     command,
                     block_size,
                 });
             }
-            (None, None) => {}
-            (None, Some(_)) | (Some(_), None) => return Err(Error::NotLinear),
+            interp::Progress::Terminated { .. } => break,
+            interp::Progress::StepLimit => return Err(Error::StepLimit(machine.steps())),
         }
     }
     Ok(instructions)

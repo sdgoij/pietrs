@@ -115,6 +115,25 @@ The test `the_interpreter_runs_the_canonical_hello_world` decodes the fixture,
 checks the reference interpreter prints the committed `expected.stdout`, and
 then checks the generated image prints the same thing from the encoded trace.
 
+## Refusing a program
+
+`instructions` walks the machine one step at a time, so the first thing it
+cannot model is reported at once, before the rest of the program runs:
+
+```text
+weave: pietquest.png: block 12 runs Pointer, so the program is not linear
+```
+
+*Piet's Quest* is 409 x 1163 codels and 13 912 blocks, and it branches in its
+menu loop; running it to the end first, as the example used to, overflowed the
+value stack with no explanation.
+
+A slide through white is not refused: it runs no command, so it becomes no
+instruction. Movement does not touch the stack and the interpreter never sees
+it, which means a linear program may use white freely. A run that hits the step
+limit is reported, because a program that does not terminate has no finite
+instruction sequence to encode.
+
 ## Tests
 
 `crates/loom/tests/self_interpreter.rs` runs a generated program directly
@@ -127,12 +146,15 @@ A deterministic sweep does that for forty-eight pseudo-random programs over the
 whole opcode set, including arithmetic, `roll`, output and number input, and
 compares stdout for every one. Separate cases name every opcode the interpreter
 claims to run, the halt on an unknown opcode, and character input including a
-digit. One case runs the canonical *Hello world!* image end to end.
+digit. One case runs the canonical *Hello world!* image end to end, one builds a
+program that slides through white by hand, and two check the refusals: a
+`pointer` (the interpreter image itself is the subject) and a program that never
+terminates.
 
 ## Limits
 
 - Only the linear fragment. A program whose trace contains `pointer` or
-  `switch` is refused, not mis-executed.
+  `switch` is refused, naming the block; it is never mis-executed.
 - The interpreter does not model the interpreted program's direction pointer or
   codel chooser, so it cannot run programs that use them to branch. Doing so
   needs the interpreted program's block geometry and random access to it, and
