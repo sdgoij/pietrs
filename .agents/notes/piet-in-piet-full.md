@@ -266,9 +266,16 @@ cells to build.
 The known divergence, and the next piece: **underflow**. The runtime ignores a
 `roll` deeper than the stack, so a handler that reaches for a value which is not
 there silently pops a ring cell, where `interp` ignores the underflowing command.
-The fix is a fourth record cell holding the value depth — the head's cells are at
-fixed depths, so poking and testing it are cheap rolls — and a guard in front of
-each access.
+
+A depth counter has to live at a depth a jump does not change, and the obvious
+answer — a fourth cell in each record — does not work. The depth is global, so a
+jump would have to migrate it into the new head's cell, and that cell sits at the
+depth the record's *offset* names, which is data. The workable shape is a fixed
+register block between the values and the ring: the ring is rotated by whole
+records, so a block below it keeps its depth across jumps, and pushes land
+between the block and the ring. Reading the counter then costs two ring
+rotations, and poking it two more, which is the price of matching `interp` on
+underflow.
 
 ### S4. Interpret the grid (optional)
 

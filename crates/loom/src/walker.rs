@@ -58,9 +58,14 @@
 //! sharpest known gap. The runtime ignores a `roll` whose depth is deeper than
 //! the stack, so a handler that reaches for a value that is not there does not
 //! fail: the roll is a no-op and the handler then pops a ring cell. `interp`
-//! ignores the underflowing command instead. Closing this needs a depth counter
-//! in the record — a fourth cell, rolled with the ring and therefore at a fixed
-//! depth — that each handler can test before it reaches. That is the next piece.
+//! ignores the underflowing command instead.
+//!
+//! A depth counter has to sit at a depth that a jump does not change. A fourth
+//! cell in each record does not work: the depth is global, so every jump would
+//! have to migrate it into the new head's cell at a depth the offset decides,
+//! which is dynamic. The workable shape is a fixed register block *between* the
+//! values and the ring — the ring moves by whole records, so the block keeps its
+//! depth — at the cost of two ring rotations per guarded access.
 //!
 
 use canvas::CodelGrid;
