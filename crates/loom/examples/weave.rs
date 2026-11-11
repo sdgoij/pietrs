@@ -1,22 +1,39 @@
-//! Writes the generated interpreter next to a program it can run.
+//! Writes the walker next to the program it runs.
 //!
 //! ```sh
 //! cargo run -p loom --example weave -- target/weave
-//! cargo run -p loom --example weave -- target/weave crates/gui/web/hello.png
-//! target/debug/pietrs run target/weave/interpreter.png --input target/weave/program.txt
+//! cargo run -p loom --example weave -- target/weave path/to/program.png
+//! cargo run -p loom --example weave -- target/weave path/to/program.png "1 2 3"
+//! target/debug/pietrs run target/weave/walker.png --input target/weave/program.txt
 //! ```
 //!
-//! The instruction stream is read from the program's trace, so the program has
-//! to be linear. One that runs `pointer` or `switch` is reported, naming the
-//! block to look at, rather than run and left to overflow the stack.
+//! A straight-line program is woven from its trace. One that branches is woven
+//! from its state graph, where the image chooses the successor at run time, so
+//! `pointer` and `switch` are not an error here.
+//!
+//! The third argument is the program's own input. For a straight line it is the
+//! text the program reads; for a graph it is **code points**, one number per
+//! read, because a graph decides which reads happen. A graph's reads must also
+//! not run out: nothing in the image can tell a read that happened from one that
+//! did not.
+//!
+//! The fourth argument is the woven image's step budget. It is not the same
+//! figure as the reference's: one interpreted command costs hundreds of machine
+//! steps, so a big program needs a large budget and patience.
 
 use std::fs;
 use std::path::PathBuf;
 
 use canvas::{Blocks, CodelGrid};
 use interp::Options;
-use loom::{encode, instructions, interpreter, linear_program};
+use loom::{Error, graph_walker, instructions, linear_program, walker};
 use runtime::BufferIo;
+use tessera::StateGraph;
+
+/// Steps the reference is allowed.
+const REFERENCE_STEPS: u64 = 1_000_000;
+/// Steps the woven image is allowed unless the caller says otherwise.
+const WALKER_STEPS: u64 = 50_000_000;
 
 fn main() {
     if let Err(error) = run() {
@@ -36,30 +53,89 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => (CodelGrid::from_image(&fs::read(&path)?)?, path),
         None => (linear_program("Hello, Piet!")?, String::from("generated")),
     };
+    let input = arguments.next().unwrap_or_default();
+    let steps = arguments
+        .next()
+        .map_or(Ok(WALKER_STEPS), |text| text.parse())?;
 
-    let options = Options {
-        max_steps: Some(1_000_000),
+    let reference = Options {
+        max_steps: Some(REFERENCE_STEPS),
         ..Options::default()
     };
     let blocks = Blocks::partition(program.clone());
-    let mut io = BufferIo::new("");
-    let trace =
-        instructions(&blocks, &mut io, &options).map_err(|error| format!("{label}: {error}"))?;
-    let stream = encode(&trace, "").map_err(|error| format!("{label}: {error}"))?;
+    let mut io = BufferIo::new(&input);
+    let (image, stream, what) = match instructions(&blocks, &mut io, &reference) {
+        Ok(trace) => {
+            let (image, stream) =
+                walker(&trace, &input).map_err(|error| format!("{label}: {error}"))?;
+            (image, stream, format!("{} instructions", trace.len()))
+        }
+        Err(Error::NotLinear { .. }) => {
+            let graph = StateGraph::build(&blocks);
+            let (image, stream) = graph_walker(&graph, &blocks, &input)
+                .map_err(|error| format!("{label}: {error}"))?;
+            (image, stream, format!("{} states", graph.states().len()))
+        }
+        Err(error) => return Err(format!("{label}: {error}").into()),
+    };
 
-    let machine = interpreter()?;
-    let (actual, _) = run_grid(&machine, &stream, &options)?;
-    let (expected, _) = run_grid(&program, "", &options)?;
+    let woven = Options {
+        max_steps: Some(steps),
+        ..Options::default()
+    };
+    let (actual, walked) = run_grid(&image, &stream, &woven)?;
+    let (expected, _) = run_grid(&program, &input, &reference)?;
 
-    fs::write(directory.join("interpreter.png"), machine.encode_png()?)?;
+    fs::write(directory.join("walker.png"), image.encode_png()?)?;
     fs::write(directory.join("program.png"), program.encode_png()?)?;
     fs::write(directory.join("program.txt"), &stream)?;
 
     println!(
-        "{label}: {} instructions, the program prints {expected:?}, the interpreter prints {actual:?}",
-        trace.len()
+        "{label}: {what}; walker {}x{}; stream {} bytes",
+        image.width(),
+        image.height(),
+        stream.len()
     );
+    println!(
+        "  reference: {} chars, {} bytes: {:?}",
+        expected.chars().count(),
+        expected.len(),
+        prefix(&expected)
+    );
+    println!(
+        "  walker:    {:?}, {} bytes: {:?}",
+        walked.reason,
+        actual.len(),
+        prefix(&actual)
+    );
+    println!("  {}", verdict(&expected, &actual));
     Ok(())
+}
+
+/// What the two runs say about each other.
+///
+/// The budgets differ — one interpreted command is hundreds of machine steps —
+/// so a shorter run is expected to be a prefix of a longer one.
+fn verdict(expected: &str, actual: &str) -> &'static str {
+    if actual == expected {
+        "the same output"
+    } else if expected.starts_with(actual) {
+        "the walker stopped inside the reference's output"
+    } else if actual.starts_with(expected) {
+        "the walker printed more; the reference hit its step limit"
+    } else {
+        "different output"
+    }
+}
+
+/// The first line or so, so a long run does not flood the terminal.
+fn prefix(output: &str) -> String {
+    const LIMIT: usize = 120;
+    let mut shown = output.chars().take(LIMIT).collect::<String>();
+    if output.chars().count() > LIMIT {
+        shown.push('…');
+    }
+    shown
 }
 
 fn run_grid(
