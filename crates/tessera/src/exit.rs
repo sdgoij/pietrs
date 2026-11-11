@@ -80,11 +80,19 @@ pub fn edge_codel(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser
 /// The block's own edge codel for `(dp, cc)`, before the eight-attempt
 /// fallback.
 ///
-/// [`edge_codel`] is the codel a *move* leaves from, so it keeps trying until an
+/// [`block_edge`] is the codel a *move* leaves from, so it keeps trying until an
 /// attempt leaves the block. This is the single attempt: the codel the state's
 /// own direction and chooser select, whether or not it leads anywhere.
 pub fn block_edge(blocks: &Blocks, block_id: BlockId, dp: Direction, cc: Chooser) -> Option<Point> {
     block_edge_codel(blocks.block(block_id)?, dp, cc)
+}
+
+/// The codel one step from `point` in `dp`.
+///
+/// `None` means the step leaves the image's coordinate space, which is how the
+/// movement rules treat an edge that is off the grid.
+pub fn step_codel(point: Point, dp: Direction) -> Option<Point> {
+    step(point, dp)
 }
 
 fn resolve(

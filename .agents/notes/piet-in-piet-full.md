@@ -545,7 +545,25 @@ wide all round, so a step in any direction is `±4` or `±stride` and lands on a
 guard when it leaves the grid. A guard's colour code is `22 + index`, so `colour
 >= 22` is the same signal as black, and the partition is unaffected.
 
-**The fallback is the next piece, and it reuses the edge scan.** The scan already
+**The step is built** (`loom::step_state`). It decodes the winning score back to
+a codel, seeks the ring to it with a one-cell loop, steps once in the direction,
+and reads the neighbour's colour: a guard or black is `-1` (the attempt fails),
+white is `-2` (the slide, still to build), and a chromatic neighbour is the move
+— its label and the attempt's `(dp, cc)`. Every block of five fixtures agrees
+with `tessera::block_edge` plus `tessera::step_codel` in all eight states.
+
+Two things the build settled. The scan stops on the last cell it *scored*, not on
+cell zero, so the step stage advances once before seeking; without it the whole
+ring is off by one cell and every move lands on the block's own codel. And the
+decode has to drop the raw score halves from under the two coordinates it just
+pushed, which is a `roll(4, 2)` and two pops — a plain pair of pops takes the
+coordinates instead.
+
+**What remains is the eight-attempt loop around this, and the slide.** The loop
+is a `case` per attempt over the same blocks; the slide is a walk along white
+cells bounded by `4 * cells`.
+
+**The fallback's shape, while it is fresh.** The scan already
 takes its case from a live value, so the eight attempts are a loop that sets
 `case` from `(dp, cc, attempt)` — `dp_i = (dp + attempt/2) % 4` and
 `cc_i = (cc + attempt/2 + attempt%2) % 2`, which is `attempt(dp, cc, index)` from

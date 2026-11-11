@@ -12,5 +12,5 @@ mod graph;
 
 pub use command::{Command, command};
 pub use direction::{Chooser, Direction};
-pub use exit::{Exit, Start, State, block_edge, edge_codel, exit, start};
+pub use exit::{Exit, Start, State, block_edge, edge_codel, exit, start, step_codel};
 pub use graph::{Branch, Edge, StateGraph};

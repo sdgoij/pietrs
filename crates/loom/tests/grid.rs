@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
-use loom::{block_edge, splitter};
+use loom::{block_edge, splitter, step_state};
 use runtime::BufferIo;
 use tessera::{Chooser, Direction};
 
@@ -204,6 +204,77 @@ fn the_edge_codel_matches_tessera_everywhere() {
     check_edges(&["rrr", "r.r", "rrr"], None);
     check_edges(&["rgggr", "rg.gd", "rg.gg", "rrrrd"], None);
     check_edges(&[".r.", "rrr", ".r."], None);
+}
+
+/// Every state of every block of `rows`, one attempt of the movement rules.
+///
+/// The oracle is `tessera`'s own primitive: the block's edge codel, one step in
+/// the direction, and the colour it lands on.
+fn check_steps(rows: &[&str], blocks_to_check: Option<usize>) {
+    let grid = grid(rows);
+    let blocks = Blocks::partition(grid.clone());
+    let width = grid.width();
+    let label = |id: BlockId| {
+        blocks
+            .block(id)
+            .unwrap()
+            .codels()
+            .iter()
+            .map(|point| (point.y + 1) * (width + 2) + (point.x + 1))
+            .min()
+            .unwrap()
+    };
+
+    let reached = blocks_to_check.unwrap_or(usize::MAX);
+    for block in blocks.blocks().iter().take(reached) {
+        for dp in Direction::ALL {
+            for cc in [Chooser::Left, Chooser::Right] {
+                let (image, stream) = step_state(&grid, block.id(), dp, cc).unwrap();
+                let (output, result) = run(&image, &stream, 40_000_000);
+                assert_eq!(result.reason, ExitReason::Terminated);
+                let found: Vec<i64> = output
+                    .split_whitespace()
+                    .map(|token| token.parse().unwrap())
+                    .collect();
+
+                let expected = match tessera::block_edge(&blocks, block.id(), dp, cc) {
+                    None => Vec::new(),
+                    Some(edge) => match tessera::step_codel(edge, dp) {
+                        None => vec![-1],
+                        Some(next) => match grid.get(next) {
+                            None | Some(Color::Black) => vec![-1],
+                            Some(Color::White) => vec![-2],
+                            Some(_) => {
+                                let id = blocks.block_id_at(next).unwrap();
+                                vec![
+                                    i64::from(label(id)),
+                                    i64::from(dp as u32),
+                                    i64::from(cc as u32),
+                                ]
+                            }
+                        },
+                    },
+                };
+                let what = format!("{rows:?} block {} {dp:?} {cc:?}", block.id().0);
+                assert_eq!(found, expected, "{what}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_step_matches_tessera() {
+    check_steps(&["rrgg"], Some(1));
+}
+
+#[test]
+#[ignore = "the full sweep: cargo test -p loom --release --test grid -- --ignored"]
+fn the_step_matches_tessera_everywhere() {
+    check_steps(&["rrgg"], None);
+    check_steps(&["rg", "gr"], None);
+    check_steps(&["r", "r"], None);
+    check_steps(&["r.", "gg"], None);
+    check_steps(&[".r.", "rrr", ".r."], None);
 }
 
 #[test]

@@ -68,6 +68,20 @@
 //! so the two halves cannot carry into each other, and decoding the winner is a
 //! division and a remainder.
 //!
+//! # The step stage
+//!
+//! [`step_state`] carries the same scan one step further. It decodes the winning
+//! score back to a codel, seeks the ring to that cell, steps once in the state's
+//! direction, and reads the neighbour's colour. A guard or a black neighbour
+//! means the attempt fails and the answer is `-1`; white is the case that slides,
+//! reported as `-2`; anything else is the move, reported as the neighbour's label
+//! and the attempt's `(dp, cc)`.
+//!
+//! The seek is a loop of one-cell advances, so it costs the winning index rather
+//! than the ring: the scan already knows where the cell is, and the ring is a
+//! cycle. The scan stops on the last cell it scored, so the step stage advances
+//! once more before seeking, which is what puts the index's origin at cell zero.
+//!
 //! # Input and output
 //!
 //! The stream is the number of ring cells, then every record highest index
@@ -101,20 +115,74 @@ const END: u32 = 12;
 
 /// Where the edge stage starts, once the partition has finished.
 const EDGE_SETUP: u32 = 13;
-/// Does this cell belong to the block? Then score it.
-const EDGE_CELL: u32 = 14;
-/// `index += 1`, and stop when every cell has been seen.
-const EDGE_NEXT: u32 = 15;
-/// The next cell.
-const EDGE_ADVANCE: u32 = 16;
-/// The codel's coordinates, then the case for this `(dp, cc)`.
-const EDGE_MATCH: u32 = 17;
-/// Eight scoring blocks, one per `(dp, cc)`.
-const EDGE_CASE: u32 = 18;
-/// Eight print blocks, one per `(dp, cc)`.
+/// The edge program's eight print blocks, one per `(dp, cc)`.
 const EDGE_PRINT: u32 = 26;
 /// Picks the print block for this case.
 const EDGE_SELECT: u32 = 34;
+
+/// The colour code of white, and of black: the palette's last two entries.
+const WHITE_CODE: u32 = 18;
+const BLACK_CODE: u32 = 19;
+
+/// Where the scan starts in the edge program.
+const SCAN_BASE: u32 = 14;
+
+/// The step stage's blocks: the same scan, then a decode, a seek, a roll and a
+/// colour decision.
+const STP_SETUP: u32 = 13;
+const STP_SCAN: u32 = SCAN_BASE;
+const STP_DECODE_SELECT: u32 = 26;
+const STP_DECODE: u32 = 27;
+const STP_SEEK_SETUP: u32 = 35;
+const STP_SEEK_TEST: u32 = 36;
+const STP_SEEK_STEP: u32 = 37;
+const STP_STEP_SELECT: u32 = 38;
+const STP_STEP: u32 = 39;
+const STP_DECIDE: u32 = 43;
+const STP_BLACK: u32 = 44;
+const STP_WHITE_CHECK: u32 = 45;
+const STP_SUCCESS: u32 = 46;
+const STP_FAIL: u32 = 47;
+const STP_WHITE: u32 = 48;
+
+/// A splitter image that also resolves one step of the movement rules from a
+/// state, and the stream that asks for it.
+///
+/// This is one attempt: the block's own edge codel, one step in that direction,
+/// and the neighbour it lands on. The image prints the move's target label and
+/// the attempt's `(dp, cc)` when the neighbour is chromatic, `-1` when it is off
+/// the grid or black (the caller would try the next attempt), and `-2` when it is
+/// white (the case that slides, which is not built yet).
+pub fn step_state(
+    grid: &CodelGrid,
+    block: BlockId,
+    dp: Direction,
+    cc: Chooser,
+) -> Result<(CodelGrid, String), Error> {
+    let mut stream = stream_of(grid)?;
+    stream.push_str(&format!(
+        " {} {} {}",
+        label_of(grid, block)?,
+        dp as u32,
+        cc as u32
+    ));
+    Ok((step_program()?.image()?, stream))
+}
+
+/// The block's label: the lowest ring position among its codels.
+fn label_of(grid: &CodelGrid, block: BlockId) -> Result<u32, Error> {
+    let blocks = Blocks::partition(grid.clone());
+    blocks
+        .block(block)
+        .and_then(|target| {
+            target
+                .codels()
+                .iter()
+                .map(|point| ring_index(grid, *point))
+                .min()
+        })
+        .ok_or(Error::TooLarge)
+}
 
 /// A splitter image and the stream that carries `grid`'s colours to it.
 ///
@@ -138,20 +206,13 @@ pub fn block_edge(
     dp: Direction,
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
-    let blocks = Blocks::partition(grid.clone());
-    let label = blocks
-        .block(block)
-        .and_then(|target| {
-            target
-                .codels()
-                .iter()
-                .map(|point| ring_index(grid, *point))
-                .min()
-        })
-        .ok_or(Error::TooLarge)?;
-
     let mut stream = stream_of(grid)?;
-    stream.push_str(&format!(" {label} {} {}", dp as u32, cc as u32));
+    stream.push_str(&format!(
+        " {} {} {}",
+        label_of(grid, block)?,
+        dp as u32,
+        cc as u32
+    ));
     Ok((edge_program()?.image()?, stream))
 }
 
@@ -304,21 +365,133 @@ fn edge_program() -> Result<Program, Error> {
     let mut all = blocks();
     // The partition stops once it has converged: no labels, straight to the edge.
     all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(EDGE_SETUP));
-    all.extend(edge_blocks());
+    all.push(Block::new(edge_setup(), End::Jump(SCAN_BASE)));
+    let (_, scan) = scan_blocks(SCAN_BASE, EDGE_SELECT);
+    all.extend(scan);
+    for case in 0..8 {
+        all.push(Block::new(print_case(case), End::Halt));
+    }
+    all.push(Block::new(dispatch(3, EDGE_PRINT), End::Computed));
     Program::new(all, ENTRY)
 }
 
-/// The edge stage: read the query, score every cell of the block, print the
-/// winner.
+/// The splitter image, extended with the step stage.
+fn step_program() -> Result<Program, Error> {
+    let mut all = blocks();
+    all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(STP_SETUP));
+    all.push(Block::new(edge_setup(), End::Jump(STP_SCAN)));
+    let (_, scan) = scan_blocks(STP_SCAN, STP_DECODE_SELECT);
+    all.extend(scan);
+    all.push(Block::new(
+        {
+            // The scan stops on the last cell, so step once more to reach zero,
+            // where the seek's index is measured from.
+            let mut nodes = ring_by(6, i64::from(PER_CELL));
+            nodes.extend(dispatch(3, STP_DECODE));
+            nodes
+        },
+        End::Computed,
+    ));
+    for case in 0..8 {
+        all.push(Block::new(decode_case(case), End::Jump(STP_SEEK_SETUP)));
+    }
+    all.push(Block::new(seek_setup(), End::Jump(STP_SEEK_TEST)));
+    all.push(Block::new(
+        vec![Node::DupLocal(1), Node::Command(Command::Not)],
+        End::If {
+            then: STP_STEP_SELECT,
+            otherwise: STP_SEEK_STEP,
+        },
+    ));
+    all.push(Block::new(
+        {
+            let mut nodes = ring_by(7, i64::from(PER_CELL));
+            nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
+            nodes
+        },
+        End::Jump(STP_SEEK_TEST),
+    ));
+    all.push(Block::new(
+        {
+            let mut nodes = vec![
+                Node::Command(Command::Pop),
+                Node::DupLocal(3),
+                Node::Const(2),
+                Node::Command(Command::Divide),
+            ];
+            nodes.extend(dispatch(1, STP_STEP));
+            nodes
+        },
+        End::Computed,
+    ));
+    for dp in 0..4 {
+        all.push(Block::new(step_roll(dp), End::Jump(STP_DECIDE)));
+    }
+    all.push(Block::new(
+        vec![
+            Node::DupLocal(8),
+            Node::Const(i64::from(GUARD_CODE) - 1),
+            Node::Command(Command::Greater),
+        ],
+        End::If {
+            then: STP_FAIL,
+            otherwise: STP_BLACK,
+        },
+    ));
+    all.push(Block::new(
+        colour_is(BLACK_CODE),
+        End::If {
+            then: STP_FAIL,
+            otherwise: STP_WHITE_CHECK,
+        },
+    ));
+    all.push(Block::new(
+        colour_is(WHITE_CODE),
+        End::If {
+            then: STP_WHITE,
+            otherwise: STP_SUCCESS,
+        },
+    ));
+    all.push(Block::new(move_nodes(), End::Halt));
+    all.push(Block::new(
+        vec![Node::Const(-1), Node::Command(Command::OutNumber)],
+        End::Halt,
+    ));
+    all.push(Block::new(
+        vec![Node::Const(-2), Node::Command(Command::OutNumber)],
+        End::Halt,
+    ));
+    Program::new(all, ENTRY)
+}
+
+/// The ids one copy of the edge scan occupies.
+struct Scan {
+    cell: u32,
+    next: u32,
+    advance: u32,
+    matcher: u32,
+    cases: u32,
+}
+
+/// One copy of the edge scan, starting at block `base`.
+///
+/// The scan is five shared blocks and eight scoring blocks. It ends at `done`,
+/// which is what lets the same loop serve both the edge stage (print the winner)
+/// and the step stage (carry on to the roll).
 ///
 /// The live values are `[index, best, case, big, row cells, label]`: the ring
 /// index being visited, the best score so far, the `(dp, cc)` case, the score
 /// base (`big`, the cell count), the row length in cells, and the block's label.
-fn edge_blocks() -> Vec<Block> {
+fn scan_blocks(base: u32, done: u32) -> (Scan, Vec<Block>) {
+    let ids = Scan {
+        cell: base,
+        next: base + 1,
+        advance: base + 2,
+        matcher: base + 3,
+        cases: base + 4,
+    };
     let mut blocks = vec![
-        // 13: read label, dp, cc; find the row length and the score base
-        Block::new(edge_setup(), End::Jump(EDGE_CELL)),
-        // 14: does this cell belong to the block?
+        // does this cell belong to the block?
         Block::new(
             vec![
                 Node::DupLocal(7),
@@ -327,11 +500,11 @@ fn edge_blocks() -> Vec<Block> {
                 Node::Command(Command::Not),
             ],
             End::If {
-                then: EDGE_MATCH,
-                otherwise: EDGE_NEXT,
+                then: ids.matcher,
+                otherwise: ids.next,
             },
         ),
-        // 15: one more cell seen; all of them means the score is final
+        // one more cell seen; all of them means the score is final
         Block::new(
             vec![
                 Node::Const(1),
@@ -342,19 +515,19 @@ fn edge_blocks() -> Vec<Block> {
                 Node::Command(Command::Not),
             ],
             End::If {
-                then: EDGE_SELECT,
-                otherwise: EDGE_ADVANCE,
+                then: done,
+                otherwise: ids.advance,
             },
         ),
-        // 16: the next cell
-        Block::new(ring_by(6, i64::from(PER_CELL)), End::Jump(EDGE_CELL)),
-        // 17: the codel's coordinates, then the scoring block for this case
+        // the next cell
+        Block::new(ring_by(6, i64::from(PER_CELL)), End::Jump(ids.cell)),
+        // the codel's coordinates, then the scoring block for this case
         Block::new(
             {
                 let mut nodes = cell_coordinates();
                 nodes.extend([
                     Node::DupLocal(5),
-                    Node::Const(i64::from(EDGE_CASE)),
+                    Node::Const(i64::from(ids.cases)),
                     Node::Command(Command::Add),
                 ]);
                 nodes
@@ -363,21 +536,131 @@ fn edge_blocks() -> Vec<Block> {
         ),
     ];
     for case in 0..8 {
-        blocks.push(Block::new(score_case(case), End::Jump(EDGE_NEXT)));
+        blocks.push(Block::new(score_case(case), End::Jump(ids.next)));
     }
-    for case in 0..8 {
-        blocks.push(Block::new(print_case(case), End::Halt));
-    }
-    // 34: the print block for this case
-    blocks.push(Block::new(
-        vec![
+    (ids, blocks)
+}
+
+/// `base + case`, then dispatch to it.
+fn dispatch(depth: u32, base: u32) -> Vec<Node> {
+    vec![
+        Node::DupLocal(depth),
+        Node::Const(i64::from(base)),
+        Node::Command(Command::Add),
+    ]
+}
+
+/// The edge codel's ring index, from the decoded `(column, row)`.
+fn seek_setup() -> Vec<Node> {
+    vec![
+        Node::DupLocal(2),
+        Node::DupLocal(8),
+        Node::Command(Command::Multiply),
+        Node::Swap,
+        Node::Command(Command::Add),
+        // the row copy sits under the index now
+        Node::Roll(2, 1),
+        Node::Command(Command::Pop),
+    ]
+}
+
+/// One step in `dp`, taken with the head on the edge codel.
+///
+/// The dispatch leaves `dp` on the stack, so the block drops it first.
+fn step_roll(dp: u32) -> Vec<Node> {
+    let mut nodes = vec![Node::Command(Command::Pop)];
+    nodes.extend(match dp {
+        0 => ring_by(6, i64::from(PER_CELL)),
+        2 => ring_by(6, -i64::from(PER_CELL)),
+        3 => ring_up(6),
+        _ => ring_down(6),
+    });
+    nodes
+}
+
+/// `colour == code`, for the neighbour's colour at depth eight.
+fn colour_is(code: u32) -> Vec<Node> {
+    vec![
+        Node::DupLocal(8),
+        Node::Const(i64::from(code)),
+        Node::Command(Command::Subtract),
+        Node::Command(Command::Not),
+    ]
+}
+
+/// Print the move: the neighbour's label, then the attempt's `(dp, cc)`.
+fn move_nodes() -> Vec<Node> {
+    vec![
+        Node::DupLocal(7),
+        Node::Command(Command::OutNumber),
+        Node::Const(32),
+        Node::Command(Command::OutChar),
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Divide),
+        Node::Command(Command::OutNumber),
+        Node::Const(32),
+        Node::Command(Command::OutChar),
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        Node::Command(Command::OutNumber),
+    ]
+}
+
+/// The step's decode: the winning score back to `(column, row)` as values.
+///
+/// The inverse of [`score_case`] — the halves are flipped back, and the primary
+/// and secondary become column and row by the same rule — leaving the live values
+/// as `[column, row, index, best, case, big, row cells, label]`.
+fn decode_case(case: u32) -> Vec<Node> {
+    let (primary_is_x, primary_max, secondary_max) = flags(case);
+    let mut nodes = vec![
+        // primary = best / big
+        Node::DupLocal(2),
+        Node::DupLocal(5),
+        Node::Command(Command::Divide),
+        // secondary = best % big
+        Node::DupLocal(3),
+        Node::DupLocal(6),
+        Node::Command(Command::Modulo),
+    ];
+    if primary_max {
+        nodes.push(Node::DupLocal(2));
+    } else {
+        nodes.extend([
+            Node::DupLocal(7),
             Node::DupLocal(3),
-            Node::Const(i64::from(EDGE_PRINT)),
-            Node::Command(Command::Add),
-        ],
-        End::Computed,
-    ));
-    blocks
+            Node::Command(Command::Subtract),
+        ]);
+    }
+    if secondary_max {
+        nodes.push(Node::DupLocal(2));
+    } else {
+        nodes.extend([
+            Node::DupLocal(8),
+            Node::DupLocal(3),
+            Node::Command(Command::Subtract),
+        ]);
+    }
+    // [secondary value, primary value, secondary, primary, index, best, ...]
+    // Drop the raw halves, which sit under the two values just computed.
+    nodes.extend([
+        Node::Roll(4, 2),
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+    ]);
+    let (column, row) = if primary_is_x { (2, 1) } else { (1, 2) };
+    nodes.push(Node::DupLocal(row));
+    nodes.push(Node::DupLocal(column + 1));
+    // [column, row, secondary value, primary value, index, best, ...]: drop the
+    // two values the coordinates came from.
+    nodes.extend([
+        Node::Roll(4, 2),
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+    ]);
+    nodes
 }
 
 /// `[index, best, case, big, row cells, label]` from the query.
@@ -734,6 +1017,7 @@ fn negate() -> Vec<Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use canvas::{Hue, Lightness};
     use interp::Options;
     use runtime::BufferIo;
 
@@ -937,7 +1221,100 @@ mod tests {
     fn edge_blocks_for_test() -> Vec<Block> {
         let mut all = blocks();
         all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(EDGE_SETUP));
-        all.extend(edge_blocks());
+        all.push(Block::new(edge_setup(), End::Jump(SCAN_BASE)));
+        let (_, scan) = scan_blocks(SCAN_BASE, EDGE_SELECT);
+        all.extend(scan);
+        for case in 0..8 {
+            all.push(Block::new(print_case(case), End::Halt));
+        }
+        all.push(Block::new(dispatch(3, EDGE_PRINT), End::Computed));
+        all
+    }
+
+    /// The step program's blocks, as `step_program` assembles them.
+    fn step_blocks_for_test() -> Vec<Block> {
+        let mut all = blocks();
+        all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(STP_SETUP));
+        all.push(Block::new(edge_setup(), End::Jump(STP_SCAN)));
+        let (_, scan) = scan_blocks(STP_SCAN, STP_DECODE_SELECT);
+        all.extend(scan);
+        all.push(Block::new(
+            {
+                let mut nodes = ring_by(6, i64::from(PER_CELL));
+                nodes.extend(dispatch(3, STP_DECODE));
+                nodes
+            },
+            End::Computed,
+        ));
+        for case in 0..8 {
+            all.push(Block::new(decode_case(case), End::Jump(STP_SEEK_SETUP)));
+        }
+        all.push(Block::new(seek_setup(), End::Jump(STP_SEEK_TEST)));
+        all.push(Block::new(
+            vec![Node::DupLocal(1), Node::Command(Command::Not)],
+            End::If {
+                then: STP_STEP_SELECT,
+                otherwise: STP_SEEK_STEP,
+            },
+        ));
+        all.push(Block::new(
+            {
+                let mut nodes = ring_by(7, i64::from(PER_CELL));
+                nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
+                nodes
+            },
+            End::Jump(STP_SEEK_TEST),
+        ));
+        all.push(Block::new(
+            {
+                let mut nodes = vec![
+                    Node::Command(Command::Pop),
+                    Node::DupLocal(3),
+                    Node::Const(2),
+                    Node::Command(Command::Divide),
+                ];
+                nodes.extend(dispatch(1, STP_STEP));
+                nodes
+            },
+            End::Computed,
+        ));
+        for dp in 0..4 {
+            all.push(Block::new(step_roll(dp), End::Jump(STP_DECIDE)));
+        }
+        all.push(Block::new(
+            vec![
+                Node::DupLocal(8),
+                Node::Const(i64::from(GUARD_CODE) - 1),
+                Node::Command(Command::Greater),
+            ],
+            End::If {
+                then: STP_FAIL,
+                otherwise: STP_BLACK,
+            },
+        ));
+        all.push(Block::new(
+            colour_is(BLACK_CODE),
+            End::If {
+                then: STP_FAIL,
+                otherwise: STP_WHITE_CHECK,
+            },
+        ));
+        all.push(Block::new(
+            colour_is(WHITE_CODE),
+            End::If {
+                then: STP_WHITE,
+                otherwise: STP_SUCCESS,
+            },
+        ));
+        all.push(Block::new(move_nodes(), End::Halt));
+        all.push(Block::new(
+            vec![Node::Const(-1), Node::Command(Command::OutNumber)],
+            End::Halt,
+        ));
+        all.push(Block::new(
+            vec![Node::Const(-2), Node::Command(Command::OutNumber)],
+            End::Halt,
+        ));
         all
     }
 
@@ -949,7 +1326,6 @@ mod tests {
 
     #[test]
     fn the_edge_program_answers_for_a_row_of_two() {
-        use canvas::{Color, Hue, Lightness};
         let red = Color::chromatic(Hue::Red, Lightness::Normal);
         let grid = canvas::CodelGrid::from_colors(2, 1, vec![red, red]).unwrap();
         let blocks = canvas::Blocks::partition(grid.clone());
@@ -964,6 +1340,26 @@ mod tests {
         let output = execute(&edge_blocks_for_test(), &numbers(&stream), 5_000_000);
         // Right, left chooser: the rightmost codel, topmost of that column.
         assert_eq!(output, "1 0 ");
+    }
+
+    #[test]
+    fn the_step_program_answers_for_a_row_of_two() {
+        let red = Color::chromatic(Hue::Red, Lightness::Normal);
+        let green = Color::chromatic(Hue::Green, Lightness::Normal);
+        let grid = canvas::CodelGrid::from_colors(2, 1, vec![red, green]).unwrap();
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let label = blocks.blocks()[0]
+            .codels()
+            .iter()
+            .map(|point| ring_index(&grid, *point))
+            .min()
+            .unwrap();
+
+        let stream = format!("{} {} 0 0", stream_of(&grid).unwrap(), label);
+        let output = execute(&step_blocks_for_test(), &numbers(&stream), 20_000_000);
+        // The red is one cell wide: its own edge is (0, 0), and one step right
+        // lands on the green, whose label is 6 in a row four cells long.
+        assert_eq!(output, "6 0 0");
     }
 
     /// One pass of the real program: block 7 is rewritten to stop after it.
