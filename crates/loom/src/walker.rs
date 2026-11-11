@@ -7,24 +7,36 @@
 //! record is
 //!
 //! ```text
-//!   [ command, block size, offset ]
+//!   [ command, block size, ring cells, offset ]
 //! ```
 //!
-//! and, at the head, those are the top three cells — the offset on top, the
-//! command three down. A jump is one `roll` of the ring by the record's offset,
-//! so there is no program counter to keep: the head is the program counter.
+//! and, at the head, those are the top four cells — the offset on top, the ring
+//! size below it, the command four down. A jump is one `roll` of the ring by the
+//! record's offset, so there is no program counter to keep: the head is the
+//! program counter.
+//!
+//! **The ring size travels in every record, so one image serves every program.**
+//! The alternative — weaving an image per program — bakes the size into every
+//! roll amount, and a fixed capacity cannot work, because a jump is a roll taken
+//! modulo the program's record count (see `.agents/notes/piet-in-piet-full.md`).
+//! With the size at depth two, `dup_local(2)` reads it in a constant number of
+//! commands, and every amount that used to be a constant `N + j` is built from
+//! it.
 //!
 //! The stream is read **highest record first**, so the last record read is
 //! record zero and it ends up on top of the stack. That is what makes the
-//! offsets plain: with the head on record `i`, a roll of `3 * k` moves the head
-//! forward `k` records, and a roll of `-3 * k` moves it back. Every offset must
+//! offsets plain: with the head on record `i`, a roll of `4 * k` moves the head
+//! forward `k` records, and a roll of `-4 * k` moves it back. Every offset must
 //! be a multiple of [`RECORD`], because a roll that does not land on a record
 //! boundary leaves the head straddling two records.
 //!
 //! ```text
-//!   stream:  r[n-1]  r[n-2]  …  r[1]  r[0]
+//!   stream:  n  r[n-1]  r[n-2]  …  r[1]  r[0]
 //!   stack:  [ r[n-1] | r[n-2] | … | r[1] | r[0] ]   r[0] on top, the head
 //! ```
+//!
+//! The leading `n` is the ring's size in cells. [`load_loop`] reads it and then
+//! counts down, so how large the ring is never reaches the image.
 //!
 //! [`skeleton`] is the control path alone: it loads the ring, reports each
 //! record's command, and jumps. [`walker`] adds the handlers for a straight-line
@@ -41,13 +53,14 @@
 //!
 //! Two properties make this work.
 //!
-//! The **ring is on top**, so the head's three fields are at depths 1, 2 and 3
-//! whatever the value stack holds. The **depth counter sits between the values
-//! and the ring**, so a jump — which rolls whole records — leaves it at depth
-//! `N+1`, and so does every value access, because a value inserted at the top of
-//! the value stack goes just below it. That is why the counter can be a
-//! register rather than a fourth record cell: a record's cell would move with
-//! the head, and the depth is global.
+//! The **ring is on top**, so the head's fields are at depths 1 to 4 whatever the
+//! value stack holds. The **depth counter sits between the values and the ring**,
+//! so a jump — which rolls whole records — leaves it at depth `N+1`, and so does
+//! every value access, because a value inserted at the top of the value stack
+//! goes just below it. That is why the counter is a register below the ring
+//! rather than a record cell: the depth is global, and a record's cell would move
+//! with the head. The ring *size* is the opposite case — it must move with the
+//! head to stay at a fixed depth, which is why it is a record cell.
 //!
 //! `roll` only reaches the top, so an access rotates the ring past the values:
 //!
@@ -61,7 +74,9 @@
 //! | read or write the depth | `roll(N+1, N)`, …, `roll(N+1, 1)` |
 //!
 //! Every amount is a multiple of [`RECORD`], so the head stays on a record
-//! boundary.
+//! boundary. All of them are built at run time now: [`push_size`], [`roll_size`]
+//! and [`roll_with`] read `N` from the head's ring-size cell and add a literal
+//! offset, so [`RECORD`] is the only constant left in an amount.
 //!
 //! # Underflow
 //!
@@ -123,15 +138,14 @@ use crate::error::Error;
 use crate::flow::{Block, End, Node, Program};
 use crate::program::{Feed, Instruction, opcode};
 
-/// Cells per record: command, block size, offset.
-pub const RECORD: u32 = 3;
+/// Cells per record: command, block size, ring cells, offset.
+pub const RECORD: u32 = 4;
 
 /// Where a record's command sits, counted from the top, when the head is on it.
 pub const COMMAND_DEPTH: u32 = RECORD;
 
-/// The value-depth register, counted from the top, when the head is on record
-/// zero.
-const DEPTH_DEPTH: u32 = 1;
+/// Where the ring size sits, counted from the top, when the head is on it.
+const SIZE_DEPTH: u32 = 2;
 
 /// The block that runs once the ring is loaded.
 const DISPATCH: u32 = 5;
@@ -180,21 +194,18 @@ const ROLL_UNSUPPORTED: u32 = ROLL_HIGH + 5;
 /// The block that rolls the ring by the head's offset.
 const JUMP: u32 = ROLL_HIGH + 6;
 
-/// A record: command code, block size, offset in cells.
-type Record = (i64, i64, i64);
+/// A record: command code, block size, ring size in cells, offset in cells.
+type Record = (i64, i64, i64, i64);
 
-/// The skeleton walker: load `ring` cells, then follow the records, reporting
-/// each command code as a decimal number.
+/// The skeleton walker: follow a ring of records, reporting each command code as
+/// a decimal number.
 ///
-/// The ring must hold at least one whole record. A single record can only halt.
-/// The offsets are not checked; an offset that is not a multiple of [`RECORD`]
-/// leaves the head misaligned, which the walker cannot detect.
-pub fn skeleton(ring: u32) -> Result<Program, Error> {
-    if ring < RECORD || !ring.is_multiple_of(RECORD) {
-        return Err(Error::Ring { cells: ring });
-    }
-    let cells = i64::from(ring);
-    let mut blocks = load_loop(ring, 0);
+/// The stream starts with the ring's size in cells and then the records; the
+/// image does not know either in advance. The offsets are not checked; an offset
+/// that is not a multiple of [`RECORD`] leaves the head misaligned, which the
+/// walker cannot detect.
+pub fn skeleton() -> Result<Program, Error> {
+    let mut blocks = load_loop(0);
     blocks.extend([
         // 5: report the head's command; zero halts
         Block::new(
@@ -216,8 +227,8 @@ pub fn skeleton(ring: u32) -> Result<Program, Error> {
         // 7: roll the ring by the head's offset
         Block::new(
             vec![
-                Node::Const(cells),
-                Node::DupLocal(2),
+                Node::DupLocal(SIZE_DEPTH),
+                Node::DupLocal(SIZE_DEPTH),
                 Node::Command(Command::Roll),
             ],
             End::Jump(5),
@@ -232,6 +243,8 @@ pub fn skeleton(ring: u32) -> Result<Program, Error> {
 /// Commands the walker cannot run are refused by [`Error::NoHandler`]; a program
 /// whose input reads outrun `input` is refused by [`Error::InputExhausted`].
 pub fn walker(instructions: &[Instruction], input: &str) -> Result<(CodelGrid, String), Error> {
+    let count = u32::try_from(instructions.len() + 1).map_err(|_| Error::TooLarge)?;
+    let cells = cells(count)?;
     let mut records = Vec::with_capacity(instructions.len() + 1);
     for instruction in instructions {
         let code = code_of(instruction.command).ok_or(Error::NoHandler {
@@ -240,12 +253,11 @@ pub fn walker(instructions: &[Instruction], input: &str) -> Result<(CodelGrid, S
         let size = i64::try_from(instruction.block_size).map_err(|_| Error::BlockTooLarge {
             operand: instruction.block_size,
         })?;
-        records.push((i64::from(code), size, i64::from(RECORD)));
+        records.push((i64::from(code), size, i64::from(cells), i64::from(RECORD)));
     }
-    records.push((0, 0, 0));
-    let count = u32::try_from(records.len()).map_err(|_| Error::TooLarge)?;
+    records.push((0, 0, i64::from(cells), 0));
 
-    let mut stream = ring_stream(&records);
+    let mut stream = ring_stream(cells, &records);
     let mut feed = Feed::new(input);
     for instruction in instructions {
         match instruction.command {
@@ -261,7 +273,7 @@ pub fn walker(instructions: &[Instruction], input: &str) -> Result<(CodelGrid, S
         }
     }
 
-    Ok((program(cells(count)?)?.image()?, stream))
+    Ok((program()?.image()?, stream))
 }
 
 /// A walker image and the stream that runs a program's `graph`.
@@ -269,7 +281,7 @@ pub fn walker(instructions: &[Instruction], input: &str) -> Result<(CodelGrid, S
 /// The graph decides where to go next, so the records carry the offsets: a
 /// deterministic state jumps straight to its successor, and a branch state has
 /// its trampolines — one per successor — directly after its own record, so the
-/// handler only has to widen the popped value into `3 * (1 + index)`.
+/// handler only has to widen the popped value into `4 * (1 + index)`.
 ///
 /// `input` is read as whitespace-separated numbers, one per read: a graph picks
 /// its reads at run time, so they cannot be encoded per command. A character
@@ -298,14 +310,18 @@ pub fn graph_walker(
     let mut at: HashMap<State, usize> = HashMap::new();
     for state in &order {
         at.insert(*state, records.len());
-        records.push((0, 0, 0));
+        records.push((0, 0, 0, 0));
         let trampolines = graph
             .successors(*state)
             .next()
             .map_or(0, |edge| trampolines(edge.branch)) as usize;
-        records.resize(records.len() + trampolines, (0, 0, 0));
+        records.resize(records.len() + trampolines, (0, 0, 0, 0));
     }
     let count = u32::try_from(records.len()).map_err(|_| Error::TooLarge)?;
+    let cells = i64::from(cells(count)?);
+    for record in &mut records {
+        record.2 = cells;
+    }
 
     // Fill: every state runs its outgoing command, then jumps.
     for state in &order {
@@ -333,23 +349,27 @@ pub fn graph_walker(
                 }
                 let base = slot + 1;
                 for (index, edge) in edges.iter().enumerate() {
-                    records[base + index] =
-                        (i64::from(NOP), 0, jump(base + index, at[&edge.to], count));
+                    records[base + index] = (
+                        i64::from(NOP),
+                        0,
+                        cells,
+                        jump(base + index, at[&edge.to], count),
+                    );
                 }
-                // The handler overwrites this with `3 * (1 + index)`.
+                // The handler overwrites this with `4 * (1 + index)`.
                 i64::from(RECORD)
             }
         };
-        records[slot] = (i64::from(code), size, offset);
+        records[slot] = (i64::from(code), size, cells, offset);
     }
 
-    let mut stream = ring_stream(&records);
+    let mut stream = ring_stream(cells as u32, &records);
     let text = input.trim();
     if !text.is_empty() {
         stream.push(' ');
         stream.push_str(text);
     }
-    Ok((program(cells(count)?)?.image()?, stream))
+    Ok((program()?.image()?, stream))
 }
 
 /// How many successors a branch has.
@@ -367,14 +387,11 @@ fn jump(from: usize, to: usize, count: u32) -> i64 {
     i64::from(RECORD) * (((to + count - from) % count) as i64)
 }
 
-/// The ring half of the stream: highest record first, spaces between cells.
-fn ring_stream(records: &[Record]) -> String {
-    let mut stream = String::new();
-    for (index, (command, size, offset)) in records.iter().rev().enumerate() {
-        if index > 0 {
-            stream.push(' ');
-        }
-        stream.push_str(&format!("{command} {size} {offset}"));
+/// The ring half of the stream: the size, then the cells highest record first.
+fn ring_stream(cells: u32, records: &[Record]) -> String {
+    let mut stream = cells.to_string();
+    for (command, size, ring, offset) in records.iter().rev() {
+        stream.push_str(&format!(" {command} {size} {ring} {offset}"));
     }
     stream
 }
@@ -384,9 +401,12 @@ fn cells(count: u32) -> Result<u32, Error> {
     count.checked_mul(RECORD).ok_or(Error::TooLarge)
 }
 
-/// The walker image for a ring of `cells`.
-fn program(cells: u32) -> Result<Program, Error> {
-    let mut blocks = load_loop(cells, 1);
+/// The walker image.
+///
+/// It is the same image for every program: the ring's size is a record field, so
+/// nothing about a particular program reaches the geometry.
+fn program() -> Result<Program, Error> {
+    let mut blocks = load_loop(1);
     blocks.extend([
         // 5: a zero command halts; anything else is a guard
         Block::new(
@@ -409,22 +429,22 @@ fn program(cells: u32) -> Result<Program, Error> {
         Block::new(Vec::new(), End::Halt),
     ]);
     for code in 1..=CODES {
-        blocks.push(guard(code, cells));
+        blocks.push(guard(code));
     }
     for code in 1..=CODES {
-        blocks.push(body(code, cells));
+        blocks.push(body(code));
     }
     blocks.extend([
-        Block::new(division(Command::Divide, cells, true), End::Jump(JUMP)),
-        Block::new(division(Command::Divide, cells, false), End::Jump(JUMP)),
-        Block::new(division(Command::Modulo, cells, true), End::Jump(JUMP)),
-        Block::new(division(Command::Modulo, cells, false), End::Jump(JUMP)),
+        Block::new(division(Command::Divide, true), End::Jump(JUMP)),
+        Block::new(division(Command::Divide, false), End::Jump(JUMP)),
+        Block::new(division(Command::Modulo, true), End::Jump(JUMP)),
+        Block::new(division(Command::Modulo, false), End::Jump(JUMP)),
         // 48, 49: a branch on an empty stack takes the first successor
         Block::new(zero_branch(), End::Jump(JUMP)),
         Block::new(zero_branch(), End::Jump(JUMP)),
     ]);
     for depth in 2..=ROLL_DEPTH {
-        blocks.push(roll_case(depth, cells));
+        blocks.push(roll_case(depth));
     }
     blocks.extend([
         // 57: past the table's bound
@@ -441,12 +461,15 @@ fn program(cells: u32) -> Result<Program, Error> {
         ),
         // 58: deeper than the values, so the reference ignores it
         Block::new(
-            vec![
-                Node::DupLocal(cells + 2),
-                Node::Const(2),
-                Node::Command(Command::Subtract),
-                Node::Command(Command::Greater),
-            ],
+            {
+                let mut nodes = dup_size(3, 2);
+                nodes.extend([
+                    Node::Const(2),
+                    Node::Command(Command::Subtract),
+                    Node::Command(Command::Greater),
+                ]);
+                nodes
+            },
             End::If {
                 then: ROLL_DEEP,
                 otherwise: ROLL_SELECT,
@@ -454,24 +477,27 @@ fn program(cells: u32) -> Result<Program, Error> {
         ),
         // 59: the case for this depth is `ROLL_CASE_BASE + d`
         Block::new(
-            vec![
-                Node::DupLocal(cells + 3),
-                Node::Const(i64::from(ROLL_CASE_BASE)),
-                Node::Command(Command::Add),
-            ],
+            {
+                let mut nodes = dup_size(2, 3);
+                nodes.extend([
+                    Node::Const(i64::from(ROLL_CASE_BASE)),
+                    Node::Command(Command::Add),
+                ]);
+                nodes
+            },
             End::Computed,
         ),
         // 60: shallow enough to be a no-op, and the copy is still there
-        Block::new(roll_skip(cells, true), End::Jump(JUMP)),
+        Block::new(roll_skip(true), End::Jump(JUMP)),
         // 61: the same, with the copy already consumed by the test above
-        Block::new(roll_skip(cells, false), End::Jump(JUMP)),
+        Block::new(roll_skip(false), End::Jump(JUMP)),
         // 62: the table cannot run this roll
         Block::new(Vec::new(), End::Halt),
         // 63: roll the ring by the head's offset
         Block::new(
             vec![
-                Node::Const(i64::from(cells)),
-                Node::DupLocal(2),
+                Node::DupLocal(SIZE_DEPTH),
+                Node::DupLocal(SIZE_DEPTH),
                 Node::Command(Command::Roll),
             ],
             End::Jump(DISPATCH),
@@ -480,43 +506,39 @@ fn program(cells: u32) -> Result<Program, Error> {
     Program::new(blocks, 1)
 }
 
-/// The four blocks that read `cells` numbers into the ring, leaving the head on
-/// record zero.
+/// The four blocks that read the ring into the stack, leaving the head on record
+/// zero.
 ///
-/// `registers` zeroes are pushed first, so they end up below the ring. Block 1
-/// is the entry and block 4 hands over with [`DISPATCH`].
-fn load_loop(cells: u32, registers: u32) -> Vec<Block> {
-    let total = i64::from(cells);
+/// The stream's first number is the ring's size in cells; the loop then counts
+/// it down, one cell per pass. `registers` zeroes are pushed first, so they end
+/// up below the ring. Block 1 is the entry and block 4 hands over with
+/// [`DISPATCH`].
+fn load_loop(registers: u32) -> Vec<Block> {
     let mut start = vec![Node::Const(0); registers as usize];
-    // The read counter goes on top of the registers.
-    start.push(Node::Const(0));
+    // The count arrives on top of the registers.
+    start.push(Node::Command(Command::InNumber));
     vec![
-        // 1: the registers, then the read counter, start at zero
+        // 1: the registers, then the cell count from the stream
         Block::new(start, End::Jump(2)),
-        // 2: while the counter is not the whole ring
+        // 2: while the count is not zero
         Block::new(
-            vec![
-                Node::Dup,
-                Node::Const(total),
-                Node::Command(Command::Subtract),
-                Node::Command(Command::Not),
-            ],
+            vec![Node::Dup, Node::Command(Command::Not)],
             End::If {
                 then: 4,
                 otherwise: 3,
             },
         ),
-        // 3: read a cell under the counter, then advance
+        // 3: read a cell under the count, then decrement
         Block::new(
             vec![
                 Node::Command(Command::InNumber),
                 Node::Swap,
                 Node::Const(1),
-                Node::Command(Command::Add),
+                Node::Command(Command::Subtract),
             ],
             End::Jump(2),
         ),
-        // 4: drop the counter; the last record read is now the head
+        // 4: drop the count; the last record read is now the head
         Block::new(vec![Node::Command(Command::Pop)], End::Jump(DISPATCH)),
     ]
 }
@@ -534,7 +556,7 @@ fn needed(code: u32) -> u32 {
 ///
 /// The two branch codes are the exception: an empty stack is not a skip there,
 /// so the other side is a block that takes the first successor.
-fn guard(code: u32, cells: u32) -> Block {
+fn guard(code: u32) -> Block {
     let body = BODY_BASE + code;
     let needed = needed(code);
     if needed == 0 {
@@ -545,12 +567,13 @@ fn guard(code: u32, cells: u32) -> Block {
         SWITCH => SWITCH_ZERO,
         _ => JUMP,
     };
+    let mut nodes = dup_size(SIZE_DEPTH, 1);
+    nodes.extend([
+        Node::Const(i64::from(needed) - 1),
+        Node::Command(Command::Greater),
+    ]);
     Block::new(
-        vec![
-            Node::DupLocal(cells + DEPTH_DEPTH),
-            Node::Const(i64::from(needed) - 1),
-            Node::Command(Command::Greater),
-        ],
+        nodes,
         End::If {
             then: body,
             otherwise,
@@ -568,16 +591,30 @@ enum Depth {
 
 /// A handler block: apply the command of code `code` to the value stack and keep
 /// the depth counter true.
-fn body(code: u32, cells: u32) -> Block {
-    let insert = Node::Roll(cells + 2, 1);
-    let up_one = Node::Roll(cells + 2, cells + 1);
-    let up_two = Node::Roll(cells + 3, cells + 1);
+fn body(code: u32) -> Block {
     let mut nodes = match code {
-        1 => vec![Node::DupLocal(2), insert],
-        2 => vec![up_one, Node::Command(Command::Pop)],
-        3 => vec![up_two, Node::Command(Command::Add), insert],
-        4 => vec![up_two, Node::Command(Command::Subtract), insert],
-        5 => vec![up_two, Node::Command(Command::Multiply), insert],
+        // push: the record's block size becomes a value
+        1 => {
+            let mut nodes = vec![Node::DupLocal(3)];
+            nodes.extend(insert_value(3));
+            nodes
+        }
+        2 => {
+            let mut nodes = lift_one();
+            nodes.push(Node::Command(Command::Pop));
+            nodes
+        }
+        3 | 4 | 5 | 9 => {
+            let mut nodes = lift_two();
+            nodes.push(Node::Command(match code {
+                3 => Command::Add,
+                4 => Command::Subtract,
+                5 => Command::Multiply,
+                _ => Command::Greater,
+            }));
+            nodes.extend(insert_value(3));
+            nodes
+        }
         // divide and modulo branch on the divisor; see `division`
         6 | 7 => {
             let (zero, normal) = if code == 6 {
@@ -585,38 +622,53 @@ fn body(code: u32, cells: u32) -> Block {
             } else {
                 (MODULO_ZERO, MODULO_NORMAL)
             };
+            let mut nodes = lift_two();
+            nodes.extend([
+                Node::Command(Command::Duplicate),
+                Node::Command(Command::Not),
+            ]);
             return Block::new(
-                vec![
-                    up_two,
-                    Node::Command(Command::Duplicate),
-                    Node::Command(Command::Not),
-                ],
+                nodes,
                 End::If {
                     then: zero,
                     otherwise: normal,
                 },
             );
         }
-        8 => vec![up_one, Node::Command(Command::Not), insert],
-        9 => vec![up_two, Node::Command(Command::Greater), insert],
-        10 => vec![
-            up_one,
-            Node::Command(Command::Duplicate),
-            Node::Roll(cells + 3, 2),
-        ],
+        8 => {
+            let mut nodes = lift_one();
+            nodes.push(Node::Command(Command::Not));
+            nodes.extend(insert_value(3));
+            nodes
+        }
+        10 => {
+            let mut nodes = lift_one();
+            nodes.push(Node::Command(Command::Duplicate));
+            nodes.extend(roll_with(4, 3, 2));
+            nodes
+        }
         // a character arrives as its code point, so both reads are the same
-        12 | 13 => vec![Node::Command(Command::InNumber), insert],
-        14 => vec![up_one, Node::Command(Command::OutNumber)],
-        15 => vec![up_one, Node::Command(Command::OutChar)],
+        12 | 13 => {
+            let mut nodes = vec![Node::Command(Command::InNumber)];
+            nodes.extend(insert_value(3));
+            nodes
+        }
+        14 => {
+            let mut nodes = lift_one();
+            nodes.push(Node::Command(Command::OutNumber));
+            nodes
+        }
+        15 => {
+            let mut nodes = lift_one();
+            nodes.push(Node::Command(Command::OutChar));
+            nodes
+        }
         // roll branches on its depth; see `roll_case`
         11 => {
+            let mut nodes = dup_size(SIZE_DEPTH, 3);
+            nodes.extend([Node::Dup, Node::Const(1), Node::Command(Command::Greater)]);
             return Block::new(
-                vec![
-                    Node::DupLocal(cells + 3),
-                    Node::Dup,
-                    Node::Const(1),
-                    Node::Command(Command::Greater),
-                ],
+                nodes,
                 End::If {
                     then: ROLL_HIGH,
                     otherwise: ROLL_SHALLOW,
@@ -625,17 +677,20 @@ fn body(code: u32, cells: u32) -> Block {
         }
         NOP => Vec::new(),
         // pointer and switch: pop the value, widen it, and replace the offset
-        POINTER | SWITCH => vec![
-            up_one,
-            Node::Const(if code == POINTER { 4 } else { 2 }),
-            Node::Command(Command::Modulo),
-            Node::Const(1),
-            Node::Command(Command::Add),
-            Node::Const(i64::from(RECORD)),
-            Node::Command(Command::Multiply),
-            Node::Swap,
-            Node::Command(Command::Pop),
-        ],
+        POINTER | SWITCH => {
+            let mut nodes = lift_one();
+            nodes.extend([
+                Node::Const(if code == POINTER { 4 } else { 2 }),
+                Node::Command(Command::Modulo),
+                Node::Const(1),
+                Node::Command(Command::Add),
+                Node::Const(i64::from(RECORD)),
+                Node::Command(Command::Multiply),
+                Node::Swap,
+                Node::Command(Command::Pop),
+            ]);
+            nodes
+        }
         _ => return Block::new(Vec::new(), End::Halt),
     };
     let depth = match code {
@@ -643,7 +698,7 @@ fn body(code: u32, cells: u32) -> Block {
         8 | NOP => Depth::Same,
         _ => Depth::Minus(1),
     };
-    adjust(&mut nodes, depth, cells);
+    adjust(&mut nodes, depth);
     Block::new(nodes, End::Jump(JUMP))
 }
 
@@ -658,49 +713,45 @@ fn zero_branch() -> Vec<Node> {
 
 /// The roll case for a depth known at weave time.
 ///
-/// The operands are the top two values, so the lift is one rotation of a constant
-/// size: it puts the `depth` values and both operands above the ring, in the
-/// order `Roll` wants. The `Roll` command then rotates the values themselves,
+/// The operands are the top two values, so the lift is one rotation of a size the
+/// ring decides: it puts the `depth` values and both operands above the ring, in
+/// the order `Roll` wants. The `Roll` command then rotates the values themselves,
 /// and the put-back — the step that is impossible when `depth` is data — is a
-/// rotation by the constant `depth`.
-fn roll_case(depth: u32, cells: u32) -> Block {
-    let mut nodes = vec![
-        // lift: values, then both operands, above the ring
-        Node::Roll(cells + depth + 3, cells + 1),
-        // rotate the values by the rolls operand
-        Node::Command(Command::Roll),
-        // put them back below the depth register
-        Node::Roll(cells + depth + 1, depth),
-    ];
-    adjust(&mut nodes, Depth::Minus(2), cells);
+/// rotation by the constant `depth`. Only the two amounts are data.
+fn roll_case(depth: u32) -> Block {
+    // lift: values, then both operands, above the ring
+    let mut nodes = roll_size(SIZE_DEPTH, depth + 3, 1);
+    // rotate the values by the rolls operand
+    nodes.push(Node::Command(Command::Roll));
+    // put them back below the depth register
+    nodes.extend(roll_with(depth + 2, depth + 1, i64::from(depth)));
+    adjust(&mut nodes, Depth::Minus(2));
     Block::new(nodes, End::Jump(JUMP))
 }
 
 /// A roll shallow enough to be a no-op: both operands are still consumed.
 ///
 /// `copy` says whether the depth copy the dispatch left on top is still there.
-fn roll_skip(cells: u32, copy: bool) -> Vec<Node> {
-    let up_one = Node::Roll(cells + 2, cells + 1);
+fn roll_skip(copy: bool) -> Vec<Node> {
     let mut nodes = Vec::new();
     if copy {
         nodes.push(Node::Command(Command::Pop));
     }
-    nodes.extend([
-        up_one,
-        Node::Command(Command::Pop),
-        up_one,
-        Node::Command(Command::Pop),
-    ]);
-    adjust(&mut nodes, Depth::Minus(2), cells);
+    for _ in 0..2 {
+        nodes.extend(lift_one());
+        nodes.push(Node::Command(Command::Pop));
+    }
+    adjust(&mut nodes, Depth::Minus(2));
     nodes
 }
 
 /// The two paths behind `divide` and `modulo`: a zero divisor consumes both
 /// operands and pushes nothing, so the depth falls by two.
-fn division(command: Command, cells: u32, non_zero: bool) -> Vec<Node> {
-    let insert = Node::Roll(cells + 2, 1);
+fn division(command: Command, non_zero: bool) -> Vec<Node> {
     let mut nodes = if non_zero {
-        vec![Node::Command(command), insert]
+        let mut nodes = vec![Node::Command(command)];
+        nodes.extend(insert_value(3));
+        nodes
     } else {
         vec![Node::Command(Command::Pop), Node::Command(Command::Pop)]
     };
@@ -711,7 +762,6 @@ fn division(command: Command, cells: u32, non_zero: bool) -> Vec<Node> {
         } else {
             Depth::Minus(2)
         },
-        cells,
     );
     nodes
 }
@@ -719,19 +769,74 @@ fn division(command: Command, cells: u32, non_zero: bool) -> Vec<Node> {
 /// Appends the commands that bring the depth counter by `change`.
 ///
 /// The counter is the top of the register block: roll it up, change it, and roll
-/// it back. Both rolls are [`RECORD`] apart, so the head stays aligned.
-fn adjust(nodes: &mut Vec<Node>, change: Depth, cells: u32) {
+/// it back. Both amounts are built from the ring size, so the head stays
+/// aligned.
+fn adjust(nodes: &mut Vec<Node>, change: Depth) {
     let (amount, operation) = match change {
         Depth::Same => return,
         Depth::Plus(amount) => (i64::from(amount), Command::Add),
         Depth::Minus(amount) => (i64::from(amount), Command::Subtract),
     };
-    nodes.extend([
-        Node::Roll(cells + 1, cells),
-        Node::Const(amount),
-        Node::Command(operation),
-        Node::Roll(cells + 1, 1),
-    ]);
+    nodes.extend(roll_size(SIZE_DEPTH, 1, 0));
+    nodes.extend([Node::Const(amount), Node::Command(operation)]);
+    nodes.extend(roll_with(3, 1, 1));
+}
+
+/// The commands that push `N + j`, where `N` is the ring's size in cells and
+/// sits `at` slots down, counting the top as one.
+fn push_size(at: u32, j: u32) -> Vec<Node> {
+    if j == 0 {
+        return vec![Node::DupLocal(at)];
+    }
+    vec![
+        Node::DupLocal(at),
+        Node::Const(i64::from(j)),
+        Node::Command(Command::Add),
+    ]
+}
+
+/// `roll(N + a, N + b)`: a rotation whose depth and rolls are both the ring's
+/// size plus a literal. `at` is where `N` sits before the amounts are pushed.
+fn roll_size(at: u32, a: u32, b: u32) -> Vec<Node> {
+    let mut nodes = push_size(at, a);
+    nodes.extend(push_size(at + 1, b));
+    nodes.push(Node::Command(Command::Roll));
+    nodes
+}
+
+/// `roll(N + a, rolls)`: a rotation whose depth is the ring's size plus a
+/// literal and whose rolls is a literal.
+fn roll_with(at: u32, a: u32, rolls: i64) -> Vec<Node> {
+    let mut nodes = push_size(at, a);
+    nodes.extend([Node::Const(rolls), Node::Command(Command::Roll)]);
+    nodes
+}
+
+/// Duplicate the value at depth `N + j`, with `N` `at` slots down.
+///
+/// This is [`Node::DupLocal`] with a computed depth: bring the value up, copy it,
+/// and put the original back where it was. `j` must be at least one.
+fn dup_size(at: u32, j: u32) -> Vec<Node> {
+    let mut nodes = roll_size(at, j, j - 1);
+    nodes.push(Node::Dup);
+    nodes.extend(roll_with(at + 2, j + 1, 1));
+    nodes
+}
+
+/// `roll(N + 2, 1)`: insert the top value below the depth register, above the
+/// values already there. `at` is where `N` sits, with the value on top.
+fn insert_value(at: u32) -> Vec<Node> {
+    roll_with(at, 2, 1)
+}
+
+/// `roll(N + 2, N + 1)`: bring one value up above the ring.
+fn lift_one() -> Vec<Node> {
+    roll_size(SIZE_DEPTH, 2, 1)
+}
+
+/// `roll(N + 3, N + 1)`: bring two values up, the stack's top first.
+fn lift_two() -> Vec<Node> {
+    roll_size(SIZE_DEPTH, 3, 1)
 }
 
 /// The opcode of a command the walker has a handler for.

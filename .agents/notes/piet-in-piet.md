@@ -151,6 +151,16 @@ program that slides through white by hand, and two check the refusals: a
 `pointer` (the interpreter image itself is the subject) and a program that never
 terminates.
 
+## The walker
+
+The linear fragment above is what this trace interpreter runs. The way past it
+is the walker in `crates/loom/src/walker.rs`: the program lives in a ring of
+four-cell records, and the image is the same for every program — 337x183 codels
+whatever the record count, because each record carries the ring's size in cells.
+A `pietrs run` of one such image prints the title and nine menus of *Piet's
+Quest* from a single stream. The design and its measured cost are in
+[`piet-in-piet-full.md`](piet-in-piet-full.md).
+
 ## Limits
 
 - Only the linear fragment. A program whose trace contains `pointer` or

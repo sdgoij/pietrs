@@ -218,6 +218,13 @@ head aligned across repeated rolls; rings of 0, 1, 3, 4, 5 and 7 cells are
 refused. Breaking the jump so it reads the record's block size instead of its
 offset fails three of them, which is the non-vacuity check.
 
+**Superseded by the four-cell record.** `skeleton()` now takes no ring argument:
+the stream's first number is the ring's size, the loader counts it down, and the
+offsets are `4 * k` because a record is four cells. `Error::Ring` is gone — there
+is nothing left to refuse, since the image reads the size instead of being told
+it. The cases above keep their shapes with the constants moved from three to
+four.
+
 What the skeleton does *not* do: it carries the block size without using it, and
 it cannot tell a misaligned offset from an aligned one. Both are the handlers'
 problem. The image is 57 x 52, and it does not grow with the number of records:
@@ -429,9 +436,48 @@ values can be addressed, so any amount needed for the put-back must live above t
 ring and survive the `Roll` — and a `Roll` consumes its operands. For the jump,
 any fixed-capacity ring has to be a multiple of the program's record count, which
 is what makes the image per-program in the first place.
-stored *above* the ring and must survive the `Roll` — and a `Roll` consumes its
-operands. Either the page exists, or the put-back amount has to be recomputed
-from the stack, which is the same wall.
+
+**So if one image has to serve every program, the ring size must be data.** That
+is the design to build, and it is a rework rather than an addition:
+
+- a record becomes four cells, `[command, block size, ring cells, offset]`, so the
+  offset stays at depth 1 (the branch poke) and the ring size at depth 2, where
+  `dup_local(2)` reads it with two *depth-two* rolls — cheap, unlike a ring-sized
+  rotation;
+- the jump is `dup_local(2)` twice — the size, then the offset, now two slots
+  down — then `roll`, with no constants at all; and because the ring is exactly
+  the program's records, the offset modulo the record count wraps correctly,
+  which is what the fixed capacity broke;
+- every value access replaces `roll(N + j, k)` with the size pushed, `j` added,
+  then the roll: four or five extra commands per access and no extra rotations;
+- `MAX_RECORDS` and its error go away, because nothing is padded or tiled.
+
+The hard part, and the reason this is not a small edit: the guard reads the depth
+register, which sits at depth `N + 1` — a *computed* depth, so `dup_local` cannot
+express it. It has to be written as `roll(N+1, N)`, `dup`, `roll(N+2, 1)`, and the
+second amount needs `N` again *after* the first roll has displaced the head. The
+workable shape is a copy of `N` pushed above the ring before the first roll and
+tracked through the rotation, since the rotations are by known amounts; every
+site that reads the register must do the same, and each one is easy to get wrong
+by one cell.
+
+**Built, and the image no longer depends on the program.** `walker.rs` carries the
+ring size as the record's third cell, and the stream begins with the cell count,
+which the loader reads and counts down — so neither the roll amounts nor the
+number of records reaches the geometry. `program()` takes no argument, and
+`one_image_serves_every_program` pins one 337x183 image for a two-command
+program, a sixty-five-record one, and a state graph alike.
+
+*Piet's Quest* — 17 964 states, 20 110 records, an 80 440-cell ring — weaves to a
+282 027-byte stream. The same `walker.png` prints the title and nine menus and
+halts when the eight-value input runs out: 135M interpreted steps, about 4.5 s
+for the whole example case. The fixed-capacity build recorded 205M steps and
+54 s for seven menus, but it padded the ring and was timed through a different
+path, so treat the pair as anecdote rather than a benchmark.
+
+The branch poke still works because the offset stays at depth one, and the guard
+still reads the depth register the same way: `dup_size` is `dup_local` with a
+depth computed from the size instead of a literal.
 
 ### S4. Interpret the grid (optional)
 

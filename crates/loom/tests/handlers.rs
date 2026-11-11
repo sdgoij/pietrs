@@ -8,7 +8,7 @@ use canvas::{Blocks, CodelGrid};
 use interp::{ExitReason, Options, Run};
 use loom::{Error, Instruction, assemble, instructions, walker};
 use runtime::BufferIo;
-use tessera::Command;
+use tessera::{Command, StateGraph};
 
 fn options() -> Options {
     Options {
@@ -174,6 +174,25 @@ fn the_walker_width_does_not_grow_with_the_program() {
     assert!(small.width() <= 384, "width {}", small.width());
     assert!(small.height() <= 320, "height {}", small.height());
     assert!(large.height() <= 320, "height {}", large.height());
+}
+
+#[test]
+fn one_image_serves_every_program() {
+    // The point of the fourth record cell: the ring's size is data, so the image
+    // is the same bytes for a two-command program and a sixty-five-record one.
+    let (small, _) = walker(&[push(1)], "").unwrap();
+    let long: Vec<Instruction> = (0..64).map(push).collect();
+    let (large, _) = walker(&long, "").unwrap();
+    assert_eq!(small, large);
+
+    // A state graph is the same image as well: only the records in the stream
+    // differ, never the geometry.
+    let png = include_bytes!("../fixtures/hello-world/program.png");
+    let grid = CodelGrid::from_image(png).unwrap();
+    let blocks = Blocks::partition(grid);
+    let graph = StateGraph::build(&blocks);
+    let (graphed, _) = loom::graph_walker(&graph, &blocks, "").unwrap();
+    assert_eq!(large, graphed);
 }
 
 #[test]

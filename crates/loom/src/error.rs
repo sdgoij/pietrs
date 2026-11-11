@@ -52,9 +52,6 @@ pub enum Error {
     #[error("the walker has no handler for {command:?}")]
     NoHandler { command: Command },
 
-    #[error("a ring of {cells} cells is not a whole number of records")]
-    Ring { cells: u32 },
-
     #[error("the graph has no start state")]
     NoStart,
 

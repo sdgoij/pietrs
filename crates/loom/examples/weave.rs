@@ -106,8 +106,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         prefix(&expected)
     );
     println!(
-        "  walker:    {:?}, {} bytes: {:?}",
+        "  walker:    {:?} after {} steps, {} bytes: {:?}",
         walked.reason,
+        walked.steps,
         actual.len(),
         prefix(&actual)
     );
