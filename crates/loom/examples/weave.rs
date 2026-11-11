@@ -11,6 +11,9 @@
 //! from its state graph, where the image chooses the successor at run time, so
 //! `pointer` and `switch` are not an error here.
 //!
+//! The image is written as `walker.png`; `interpreter.png` belonged to the trace
+//! interpreter this example used to build, and is stale if it is still there.
+//!
 //! The third argument is the program's own input. For a straight line it is the
 //! text the program reads; for a graph it is **code points**, one number per
 //! read, because a graph decides which reads happen. A graph's reads must also
@@ -107,6 +110,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         walked.reason,
         actual.len(),
         prefix(&actual)
+    );
+    println!(
+        "  run it with: pietrs run {}/walker.png --input {}/program.txt --max-steps {steps}",
+        directory.display(),
+        directory.display()
     );
     println!("  {}", verdict(&expected, &actual));
     Ok(())
