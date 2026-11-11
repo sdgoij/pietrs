@@ -121,8 +121,16 @@ the output, the trail, the theme — is the desktop editor's code.
 Piet program from its input and runs it. It interprets the language's
 straight-line fragment — the fifteen commands that leave the direction pointer
 alone — and the image is laid out by search rather than drawn, because a
-command is a colour transition and a layout is a colour walk. See
-[`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md).
+command is a colour transition and a layout is a colour walk. The canonical
+*Hello world!* program is straight-line, so the generated interpreter runs it:
+
+```sh
+cargo run -p loom --example weave -- target/weave crates/gui/web/hello.png
+target/debug/pietrs run target/weave/interpreter.png --input target/weave/program.txt
+```
+
+See [`crates/loom/fixtures/hello-world/`](crates/loom/fixtures/hello-world/)
+and [`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md).
 
 ### Images
 

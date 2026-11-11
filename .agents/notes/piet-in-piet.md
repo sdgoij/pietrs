@@ -98,6 +98,23 @@ stack ignores, and a three-codel bar terminates the program.
 One character costs two instructions: `push` of the character code, then
 `out char`.
 
+## The canonical Hello World
+
+`fixtures/hello-world/program.png` is the 30 x 29 canonical *Hello world!*
+program that the editor ships with. Its trace is twenty-four instructions —
+`push`, `duplicate` and `out char`, no `pointer` or `switch` — so it is inside
+the linear fragment, and the generated interpreter runs it:
+
+```sh
+cargo run -p loom --example weave -- target/weave crates/gui/web/hello.png
+target/debug/pietrs run target/weave/interpreter.png --input target/weave/program.txt
+# Hello world!
+```
+
+The test `the_interpreter_runs_the_canonical_hello_world` decodes the fixture,
+checks the reference interpreter prints the committed `expected.stdout`, and
+then checks the generated image prints the same thing from the encoded trace.
+
 ## Tests
 
 `crates/loom/tests/self_interpreter.rs` runs a generated program directly
@@ -106,11 +123,11 @@ and runs the *interpreter image* on the encoding. The two outputs must agree,
 which checks the image against the reference semantics rather than against
 itself.
 
-A deterministic sweep does that for twenty-four pseudo-random programs over the
+A deterministic sweep does that for forty-eight pseudo-random programs over the
 whole opcode set, including arithmetic, `roll`, output and number input, and
 compares stdout for every one. Separate cases name every opcode the interpreter
 claims to run, the halt on an unknown opcode, and character input including a
-digit.
+digit. One case runs the canonical *Hello world!* image end to end.
 
 ## Limits
 

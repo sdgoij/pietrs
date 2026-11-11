@@ -51,6 +51,28 @@ fn the_interpreter_reproduces_a_linear_program() {
 }
 
 #[test]
+fn the_interpreter_runs_the_canonical_hello_world() {
+    let image = include_bytes!("../fixtures/hello-world/program.png");
+    let program = CodelGrid::from_image(image).unwrap();
+
+    let (expected, direct) = run(&program, "");
+    assert_eq!(
+        expected,
+        include_str!("../fixtures/hello-world/expected.stdout")
+    );
+    assert_eq!(direct.reason, ExitReason::Terminated);
+
+    let blocks = Blocks::partition(program);
+    let mut io = BufferIo::new("");
+    let trace = instructions(&blocks, &mut io, &bounded()).unwrap();
+    let stream = encode(&trace, "").unwrap();
+
+    let (actual, result) = run(&interpreter().unwrap(), &stream);
+    assert_eq!(actual, expected);
+    assert_eq!(result.reason, ExitReason::Terminated);
+}
+
+#[test]
 fn the_interpreter_adds() {
     // push 2; push 3; add; out number
     let (output, result) = run(&interpreter().unwrap(), "1 2 1 3 3 14 0");
