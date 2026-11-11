@@ -26,7 +26,12 @@ fn run(grid: &CodelGrid, input: &str) -> (String, Run) {
 
 /// Weave the walker for `program` and run it on the stream it wants.
 fn walk(program: &[Instruction]) -> (String, Run) {
-    let (image, stream) = walker(program).unwrap();
+    walk_with(program, "")
+}
+
+/// The same, for a program that reads `input`.
+fn walk_with(program: &[Instruction], input: &str) -> (String, Run) {
+    let (image, stream) = walker(program, input).unwrap();
     run(&image, &stream)
 }
 
@@ -45,9 +50,9 @@ fn push(value: u64) -> Instruction {
 }
 
 /// The reference path for a straight-line sequence: the same instructions as a
-/// real image, run by `interp` with its own runtime.
-fn straight_line(program: &[Instruction]) -> (String, Run) {
-    run(&assemble(program).unwrap(), "")
+/// real image, run by `interp` with its own runtime and `input`.
+fn straight_line(program: &[Instruction], input: &str) -> (String, Run) {
+    run(&assemble(program).unwrap(), input)
 }
 
 #[test]
@@ -161,9 +166,9 @@ fn the_walker_width_does_not_grow_with_the_program() {
     // One fixed image serves every program: the ring is data, not geometry. The
     // width is exactly the dispatch table; the height moves only because a
     // constant for a bigger ring takes more cells to build.
-    let (small, _) = walker(&[push(1)]).unwrap();
+    let (small, _) = walker(&[push(1)], "").unwrap();
     let long: Vec<Instruction> = (0..64).map(push).collect();
-    let (large, _) = walker(&long).unwrap();
+    let (large, _) = walker(&long, "").unwrap();
     assert_eq!(small.width(), large.width());
     assert!(small.width() <= 256, "width {}", small.width());
     assert!(small.height() <= 192, "height {}", small.height());
@@ -189,7 +194,7 @@ fn an_underflowing_command_is_ignored() {
         let (output, result) = walk(&program);
         assert_eq!(output, "A", "{command:?}");
         assert_eq!(result.reason, ExitReason::Terminated, "{command:?}");
-        let (expected, _) = straight_line(&program);
+        let (expected, _) = straight_line(&program, "");
         assert_eq!(output, expected, "{command:?}");
     }
 }
@@ -210,7 +215,7 @@ fn a_zero_divisor_consumes_both_values() {
         ];
         let (output, _) = walk(&program);
         assert_eq!(output, "A", "{command:?}");
-        let (expected, _) = straight_line(&program);
+        let (expected, _) = straight_line(&program, "");
         assert_eq!(output, expected, "{command:?}");
     }
 }
@@ -233,7 +238,7 @@ fn a_zero_divisor_leaves_the_depth_counter_exact() {
         ];
         let (output, _) = walk(&program);
         assert_eq!(output, "9", "{command:?}");
-        let (expected, _) = straight_line(&program);
+        let (expected, _) = straight_line(&program, "");
         assert_eq!(output, expected, "{command:?}");
     }
 }
@@ -289,7 +294,7 @@ fn random_program(seed: u64, length: usize) -> Vec<Instruction> {
 fn the_walker_agrees_with_the_straight_line_reference() {
     for seed in 0..32 {
         let program = random_program(seed, 24);
-        let (expected, reference) = straight_line(&program);
+        let (expected, reference) = straight_line(&program, "");
         let (actual, walked) = walk(&program);
         assert_eq!(actual, expected, "seed {seed}: {program:?}");
         assert_eq!(walked.reason, reference.reason, "seed {seed}");
@@ -298,10 +303,118 @@ fn the_walker_agrees_with_the_straight_line_reference() {
 
 #[test]
 fn a_command_without_a_handler_is_refused() {
-    for command in [Command::Roll, Command::InNumber, Command::InChar] {
-        assert!(matches!(
-            walker(&[step(command)]),
-            Err(Error::NoHandler { command: refused }) if refused == command
-        ));
+    assert!(matches!(
+        walker(&[step(Command::Roll)], ""),
+        Err(Error::NoHandler {
+            command: Command::Roll
+        })
+    ));
+}
+
+#[test]
+fn an_in_char_pushes_the_character_it_reads() {
+    let program = [step(Command::InChar), step(Command::OutChar)];
+    let (output, result) = walk_with(&program, "A");
+    assert_eq!(output, "A");
+    assert_eq!(result.reason, ExitReason::Terminated);
+    let (expected, _) = straight_line(&program, "A");
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn a_digit_can_be_read_as_a_character() {
+    // The separator is what keeps a digit from being read as a number.
+    let program = [step(Command::InChar), step(Command::OutChar)];
+    let (output, _) = walk_with(&program, "7");
+    assert_eq!(output, "7");
+    let (expected, _) = straight_line(&program, "7");
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn an_in_number_pushes_the_number_it_reads() {
+    let program = [step(Command::InNumber), step(Command::OutNumber)];
+    let (output, _) = walk_with(&program, "  -42 ");
+    assert_eq!(output, "-42");
+    let (expected, _) = straight_line(&program, "  -42 ");
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn input_events_are_read_in_order() {
+    // A character, then a number, then a character.
+    let program = [
+        step(Command::InChar),
+        step(Command::OutNumber),
+        step(Command::InNumber),
+        step(Command::OutChar),
+    ];
+    let (output, _) = walk_with(&program, "A 42B");
+    assert_eq!(output, "65*");
+    let (expected, _) = straight_line(&program, "A 42B");
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn input_that_runs_out_is_refused() {
+    assert!(matches!(
+        walker(&[step(Command::InChar)], ""),
+        Err(Error::InputExhausted)
+    ));
+    assert!(matches!(
+        walker(&[step(Command::InNumber)], ""),
+        Err(Error::InputExhausted)
+    ));
+}
+
+/// A program that reads, and an input built alongside it so every read has
+/// something to read. A character is written bare, a number after a space, so
+/// the reference and the encoder consume the same values.
+fn random_reader(seed: u64, length: usize) -> (Vec<Instruction>, String) {
+    let commands = [
+        Command::InChar,
+        Command::OutChar,
+        Command::InNumber,
+        Command::OutNumber,
+        Command::Push,
+        Command::Add,
+        Command::Subtract,
+        Command::Duplicate,
+        Command::Pop,
+        Command::Not,
+    ];
+    let mut random = XorShift(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
+    let mut input = String::new();
+    let mut program = Vec::with_capacity(length);
+    for _ in 0..length {
+        let command = commands[(random.next() % commands.len() as u64) as usize];
+        match command {
+            Command::InChar => input.push(char::from(b'a' + (random.next() % 26) as u8)),
+            Command::InNumber => {
+                input.push(' ');
+                input.push_str(&(random.next() % 90 + 1).to_string());
+            }
+            _ => {}
+        }
+        program.push(Instruction {
+            command,
+            block_size: if command == Command::Push {
+                random.next() % 9 + 1
+            } else {
+                1
+            },
+        });
+    }
+    (program, input)
+}
+
+#[test]
+fn reading_programs_agree_with_the_straight_line_reference() {
+    for seed in 0..24 {
+        let (program, input) = random_reader(seed, 20);
+        let (expected, reference) = straight_line(&program, &input);
+        let (actual, walked) = walk_with(&program, &input);
+        assert_eq!(actual, expected, "seed {seed}: {program:?} on {input:?}");
+        assert_eq!(walked.reason, reference.reason, "seed {seed}");
     }
 }

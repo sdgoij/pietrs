@@ -128,26 +128,26 @@ pub fn encode(instructions: &[Instruction], input: &str) -> Result<String, Error
 
 /// The interpreted program's input, consumed in the same order the runtime
 /// would consume it.
-struct Feed {
+pub(crate) struct Feed {
     characters: Vec<char>,
     at: usize,
 }
 
 impl Feed {
-    fn new(text: &str) -> Self {
+    pub(crate) fn new(text: &str) -> Self {
         Self {
             characters: text.chars().collect(),
             at: 0,
         }
     }
 
-    fn character(&mut self) -> Option<char> {
+    pub(crate) fn character(&mut self) -> Option<char> {
         let character = self.characters.get(self.at).copied()?;
         self.at += 1;
         Some(character)
     }
 
-    fn number(&mut self) -> Option<i64> {
+    pub(crate) fn number(&mut self) -> Option<i64> {
         while self
             .characters
             .get(self.at)

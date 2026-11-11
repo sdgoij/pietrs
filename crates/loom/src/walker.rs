@@ -74,18 +74,26 @@
 //! the handler has to know which happened. It tests the divisor, and the two
 //! paths differ only in the amount they subtract from the counter.
 //!
-//! Two commands have no handler and are refused when the ring is built: `roll`
-//! (which rotates the *values*: the lift works, but putting them back needs the
-//! value count after the operands are gone — see `.agents/notes/piet-in-piet-full.md`)
-//! and the two input commands (whose input stream is not carried after the ring
-//! yet). A ring built by hand that names one of them stops at that record.
+//! Two commands have no handler: `roll` (which rotates the *values*: the lift
+//! works, but putting them back needs the value count after the operands are
+//! gone — see `.agents/notes/piet-in-piet-full.md`) is refused when the ring is
+//! built. A ring built by hand that names it stops at that record.
+//!
+//! # Input
+//!
+//! The interpreted program's input follows the ring in the same stream, one
+//! event at a time, each written as a space and then the value. The space is
+//! what keeps the two reads apart: `in number` skips it, and `in char` reads it
+//! as a separator and then reads the character, so a digit is never mistaken for
+//! a number. [`walker`] consumes that input in the order the program reads it, and
+//! refuses a program whose reads outrun it.
 
 use canvas::CodelGrid;
 use tessera::Command;
 
 use crate::error::Error;
 use crate::flow::{Block, End, Node, Program};
-use crate::program::{Instruction, opcode};
+use crate::program::{Feed, Instruction, opcode};
 
 /// Cells per record: command, block size, offset.
 pub const RECORD: u32 = 3;
@@ -159,12 +167,11 @@ pub fn skeleton(ring: u32) -> Result<Program, Error> {
     Program::new(blocks, 1)
 }
 
-/// A walker image and the stream that loads its ring.
+/// A walker image and the stream that loads its ring and feeds its input.
 ///
-/// The stream carries the records only; an interpreted program that reads input
-/// has nowhere to get it, which is why the input commands are refused. Commands
-/// the walker cannot run are refused by [`Error::NoHandler`].
-pub fn walker(instructions: &[Instruction]) -> Result<(CodelGrid, String), Error> {
+/// Commands the walker cannot run are refused by [`Error::NoHandler`]; a program
+/// whose input reads outrun `input` is refused by [`Error::InputExhausted`].
+pub fn walker(instructions: &[Instruction], input: &str) -> Result<(CodelGrid, String), Error> {
     let mut records = Vec::with_capacity(instructions.len() + 1);
     for instruction in instructions {
         let code = code_of(instruction.command).ok_or(Error::NoHandler {
@@ -181,8 +188,29 @@ pub fn walker(instructions: &[Instruction]) -> Result<(CodelGrid, String), Error
     let cells = count.checked_mul(RECORD).ok_or(Error::TooLarge)?;
 
     let mut stream = String::new();
-    for (command, size, offset) in records.iter().rev() {
-        stream.push_str(&format!("{command} {size} {offset} "));
+    for (index, (command, size, offset)) in records.iter().rev().enumerate() {
+        if index > 0 {
+            stream.push(' ');
+        }
+        stream.push_str(&format!("{command} {size} {offset}"));
+    }
+    // The interpreted program's input follows the ring, one space-prefixed event
+    // per read, in the order the program runs them. The space is the separator
+    // the `in char` handler consumes, and the ring deliberately ends without one
+    // so the first event has exactly one.
+    let mut feed = Feed::new(input);
+    for instruction in instructions {
+        match instruction.command {
+            Command::InNumber => {
+                let value = feed.number().ok_or(Error::InputExhausted)?;
+                stream.push_str(&format!(" {value}"));
+            }
+            Command::InChar => {
+                let character = feed.character().ok_or(Error::InputExhausted)?;
+                stream.push_str(&format!(" {character}"));
+            }
+            _ => {}
+        }
     }
 
     let mut blocks = load_loop(cells, 1);
@@ -279,7 +307,7 @@ fn load_loop(cells: u32, registers: u32) -> Vec<Block> {
 /// The number of values a command needs before it does anything.
 fn needed(code: u32) -> u32 {
     match code {
-        1 => 0,
+        1 | 12 | 13 => 0,
         3..=7 | 9 => 2,
         _ => 1,
     }
@@ -316,9 +344,8 @@ enum Depth {
 /// A handler block: apply the command of code `code` to the value stack and keep
 /// the depth counter true.
 ///
-/// Codes 11 to 13 are `roll`, `in number` and `in char`, which the walker cannot
-/// run. They get a halt rather than a gap, because the table has to stay
-/// contiguous for the code to index it.
+/// Code 11 is `roll`, which the walker cannot run. It gets a halt rather than a
+/// gap, because the table has to stay contiguous for the code to index it.
 fn body(code: u32, cells: u32) -> Block {
     let insert = Node::Roll(cells + 2, 1);
     let up_one = Node::Roll(cells + 2, cells + 1);
@@ -363,12 +390,21 @@ fn body(code: u32, cells: u32) -> Block {
             Node::Command(Command::Duplicate),
             Node::Roll(cells + 3, 2),
         ],
+        // placeholders; `roll` stops here, and the input commands follow
+        12 => vec![Node::Command(Command::InNumber), insert],
+        13 => vec![
+            // the separator, then the character it guards
+            Node::Command(Command::InChar),
+            Node::Command(Command::Pop),
+            Node::Command(Command::InChar),
+            insert,
+        ],
         14 => vec![up_one, Node::Command(Command::OutNumber)],
         15 => vec![up_one, Node::Command(Command::OutChar)],
         _ => return Block::new(Vec::new(), End::Halt),
     };
     let depth = match code {
-        1 | 10 => Depth::Plus(1),
+        1 | 10 | 12 | 13 => Depth::Plus(1),
         8 => Depth::Same,
         _ => Depth::Minus(1),
     };
@@ -418,7 +454,7 @@ fn adjust(nodes: &mut Vec<Node>, change: Depth, cells: u32) {
 /// The opcode of a command the walker has a handler for.
 fn code_of(command: Command) -> Option<u8> {
     match command {
-        Command::Roll | Command::InNumber | Command::InChar => None,
+        Command::Roll => None,
         other => opcode(other),
     }
 }

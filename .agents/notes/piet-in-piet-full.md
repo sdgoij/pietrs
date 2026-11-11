@@ -307,6 +307,28 @@ Cost: 232 x 85 for a two-record ring and 232 x 157 for a sixty-five-record one.
 The width is 42 blocks of dispatch table and does not move with the program; the
 height moves only with the digits of the ring size.
 
+**Input landed with the same twelve commands.** The interpreted program's stream
+follows the ring, one event per read, in the order the program runs them: a space
+and then the value. The space is what keeps the two reads apart — `in number`
+skips it, and `in char` reads it as a separator and then reads the character — so
+a digit is never mistaken for a number. The ring deliberately ends without a
+trailing space so the first event has exactly one.
+
+The handlers are small: `in number` is `in number` plus an insert; `in char` is
+`in char`, `pop`, `in char`, insert. Neither needs a guard, and both raise the
+depth counter by one. `walker` consumes the input in instruction order and refuses
+a program whose reads outrun it (`Error::InputExhausted`), so the handlers can
+assume the read happened.
+
+Checkpoints, all against the straight-line reference with the same raw input: a
+character reads and prints back; a digit reads as a character; a negative number
+reads; a character, then a number, then a character arrive in order; and 24
+generated reading programs agree with the reference, on an input built alongside
+so every read has something to read.
+
+Non-vacuity: dropping the separator handling fails four cases, and leaving the
+depth counter unchanged for the reads fails five.
+
 **`roll` is not implemented, and it is one dynamic amount away.** The operands
 are easy: they are the top two values, so one rotation each brings them up.
 Lowering them back into the value stack with two `insert`s and then rotating the
@@ -343,11 +365,17 @@ Dead ends, checked so they are not retried:
   moves the values as a block and cannot rotate them internally, because the
   required permutation is not a cyclic shift of any window containing the ring.
 
-The way through is a **page of values above the ring**: cache the top `P` values
-there permanently, with the rest below it. `roll` with `d <= P` is then a single
-`Roll(d, r)` — no lift, no put-back — and `d > P` pages once. That is also the
-shape that makes every other value access cheaper, so it pays for itself; but it
-restructures the handlers rather than adding one, and it is a slice of its own.
+The way through is a **page of values**, but not above the ring: a jump rolls
+exactly the ring, so a block stored above it would be torn in half by the first
+rotation. The anchor has to be *below* the ring — a small register file holding
+the top `P` values, with the rest of the stack below it and paged in on demand.
+That makes `roll` with `d <= P` a plain `Roll(d, r)` and every other access
+cheaper, but it is a restructure of the handlers rather than one addition, and it
+is a slice of its own.
+
+The invariant to remember: after a data-dependent lift, nothing below the lifted
+values can be addressed, so any amount needed for the put-back must have been
+stored *below the ring* before the lift.
 
 ### S4. Interpret the grid (optional)
 
@@ -363,16 +391,17 @@ program.
 ## Recommendation
 
 S1, S2 and the walker's read-execute-jump loop all landed. The image now follows
-a program held in its input, runs twelve of the fifteen commands on a value
-stack below the ring — underflow included — and matches `interp` on the
+a program held in its input, runs fourteen of the fifteen commands on a value
+stack below the ring — underflow and input included — and matches `interp` on the
 canonical *Hello world!* from a fixed 232-column image.
 
 The remaining gaps, in order of size:
 
+- **Input** landed with the twelve-command set: the program's stream follows the
+  ring, one space-prefixed event per read. `in char` consumes the separator and
+  then the character, so a digit cannot be read as a number.
 - **`roll`** is one dynamic amount short of done; the analysis and the way
-  through (a page of values above the ring) are in the S3 section above.
-- **Input** needs the interpreted program's stream carried after the ring, and a
-  `in char` encoding that does not collide with the numbers.
+  through (a register file below the ring) are in the S3 section above.
 - **Scale** is then a matter of putting a real program's graph into records, with
   offsets that are multiples of three, and measuring against *Piet's Quest*.
 
