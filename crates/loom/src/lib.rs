@@ -25,6 +25,10 @@
 //! into a [`Program`]: one block per state, jumps between them, and a `pointer`
 //! or `switch` state selecting its successor from the value stack at run time.
 //!
+//! [`splitter`] is the way past the host's partition: it reads a grid's colours
+//! and reports the block each ring cell belongs to, so the first half of the
+//! tessellation happens in the image rather than before it.
+//!
 //! ```
 //! use canvas::Blocks;
 //! use interp::Options;

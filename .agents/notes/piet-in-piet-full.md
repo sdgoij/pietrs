@@ -490,11 +490,67 @@ Cost: 20 000 steps per second for a large image, and movement work on top. Worth
 doing for small images and as a completeness claim, not as the way to run a big
 program.
 
+**The partition is built** (`crates/loom/src/grid.rs`, `crates/loom/tests/grid.rs`).
+The splitter reads a grid's colour codes and reports, for every ring cell, the
+lowest ring position in its 4-connected same-colour component — the same answer
+`canvas::Blocks` gives, with the ring position standing in for the block id.
+
+The layout is the trick that makes the movement rules tractable later. The grid
+sits in a ring of four-cell records `[label, colour, stride, ring size]`, padded
+with a guard row on top and a guard column on the left, so *every* neighbour is a
+ring cell: left is `-4` cells, up is `-stride`, and no edge test or wrap case is
+needed. The guards carry colour codes no codel and no other guard has, so they
+can never merge. `stride` and the ring size ride in every record, so the roll
+amounts are data and the image is the same for every grid — `splitter` takes the
+grid only to build the stream.
+
+Labels are minima, propagated to a fixpoint. Each pass visits every cell and,
+when a neighbour's colour matches, keeps the smaller label. **All four
+neighbours are compared**, and that is not an optimisation: with only the left
+and up ones a minimum can never travel backwards, and a black L-shape converges
+to a label that is merely the smallest reachable from the north-west. The pass
+repeats while the `changed` accumulator is non-zero, so the number of passes is
+the component's diameter rather than a constant.
+
+The measured cost: the canonical hello world (30 x 29 codels, 39 blocks, a
+3 720-cell ring) partitions correctly in 1.9 s in release. `Piet's Quest` is not
+worth partitioning this way — the ring is 240 000 cells and every neighbour roll
+rotates all of it — so the completeness claim stops at the small image.
+
+**What remains is the movement rules, and the shape they take.** Everything below
+is data the ring already holds.
+
+- *The edge codel.* For a state `(label, dp, cc)`, scan the ring once. A cell
+  belongs to the block when its label matches. The primary is `x` for `right`
+  and `left`, `y` for `down` and `up`; take the maximum for `right`/`down`, the
+  minimum for `left`/`up`, then among the cells on that edge take the maximum or
+  minimum secondary by `choose_max(dp, cc)`. The scan needs the codel's
+  coordinates, so track the ring index and take `index % (stride/4)` and
+  `index / (stride/4)` — two divisions, not a lookup.
+- *The start state* is the block of ring index `stride/4 + 1`, which is two
+  `stride/4`-sized steps from cell zero; sliding through a white upper-left codel
+  reuses the slide below.
+- *The step, the fallback and the slide.* The next codel is `edge ± 4` or
+  `± stride`; its label and colour decide. A black or absent neighbour means the
+  next attempt; a white one means the slide walk, which moves along white cells
+  until a colour is reached and gives up on retracing the same `(codel, dp)`. The
+  eight attempts are `attempt(dp, cc, index)` from `tessera`, still cheap enough
+  to unroll as a block per index.
+- *The command* is the colour transition between the two blocks, and the dispatch,
+  the value stack and the handlers are exactly what `walker.rs` already runs. The
+  end state is therefore: partition, compute `exit`, append the record the walker
+  would have been given, and hand over — no host-side tessellation at all.
+
+The staging is deliberate. Each step above is a scan over the ring plus a batch
+of comparisons, and each can be checked against `tessera::edge_codel` or
+`tessera::exit` on the small fixtures before the next is added, which is the same
+way the walker was built.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line
 or a state graph — runs all fifteen commands, and reaches *Piet's Quest*: 17 964
-states, a 337 x 394 image, seven menus in 54.5 s.
+states, one 337 x 183 image, nine menus in about 4.5 s for the example case.
 
 What is left is not capability but cost, and it is worth saying which is which.
 
@@ -502,12 +558,13 @@ What is left is not capability but cost, and it is worth saying which is which.
   block per depth; removing the bound needs the values addressable at the top of
   the stack, which no layout that keeps the ring on top allows (the analysis is
   in the S3 section). A deeper roll stops rather than lying.
-- **Speed.** 5 300 interpreted commands per second, dominated by rotating a
-  90 000-cell ring for each value access and by the 63-block dispatcher's five
-  cells per block. The page would fix both and cost a flush before every jump.
+- **Speed.** The dispatcher's five cells per block and the ring rotation behind
+  every value access dominate. A page above the ring would fix both and cost a
+  flush before every jump.
 - **`in char` from a graph** takes a code point rather than a character, because
   the graph decides its reads at run time and the stream has to be unambiguous.
   That is an interface wart, not a semantic one.
 
-S4 (interpreting the grid) is a separate, optional build and should be decided on
-its own.
+S4 is half built: the partition is in the image and agrees with `canvas::Blocks`
+on every fixture; the movement rules are designed above and remain. Deciding
+whether to finish them is a separate call, and the cost says small images only.
