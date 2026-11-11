@@ -75,9 +75,10 @@
 //! paths differ only in the amount they subtract from the counter.
 //!
 //! Two commands have no handler and are refused when the ring is built: `roll`
-//! (which needs a dynamic rotation of the *values*) and the two input commands
-//! (whose input stream is not carried after the ring yet). A ring built by hand
-//! that names one of them stops at that record.
+//! (which rotates the *values*: the lift works, but putting them back needs the
+//! value count after the operands are gone — see `.agents/notes/piet-in-piet-full.md`)
+//! and the two input commands (whose input stream is not carried after the ring
+//! yet). A ring built by hand that names one of them stops at that record.
 
 use canvas::CodelGrid;
 use tessera::Command;

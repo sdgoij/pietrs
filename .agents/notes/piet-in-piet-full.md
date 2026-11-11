@@ -307,6 +307,48 @@ Cost: 232 x 85 for a two-record ring and 232 x 157 for a sixty-five-record one.
 The width is 42 blocks of dispatch table and does not move with the program; the
 height moves only with the digits of the ring size.
 
+**`roll` is not implemented, and it is one dynamic amount away.** The operands
+are easy: they are the top two values, so one rotation each brings them up.
+Lowering them back into the value stack with two `insert`s and then rotating the
+window
+
+```text
+  [ w1 … wd | depth | rolls | regs | ring ]
+```
+
+by exactly `R+N` puts the `d` values and both operands above the ring, in the
+order `Roll` wants — values, then depth, then rolls on top — so a single
+`Roll(d, r)` does the value rotation itself. That lift is one rotation of a
+constant amount, and the window size `d+R+N+2` is computable because `d` is still
+at a static depth before the lift.
+
+The blocker is the **put-back**. After the roll the stack is `[regs | ring | w']`,
+and returning to the steady state is a rotation of the window `d+R+N` by `d` —
+again a data-dependent amount. `d` was consumed by `Roll`, and everything below
+the rotated values now sits at a depth that depends on `d`, so it cannot be
+re-read from a register or a record cell: a dynamic-depth read needs a value at a
+static depth, and the only static depth left is the top of the stack, which holds
+a value the roll has just moved.
+
+Dead ends, checked so they are not retried:
+
+- a fourth record cell for `d`: it moves with the head, and the depth it would
+  have to be migrated into is the record's *offset* — data;
+- keeping the value count on top of the values (the tape invariant): the
+  conversion amounts become static, but the count then sits inside the rolled
+  window;
+- a fixed-capacity value area: every window becomes constant, but each push and
+  pop then rotates the whole area, whose size is the stack limit;
+- one rotation that both lifts and reorders: a rotation of `[w, regs, ring]`
+  moves the values as a block and cannot rotate them internally, because the
+  required permutation is not a cyclic shift of any window containing the ring.
+
+The way through is a **page of values above the ring**: cache the top `P` values
+there permanently, with the rest below it. `roll` with `d <= P` is then a single
+`Roll(d, r)` — no lift, no put-back — and `d > P` pages once. That is also the
+shape that makes every other value access cheaper, so it pays for itself; but it
+restructures the handlers rather than adding one, and it is a slice of its own.
+
 ### S4. Interpret the grid (optional)
 
 Move the partition and the movement rules into the image, so the host only hands
@@ -327,8 +369,8 @@ canonical *Hello world!* from a fixed 232-column image.
 
 The remaining gaps, in order of size:
 
-- **`roll`** needs a dynamic rotation of the values, which means rotating the
-  ring out of the way and back; it is the last of the fifteen.
+- **`roll`** is one dynamic amount short of done; the analysis and the way
+  through (a page of values above the ring) are in the S3 section above.
 - **Input** needs the interpreted program's stream carried after the ring, and a
   `in char` encoding that does not collide with the numbers.
 - **Scale** is then a matter of putting a real program's graph into records, with
