@@ -23,6 +23,12 @@ const GRAPH_SIDE: u32 = 96;
 const OBJECT_SIDE: u32 = 32;
 /// A million transitions, so the rate is not dominated by startup.
 const SIMULATED_STEPS: u64 = 1_000_000;
+/// Tape sizes the generated-interpreter plan has to budget for: the canonical
+/// hello world's state graph, Piet's Quest's state graph, and Piet's Quest's
+/// codel grid.
+const TAPE_DEPTHS: [u64; 3] = [25, 17_964, 475_867];
+/// Rolls per harness case, so the deepest tape is not minutes long.
+const TAPE_ROLLS: u64 = 20_000_000;
 
 #[test]
 #[ignore = "wall-clock harness, not a correctness gate; run `just perf`"]
@@ -69,6 +75,30 @@ fn emit_an_object() {
         ),
         &measurement,
     );
+}
+
+#[test]
+#[ignore = "wall-clock harness, not a correctness gate; run `just perf`"]
+fn roll_a_tape() {
+    for depth in TAPE_DEPTHS {
+        let steps = (TAPE_ROLLS / depth).clamp(1_000, 1_000_000);
+        let mut stack = runtime::Stack::new(depth as usize);
+        for value in 0..depth {
+            stack.push(value as i64).unwrap();
+        }
+        let (_, measurement) = perf::measure(&COUNTER, || {
+            for _ in 0..steps {
+                stack.roll(depth as i64, 1).unwrap();
+            }
+        });
+        perf::report(
+            &format!(
+                "roll a {depth}-value tape, {steps} rolls ({} rolls per second)",
+                perf::per_second(steps, measurement.elapsed)
+            ),
+            &measurement,
+        );
+    }
 }
 
 #[test]

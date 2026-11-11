@@ -25,10 +25,15 @@ denies float arithmetic, including in the harnesses.
 | `build_a_large_graph` | `StateGraph::build` on a 96 x 96 grid | one traversal of the reachable `(block, DP, CC)` states |
 | `emit_an_object` | `codegen::emit_object` on a 32 x 32 grid | Cranelift lowering plus object emission for one function |
 | `simulate_a_looping_program` | 1 000 000 transitions through `interp` | the interpreter's per-step cost, which the JIT has to beat |
+| `roll_a_tape` | 20 000 000 value-moves through `Stack::roll`, at three depths | the cost of random access for a Pict-in-Pict interpreter with a tape |
 
 The graph harness reports the reachable states, not the state space: from the
 upper-left codel of a random grid, few states are reachable. The compiler builds
 exactly that subset, so it is the honest number.
+
+The tape depths are the three that `.agents/notes/piet-in-piet-full.md` budgets
+for: the canonical hello world's state graph, *Piet's Quest*'s state graph, and
+its codel grid.
 
 ## 2026-11-10
 
@@ -48,3 +53,18 @@ allocates once per block or so, which is the known cost of the partition map;
 
 Do not compare runs across machines, and do not add an assertion to a harness.
 If a number moves, record it here with the change that moved it.
+
+## 2026-11-11
+
+AMD Ryzen 9 7950X, Windows, `rustc 1.98.0`, `--release`, single-threaded.
+
+| Harness | Time | Allocations | Allocated | Held |
+|---|---|---|---|---|
+| roll a 25-value tape, 800 000 rolls | 7 224 us | 0 | 0 KiB | 0 KiB |
+| roll a 17 964-value tape, 1 113 rolls | 1 994 us | 0 | 0 KiB | 0 KiB |
+| roll a 475 867-value tape, 1 000 rolls | 48 347 us | 0 | 0 KiB | 0 KiB |
+
+That is 9 ns, 1.79 us and 48.3 us per roll: linear in the depth, which is what
+`Vec::rotate_right` over the tape costs. The first depth is a state-graph record
+window, the second *Piet's Quest*'s state graph, the third its grid. No
+allocations, so the roll itself moves memory but never grows the stack.

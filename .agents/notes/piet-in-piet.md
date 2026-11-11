@@ -158,7 +158,9 @@ terminates.
 - The interpreter does not model the interpreted program's direction pointer or
   codel chooser, so it cannot run programs that use them to branch. Doing so
   needs the interpreted program's block geometry and random access to it, and
-  the interpreter has one stack and no memory beyond it.
+  the interpreter has one stack and no memory beyond it. What that build would
+  take, what it costs, and the staged plan are in
+  [`.agents/notes/piet-in-piet-full.md`](piet-in-piet-full.md).
 - The interpreted stack is the interpreter's stack, so a program that overflows
   the runtime's stack overflows while being interpreted too.
 - A truncated stream is not a supported input: `in char` reads its separator
