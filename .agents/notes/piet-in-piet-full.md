@@ -431,19 +431,22 @@ program.
 
 ## Recommendation
 
-S1, S2 and the walker's read-execute-jump loop all landed. The image now follows
-a program held in its input, runs fourteen of the fifteen commands on a value
-stack below the ring — underflow and input included — and matches `interp` on the
-canonical *Hello world!* from a fixed 232-column image.
+Everything landed. The image follows a program held in its input — a straight line
+or a state graph — runs all fifteen commands, and reaches *Piet's Quest*: 17 964
+states, a 337 x 394 image, seven menus in 54.5 s.
 
-The remaining gaps, in order of size:
+What is left is not capability but cost, and it is worth saying which is which.
 
-- **Input** landed with the twelve-command set: the program's stream follows the
-  ring, one space-prefixed event per read. `in char` consumes the separator and
-  then the character, so a digit cannot be read as a number.
-- **`roll`** is one dynamic amount short of done; the analysis and the way
-  through (a register file below the ring) are in the S3 section above.
-- **Scale** is then a matter of putting a real program's graph into records, with
-  offsets that are multiples of three, and measuring against *Piet's Quest*.
+- **`roll`'s bound.** The table covers depths two to eight. Extending it is one
+  block per depth; removing the bound needs the values addressable at the top of
+  the stack, which no layout that keeps the ring on top allows (the analysis is
+  in the S3 section). A deeper roll stops rather than lying.
+- **Speed.** 5 300 interpreted commands per second, dominated by rotating a
+  90 000-cell ring for each value access and by the 63-block dispatcher's five
+  cells per block. The page would fix both and cost a flush before every jump.
+- **`in char` from a graph** takes a code point rather than a character, because
+  the graph decides its reads at run time and the stream has to be unambiguous.
+  That is an interface wart, not a semantic one.
 
-S4 is a separate, optional build and should be decided on its own.
+S4 (interpreting the grid) is a separate, optional build and should be decided on
+its own.
