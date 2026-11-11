@@ -59,7 +59,7 @@ mod walker;
 pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;
-pub use grid::{block_edge, splitter, step_state};
+pub use grid::{block_edge, exit_state, splitter, step_state};
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};

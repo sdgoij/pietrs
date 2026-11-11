@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
-use loom::{block_edge, splitter, step_state};
+use loom::{block_edge, exit_state, splitter, step_state};
 use runtime::BufferIo;
 use tessera::{Chooser, Direction};
 
@@ -39,6 +39,7 @@ fn grid(rows: &[&str]) -> CodelGrid {
                 'g' => Color::chromatic(Hue::Green, Lightness::Normal),
                 'd' => Color::chromatic(Hue::Cyan, Lightness::Dark),
                 'l' => Color::chromatic(Hue::Cyan, Lightness::Light),
+                'b' => Color::chromatic(Hue::Blue, Lightness::Normal),
                 other => panic!("unknown cell {other:?}"),
             });
         }
@@ -275,6 +276,76 @@ fn the_step_matches_tessera_everywhere() {
     check_steps(&["r", "r"], None);
     check_steps(&["r.", "gg"], None);
     check_steps(&[".r.", "rrr", ".r."], None);
+}
+
+/// Every state of every block of `rows`, the whole movement rule.
+///
+/// The oracle is `tessera`'s `exit`: the eight attempts and the white slide.
+fn check_exits(rows: &[&str], blocks_to_check: Option<usize>) {
+    let grid = grid(rows);
+    let blocks = Blocks::partition(grid.clone());
+    let width = grid.width();
+    let label = |id: BlockId| {
+        blocks
+            .block(id)
+            .unwrap()
+            .codels()
+            .iter()
+            .map(|point| (point.y + 1) * (width + 2) + (point.x + 1))
+            .min()
+            .unwrap()
+    };
+
+    let reached = blocks_to_check.unwrap_or(usize::MAX);
+    for block in blocks.blocks().iter().take(reached) {
+        for dp in Direction::ALL {
+            for cc in [Chooser::Left, Chooser::Right] {
+                let (image, stream) = exit_state(&grid, block.id(), dp, cc).unwrap();
+                let (output, result) = run(&image, &stream, 40_000_000);
+                assert_eq!(result.reason, ExitReason::Terminated);
+                let found: Vec<i64> = output
+                    .split_whitespace()
+                    .map(|token| token.parse().unwrap())
+                    .collect();
+
+                let expected = match tessera::exit(&blocks, block.id(), dp, cc) {
+                    tessera::Exit::Terminate => vec![-1],
+                    tessera::Exit::Move { target, dp, cc, .. } => vec![
+                        i64::from(label(target)),
+                        i64::from(dp as u32),
+                        i64::from(cc as u32),
+                    ],
+                };
+                let what = format!("{rows:?} block {} {dp:?} {cc:?}", block.id().0);
+                assert_eq!(found, expected, "{what}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_exit_matches_tessera() {
+    check_exits(&["rrgg"], Some(1));
+}
+
+#[test]
+fn the_exit_matches_tessera_through_white() {
+    check_exits(&["r...b"], Some(1));
+    check_exits(&["r.", "#."], Some(1));
+}
+
+#[test]
+#[ignore = "the full sweep: cargo test -p loom --release --test grid -- --ignored"]
+fn the_exit_matches_tessera_everywhere() {
+    check_exits(&["rrgg"], None);
+    check_exits(&["rg", "gr"], None);
+    check_exits(&["r", "r"], None);
+    check_exits(&["r.", "gg"], None);
+    check_exits(&[".r.", "rrr", ".r."], None);
+    check_exits(&["r...b"], None);
+    check_exits(&["r.", "#."], None);
+    check_exits(&["r..", "#.#", ".b."], None);
+    check_exits(&["rgggr", "rg.gd", "rg.gg", "rrrrd"], None);
 }
 
 #[test]

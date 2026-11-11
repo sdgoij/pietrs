@@ -559,26 +559,34 @@ decode has to drop the raw score halves from under the two coordinates it just
 pushed, which is a `roll(4, 2)` and two pops — a plain pair of pops takes the
 coordinates instead.
 
-**What remains is the eight-attempt loop around this, and the slide.** The loop
-is a `case` per attempt over the same blocks; the slide is a walk along white
-cells bounded by `4 * cells`.
+**The exit and the slide are built** (`loom::exit_state`). The eight attempts
+run the same scan in a loop. The exit keeps `attempt`, `cc` and `dp` under the
+scan's six live values, and `ring_by` finds the record's ring size from the
+*total* live count, so the scan's data roll is told the total (nine). After a
+failed step the continue block drops the scan's three, counts the attempt up,
+rebuilds `case` and prints nothing; after the eighth failure it prints `-1`.
 
-**The fallback's shape, while it is fresh.** The scan already
-takes its case from a live value, so the eight attempts are a loop that sets
-`case` from `(dp, cc, attempt)` — `dp_i = (dp + attempt/2) % 4` and
-`cc_i = (cc + attempt/2 + attempt%2) % 2`, which is `attempt(dp, cc, index)` from
-`tessera` — resets `index` and `best`, and runs the same blocks. The one catch is
-the live count: the exit keeps `attempt`, `dp` and `cc` under the scan's six
-values, and `ring_by` finds the record's ring size from the *total* live count, so
-the scan's data roll must be told the total (nine). Every other depth in the scan
-is relative to the top and needs no change.
+Two conventions the build settled. `case_nodes` computes a throwaway `q` and
+`dp_i` on top of the live values, so it must dip the case below them before
+popping — the first version popped one value too many and silently ate `big`.
+And the scan derives a cell's coordinates from the loop index, not from the
+ring's position, so every attempt has to start with the ring back at cell zero:
+a short loop advances until the head's label is zero, which only cell zero can
+be, because it is a guard and guards never merge.
 
-After the scan, the winner's ring index is `row * row cells + column`; seek to it
-with the same one-cell advance loop, step once in `dp_i`, and read the neighbour's
-colour. A guard or black means the next attempt; white means the slide; anything
-else is the move, and its label and the attempt's `(dp_i, cc_i)` are the answer.
-The slide needs a bound instead of a visited set: its state is `(codel, dp)`, so
-more than `4 * cells` steps without reaching a colour is a retrace.
+The slide is a state machine over `(codel, dp)` held in `case`: step, read the
+neighbour's colour, and on a guard or black step back, toggle the chooser and
+rotate the direction clockwise. It needs a bound instead of the host's visited
+set: more than `4 * cells` turns without reaching a colour is a retrace, and the
+answer is `-1`. A chromatic neighbour is the move, and the final `case` is the
+`(dp, cc)` reported, which is what the slide's last rotation selected.
+The edge codel's colour is the block's colour, so one comparison after the seek
+rules out white and black blocks, which the movement rules never leave.
+
+Every block of nine fixtures agrees with `tessera::exit` in all eight states,
+in release: the eight-attempt fallback, the slide to a colour, the slide that
+retraces, the slide that restarts from its current codel, and non-chromatic
+blocks.
 
 Still to build, in the order each can be checked:
 
@@ -614,7 +622,7 @@ What is left is not capability but cost, and it is worth saying which is which.
   the graph decides its reads at run time and the stream has to be unambiguous.
   That is an interface wart, not a semantic one.
 
-S4 is half built: the partition and the edge codel are in the image and agree
-with `canvas::Blocks` and `tessera` on every fixture; the step, the fallback and
-the slide remain. Deciding whether to finish them is a separate call, and the
-cost says small images only.
+S4 is mostly built: the partition, the edge codel, the step, the eight-attempt
+fallback and the white slide are in the image and agree with `canvas::Blocks`
+and `tessera` on every fixture. The start state and the colour transition remain
+before the walker can be handed a record with no host-side tessellation.

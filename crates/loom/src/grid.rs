@@ -127,6 +127,28 @@ const BLACK_CODE: u32 = 19;
 /// Where the scan starts in the edge program.
 const SCAN_BASE: u32 = 14;
 
+/// The exit stage's blocks: the same scan per attempt, then the step's decision
+/// and the loop around it.
+const EXIT_SETUP: u32 = 13;
+const EXIT_SCAN: u32 = SCAN_BASE;
+const EXIT_DECODE_SELECT: u32 = 26;
+const EXIT_DECODE: u32 = 27;
+const EXIT_SEEK_SETUP: u32 = 35;
+const EXIT_MOVE: u32 = 46;
+const EXIT_NEXT: u32 = 47;
+const EXIT_SLIDE_ENTRY: u32 = 48;
+const EXIT_SLIDE_DISPATCH: u32 = 51;
+const EXIT_SLIDE_STEP: u32 = 52;
+const EXIT_SLIDE_CHECK: u32 = 56;
+const EXIT_SLIDE_TURN_DISPATCH: u32 = 59;
+const EXIT_SLIDE_UNDO: u32 = 60;
+const EXIT_SLIDE_TURN: u32 = 64;
+const EXIT_ZERO: u32 = 65;
+const EXIT_ZERO_ADVANCE: u32 = 66;
+const EXIT_EDGE_COLOUR: u32 = 67;
+const EXIT_TERMINATE: u32 = 49;
+const EXIT_CONTINUE: u32 = 50;
+
 /// The step stage's blocks: the same scan, then a decode, a seek, a roll and a
 /// colour decision.
 const STP_SETUP: u32 = 13;
@@ -134,13 +156,6 @@ const STP_SCAN: u32 = SCAN_BASE;
 const STP_DECODE_SELECT: u32 = 26;
 const STP_DECODE: u32 = 27;
 const STP_SEEK_SETUP: u32 = 35;
-const STP_SEEK_TEST: u32 = 36;
-const STP_SEEK_STEP: u32 = 37;
-const STP_STEP_SELECT: u32 = 38;
-const STP_STEP: u32 = 39;
-const STP_DECIDE: u32 = 43;
-const STP_BLACK: u32 = 44;
-const STP_WHITE_CHECK: u32 = 45;
 const STP_SUCCESS: u32 = 46;
 const STP_FAIL: u32 = 47;
 const STP_WHITE: u32 = 48;
@@ -167,6 +182,30 @@ pub fn step_state(
         cc as u32
     ));
     Ok((step_program()?.image()?, stream))
+}
+
+/// A splitter image that resolves the whole movement rule from a state, and the
+/// stream that asks for it.
+///
+/// The eight attempts are tried in `tessera`'s order, and a white neighbour is
+/// slid along until a colour is reached. The image prints the move — the target
+/// block's label and the attempt's `(dp, cc)` — or `-1` when every attempt
+/// fails, when the slide retraces itself, or when the block is not chromatic.
+pub fn exit_state(
+    grid: &CodelGrid,
+    block: BlockId,
+    dp: Direction,
+    cc: Chooser,
+) -> Result<(CodelGrid, String), Error> {
+    let mut stream = stream_of(grid)?;
+    // The exit reads its query as dp, cc, then the label.
+    stream.push_str(&format!(
+        " {} {} {}",
+        dp as u32,
+        cc as u32,
+        label_of(grid, block)?
+    ));
+    Ok((exit_program()?.image()?, stream))
 }
 
 /// The block's label: the lowest ring position among its codels.
@@ -366,7 +405,7 @@ fn edge_program() -> Result<Program, Error> {
     // The partition stops once it has converged: no labels, straight to the edge.
     all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(EDGE_SETUP));
     all.push(Block::new(edge_setup(), End::Jump(SCAN_BASE)));
-    let (_, scan) = scan_blocks(SCAN_BASE, EDGE_SELECT);
+    let (_, scan) = scan_blocks(SCAN_BASE, EDGE_SELECT, 0);
     all.extend(scan);
     for case in 0..8 {
         all.push(Block::new(print_case(case), End::Halt));
@@ -375,84 +414,300 @@ fn edge_program() -> Result<Program, Error> {
     Program::new(all, ENTRY)
 }
 
+/// The splitter image, extended with the whole movement rule: the eight
+/// attempts, and what each one lands on.
+fn exit_program() -> Result<Program, Error> {
+    Program::new(exit_blocks(), ENTRY)
+}
+
+/// The exit program's blocks, as `exit_program` assembles them.
+fn exit_blocks() -> Vec<Block> {
+    let mut all = blocks();
+    all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(EXIT_SETUP));
+    all.push(Block::new(exit_setup(), End::Jump(EXIT_ZERO)));
+    all.extend(scan_and_decode(
+        EXIT_SCAN,
+        EXIT_DECODE_SELECT,
+        EXIT_DECODE,
+        3,
+    ));
+    all.extend(step_tail(
+        3,
+        EXIT_SEEK_SETUP,
+        EXIT_MOVE,
+        EXIT_NEXT,
+        EXIT_SLIDE_ENTRY,
+        EXIT_EDGE_COLOUR,
+    ));
+    all.push(Block::new(move_nodes(9), End::Halt));
+    all.push(Block::new(
+        exit_next(),
+        End::If {
+            then: EXIT_TERMINATE,
+            otherwise: EXIT_CONTINUE,
+        },
+    ));
+    // The white branch starts the slide with no turns taken.
+    all.push(Block::new(
+        vec![Node::Command(Command::Pop), Node::Const(0)],
+        End::Jump(EXIT_SLIDE_DISPATCH),
+    ));
+    all.push(Block::new(
+        vec![Node::Const(-1), Node::Command(Command::OutNumber)],
+        End::Halt,
+    ));
+    all.push(Block::new(
+        {
+            let mut nodes = case_nodes();
+            nodes.extend([Node::Const(-1), Node::Const(0)]);
+            nodes
+        },
+        End::Jump(EXIT_ZERO),
+    ));
+    // The slide: step, look at what was hit, and turn when refused.
+    all.push(Block::new(slide_dispatch(EXIT_SLIDE_STEP), End::Computed));
+    for dp in 0..4 {
+        all.push(Block::new(step_roll(dp, 9), End::Jump(EXIT_SLIDE_CHECK)));
+    }
+    all.push(Block::new(
+        vec![
+            Node::DupLocal(11),
+            Node::Const(i64::from(GUARD_CODE) - 1),
+            Node::Command(Command::Greater),
+        ],
+        End::If {
+            then: EXIT_SLIDE_TURN_DISPATCH,
+            otherwise: EXIT_SLIDE_CHECK + 1,
+        },
+    ));
+    all.push(Block::new(
+        colour_is(11, BLACK_CODE),
+        End::If {
+            then: EXIT_SLIDE_TURN_DISPATCH,
+            otherwise: EXIT_SLIDE_CHECK + 2,
+        },
+    ));
+    all.push(Block::new(
+        colour_is(11, WHITE_CODE),
+        End::If {
+            then: EXIT_SLIDE_DISPATCH,
+            otherwise: EXIT_MOVE,
+        },
+    ));
+    // A guard or black: step back, then turn.
+    all.push(Block::new(slide_dispatch(EXIT_SLIDE_UNDO), End::Computed));
+    for dp in 0..4 {
+        all.push(Block::new(
+            step_roll((dp + 2) % 4, 9),
+            End::Jump(EXIT_SLIDE_TURN),
+        ));
+    }
+    all.push(Block::new(
+        slide_turn(),
+        End::If {
+            then: EXIT_TERMINATE,
+            otherwise: EXIT_SLIDE_DISPATCH,
+        },
+    ));
+    // The scan's coordinates are the loop index, so every attempt starts with
+    // the ring back at cell zero. Cell zero is the only record whose label is
+    // zero: it is a guard, so no component can ever merge into it.
+    all.push(Block::new(
+        vec![Node::DupLocal(10), Node::Command(Command::Not)],
+        End::If {
+            then: EXIT_SCAN,
+            otherwise: EXIT_ZERO_ADVANCE,
+        },
+    ));
+    all.push(Block::new(
+        ring_by(9, i64::from(PER_CELL)),
+        End::Jump(EXIT_ZERO),
+    ));
+    // The movement rules never leave a white or black block. The edge codel is
+    // a codel of the block, so its colour is the block's colour.
+    all.push(Block::new(
+        vec![
+            Node::DupLocal(12),
+            Node::Const(i64::from(WHITE_CODE) - 1),
+            Node::Command(Command::Greater),
+        ],
+        End::If {
+            then: EXIT_TERMINATE,
+            otherwise: EXIT_SEEK_SETUP + 3,
+        },
+    ));
+    all
+}
+
+/// Dispatch to the step block for the case's direction, `base + dp_i`.
+///
+/// The live values are `[turns, best, case, big, row cells, label, attempt, cc,
+/// dp]`, so the case is at depth three and the step block pops the direction it
+/// leaves on top.
+fn slide_dispatch(base: u32) -> Vec<Node> {
+    let mut nodes = vec![
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Divide),
+    ];
+    nodes.extend(dispatch(1, base));
+    nodes
+}
+
+/// A refused step: step back to the white cell, turn, and check the bound.
+///
+/// `case = 2 * dp_i + cc_i` becomes `2 * ((dp_i + 1) % 4) + (1 - cc_i)`, which is
+/// `tessera`'s `dp.clockwise()` and `cc.toggled()`. The turn counter lives in the
+/// scan's dead `index` slot; more than `4 * big` turns means a `(codel, dp)` pair
+/// has repeated, which is how the host's visited set decides to terminate.
+fn slide_turn() -> Vec<Node> {
+    vec![
+        // turns += 1
+        Node::DupLocal(1),
+        Node::Const(1),
+        Node::Command(Command::Add),
+        Node::Roll(2, 1),
+        Node::Command(Command::Pop),
+        // new case = 2 * ((case / 2 + 1) % 4) + (1 - case % 2)
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Divide),
+        Node::Const(1),
+        Node::Command(Command::Add),
+        Node::Const(4),
+        Node::Command(Command::Modulo),
+        Node::Const(2),
+        Node::Command(Command::Multiply),
+        Node::DupLocal(4),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        Node::Const(1),
+        Node::Swap,
+        Node::Command(Command::Subtract),
+        Node::Command(Command::Add),
+        // replace the old case with the new one, keeping it under turns and best
+        Node::Roll(4, 3),
+        Node::Command(Command::Pop),
+        Node::Roll(3, 1),
+        // terminate once every (codel, dp) pair has been seen
+        Node::DupLocal(1),
+        Node::DupLocal(5),
+        Node::Const(4),
+        Node::Command(Command::Multiply),
+        Node::Command(Command::Subtract),
+        Node::Const(0),
+        Node::Command(Command::Greater),
+    ]
+}
+
+/// `dp`, `cc`, the block's label, the row length, the score base, and the first
+/// attempt's case.
+///
+/// The live values end up as `[index, best, case, big, row cells, label,
+/// attempt, cc, dp]`: the scan's six on top and the exit's own three below, which
+/// is why the scan is told there are three extra.
+fn exit_setup() -> Vec<Node> {
+    let mut nodes = vec![
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+        Node::Command(Command::InNumber),
+        Node::Command(Command::InNumber),
+        Node::Const(0),
+        Node::Command(Command::InNumber),
+        // row cells = stride / 4
+        Node::DupLocal(7),
+        Node::Const(4),
+        Node::Command(Command::Divide),
+        // big = ring cells / 4
+        Node::DupLocal(9),
+        Node::Const(4),
+        Node::Command(Command::Divide),
+    ];
+    nodes.extend(case_nodes());
+    nodes.extend([Node::Const(-1), Node::Const(0)]);
+    nodes
+}
+
+/// `case = 2 * dp_i + cc_i` for the current attempt, from `[big, row cells,
+/// label, attempt, cc, dp]`.
+///
+/// `dp_i = (dp + attempt/2) % 4` and
+/// `cc_i = (cc + (attempt%2 + attempt/2) % 2) % 2`, which is `tessera`'s
+/// `attempt(dp, cc, index)`.
+fn case_nodes() -> Vec<Node> {
+    vec![
+        // q = attempt / 2, kept for the direction and the toggle
+        Node::DupLocal(4),
+        Node::Const(2),
+        Node::Command(Command::Divide),
+        Node::Dup,
+        // dp_i = (dp + q) % 4
+        Node::DupLocal(8),
+        Node::Command(Command::Add),
+        Node::Const(4),
+        Node::Command(Command::Modulo),
+        // toggle = (attempt%2 + q) % 2
+        Node::DupLocal(6),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        Node::DupLocal(3),
+        Node::Command(Command::Add),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        // cc_i = (cc + toggle) % 2
+        Node::DupLocal(8),
+        Node::Command(Command::Add),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        // case = 2 * dp_i + cc_i
+        Node::DupLocal(2),
+        Node::Const(2),
+        Node::Command(Command::Multiply),
+        Node::Roll(2, 1),
+        Node::Command(Command::Add),
+        // drop q and dp_i, leaving the case above big
+        Node::Roll(3, 1),
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+    ]
+}
+
+/// Drop the scan's three, count the attempt up, and stop after eight.
+///
+/// On entry the stack is `[index, best, case, big, row cells, label, attempt,
+/// cc, dp]`; the top three are this attempt's and are rebuilt by the continue
+/// block, so dropping them leaves `[big, row cells, label, attempt, cc, dp]`.
+fn exit_next() -> Vec<Node> {
+    vec![
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+        Node::Roll(4, 3),
+        Node::Const(1),
+        Node::Command(Command::Add),
+        Node::Roll(4, 1),
+        Node::DupLocal(4),
+        Node::Const(8),
+        Node::Command(Command::Subtract),
+        Node::Command(Command::Not),
+    ]
+}
+
 /// The splitter image, extended with the step stage.
 fn step_program() -> Result<Program, Error> {
     let mut all = blocks();
     all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(STP_SETUP));
     all.push(Block::new(edge_setup(), End::Jump(STP_SCAN)));
-    let (_, scan) = scan_blocks(STP_SCAN, STP_DECODE_SELECT);
-    all.extend(scan);
-    all.push(Block::new(
-        {
-            // The scan stops on the last cell, so step once more to reach zero,
-            // where the seek's index is measured from.
-            let mut nodes = ring_by(6, i64::from(PER_CELL));
-            nodes.extend(dispatch(3, STP_DECODE));
-            nodes
-        },
-        End::Computed,
+    all.extend(scan_and_decode(STP_SCAN, STP_DECODE_SELECT, STP_DECODE, 0));
+    all.extend(step_tail(
+        0,
+        STP_SEEK_SETUP,
+        STP_SUCCESS,
+        STP_FAIL,
+        STP_WHITE,
+        STP_SEEK_SETUP + 3,
     ));
-    for case in 0..8 {
-        all.push(Block::new(decode_case(case), End::Jump(STP_SEEK_SETUP)));
-    }
-    all.push(Block::new(seek_setup(), End::Jump(STP_SEEK_TEST)));
-    all.push(Block::new(
-        vec![Node::DupLocal(1), Node::Command(Command::Not)],
-        End::If {
-            then: STP_STEP_SELECT,
-            otherwise: STP_SEEK_STEP,
-        },
-    ));
-    all.push(Block::new(
-        {
-            let mut nodes = ring_by(7, i64::from(PER_CELL));
-            nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
-            nodes
-        },
-        End::Jump(STP_SEEK_TEST),
-    ));
-    all.push(Block::new(
-        {
-            let mut nodes = vec![
-                Node::Command(Command::Pop),
-                Node::DupLocal(3),
-                Node::Const(2),
-                Node::Command(Command::Divide),
-            ];
-            nodes.extend(dispatch(1, STP_STEP));
-            nodes
-        },
-        End::Computed,
-    ));
-    for dp in 0..4 {
-        all.push(Block::new(step_roll(dp), End::Jump(STP_DECIDE)));
-    }
-    all.push(Block::new(
-        vec![
-            Node::DupLocal(8),
-            Node::Const(i64::from(GUARD_CODE) - 1),
-            Node::Command(Command::Greater),
-        ],
-        End::If {
-            then: STP_FAIL,
-            otherwise: STP_BLACK,
-        },
-    ));
-    all.push(Block::new(
-        colour_is(BLACK_CODE),
-        End::If {
-            then: STP_FAIL,
-            otherwise: STP_WHITE_CHECK,
-        },
-    ));
-    all.push(Block::new(
-        colour_is(WHITE_CODE),
-        End::If {
-            then: STP_WHITE,
-            otherwise: STP_SUCCESS,
-        },
-    ));
-    all.push(Block::new(move_nodes(), End::Halt));
+    all.push(Block::new(move_nodes(6), End::Halt));
     all.push(Block::new(
         vec![Node::Const(-1), Node::Command(Command::OutNumber)],
         End::Halt,
@@ -462,6 +717,105 @@ fn step_program() -> Result<Program, Error> {
         End::Halt,
     ));
     Program::new(all, ENTRY)
+}
+
+/// The scan, its decode dispatch, and the eight decode blocks.
+///
+/// `extra` is how many live values sit under the scan's six; the decode leaves
+/// `[column, row]` above them, so the seek starts at `select + 9`.
+fn scan_and_decode(scan: u32, select: u32, decode: u32, extra: u32) -> Vec<Block> {
+    let (_, mut blocks) = scan_blocks(scan, select, extra);
+    blocks.push(Block::new(
+        {
+            // The scan stops on the last cell, so step once more to reach zero,
+            // where the seek's index is measured from.
+            let mut nodes = ring_by(6 + extra, i64::from(PER_CELL));
+            nodes.extend(dispatch(3, decode));
+            nodes
+        },
+        End::Computed,
+    ));
+    let seek = select + 9;
+    for case in 0..8 {
+        blocks.push(Block::new(decode_case(case), End::Jump(seek)));
+    }
+    blocks
+}
+
+/// The seek, the step and the colour decision, with `live` values under the
+/// scan's six.
+///
+/// `base` is the first of eleven blocks; `success`, `fail` and `white` are the
+/// three answers, which the caller places, and `done` is where the seek loop
+/// goes once it has found the edge codel.
+fn step_tail(live: u32, base: u32, success: u32, fail: u32, white: u32, done: u32) -> Vec<Block> {
+    let mut blocks = vec![
+        // seek: index = row * cells + column, then drop the column and row
+        Block::new(seek_setup(), End::Jump(base + 1)),
+        // while the index is not zero
+        Block::new(
+            vec![Node::DupLocal(1), Node::Command(Command::Not)],
+            End::If {
+                then: done,
+                otherwise: base + 2,
+            },
+        ),
+        // one cell forward
+        Block::new(
+            {
+                let mut nodes = ring_by(7 + live, i64::from(PER_CELL));
+                nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
+                nodes
+            },
+            End::Jump(base + 1),
+        ),
+        // the direction decides which roll the step takes
+        Block::new(
+            {
+                let mut nodes = vec![
+                    Node::Command(Command::Pop),
+                    Node::DupLocal(3),
+                    Node::Const(2),
+                    Node::Command(Command::Divide),
+                ];
+                nodes.extend(dispatch(1, base + 4));
+                nodes
+            },
+            End::Computed,
+        ),
+    ];
+    for dp in 0..4 {
+        blocks.push(Block::new(step_roll(dp, 6 + live), End::Jump(base + 8)));
+    }
+    blocks.extend([
+        // a guard is off the grid, which fails the attempt like black
+        Block::new(
+            vec![
+                Node::DupLocal(8 + live),
+                Node::Const(i64::from(GUARD_CODE) - 1),
+                Node::Command(Command::Greater),
+            ],
+            End::If {
+                then: fail,
+                otherwise: base + 9,
+            },
+        ),
+        Block::new(
+            colour_is(8 + live, BLACK_CODE),
+            End::If {
+                then: fail,
+                otherwise: base + 10,
+            },
+        ),
+        Block::new(
+            colour_is(8 + live, WHITE_CODE),
+            End::If {
+                then: white,
+                otherwise: success,
+            },
+        ),
+    ]);
+    blocks
 }
 
 /// The ids one copy of the edge scan occupies.
@@ -482,7 +836,7 @@ struct Scan {
 /// The live values are `[index, best, case, big, row cells, label]`: the ring
 /// index being visited, the best score so far, the `(dp, cc)` case, the score
 /// base (`big`, the cell count), the row length in cells, and the block's label.
-fn scan_blocks(base: u32, done: u32) -> (Scan, Vec<Block>) {
+fn scan_blocks(base: u32, done: u32, extra: u32) -> (Scan, Vec<Block>) {
     let ids = Scan {
         cell: base,
         next: base + 1,
@@ -494,7 +848,7 @@ fn scan_blocks(base: u32, done: u32) -> (Scan, Vec<Block>) {
         // does this cell belong to the block?
         Block::new(
             vec![
-                Node::DupLocal(7),
+                Node::DupLocal(7 + extra),
                 Node::DupLocal(7),
                 Node::Command(Command::Subtract),
                 Node::Command(Command::Not),
@@ -520,7 +874,7 @@ fn scan_blocks(base: u32, done: u32) -> (Scan, Vec<Block>) {
             },
         ),
         // the next cell
-        Block::new(ring_by(6, i64::from(PER_CELL)), End::Jump(ids.cell)),
+        Block::new(ring_by(6 + extra, i64::from(PER_CELL)), End::Jump(ids.cell)),
         // the codel's coordinates, then the scoring block for this case
         Block::new(
             {
@@ -567,21 +921,21 @@ fn seek_setup() -> Vec<Node> {
 /// One step in `dp`, taken with the head on the edge codel.
 ///
 /// The dispatch leaves `dp` on the stack, so the block drops it first.
-fn step_roll(dp: u32) -> Vec<Node> {
+fn step_roll(dp: u32, live: u32) -> Vec<Node> {
     let mut nodes = vec![Node::Command(Command::Pop)];
     nodes.extend(match dp {
-        0 => ring_by(6, i64::from(PER_CELL)),
-        2 => ring_by(6, -i64::from(PER_CELL)),
-        3 => ring_up(6),
-        _ => ring_down(6),
+        0 => ring_by(live, i64::from(PER_CELL)),
+        2 => ring_by(live, -i64::from(PER_CELL)),
+        3 => ring_up(live),
+        _ => ring_down(live),
     });
     nodes
 }
 
 /// `colour == code`, for the neighbour's colour at depth eight.
-fn colour_is(code: u32) -> Vec<Node> {
+fn colour_is(depth: u32, code: u32) -> Vec<Node> {
     vec![
-        Node::DupLocal(8),
+        Node::DupLocal(depth),
         Node::Const(i64::from(code)),
         Node::Command(Command::Subtract),
         Node::Command(Command::Not),
@@ -589,9 +943,9 @@ fn colour_is(code: u32) -> Vec<Node> {
 }
 
 /// Print the move: the neighbour's label, then the attempt's `(dp, cc)`.
-fn move_nodes() -> Vec<Node> {
+fn move_nodes(live: u32) -> Vec<Node> {
     vec![
-        Node::DupLocal(7),
+        Node::DupLocal(live + 1),
         Node::Command(Command::OutNumber),
         Node::Const(32),
         Node::Command(Command::OutChar),
@@ -1222,7 +1576,7 @@ mod tests {
         let mut all = blocks();
         all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(EDGE_SETUP));
         all.push(Block::new(edge_setup(), End::Jump(SCAN_BASE)));
-        let (_, scan) = scan_blocks(SCAN_BASE, EDGE_SELECT);
+        let (_, scan) = scan_blocks(SCAN_BASE, EDGE_SELECT, 0);
         all.extend(scan);
         for case in 0..8 {
             all.push(Block::new(print_case(case), End::Halt));
@@ -1236,77 +1590,16 @@ mod tests {
         let mut all = blocks();
         all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(STP_SETUP));
         all.push(Block::new(edge_setup(), End::Jump(STP_SCAN)));
-        let (_, scan) = scan_blocks(STP_SCAN, STP_DECODE_SELECT);
-        all.extend(scan);
-        all.push(Block::new(
-            {
-                let mut nodes = ring_by(6, i64::from(PER_CELL));
-                nodes.extend(dispatch(3, STP_DECODE));
-                nodes
-            },
-            End::Computed,
+        all.extend(scan_and_decode(STP_SCAN, STP_DECODE_SELECT, STP_DECODE, 0));
+        all.extend(step_tail(
+            0,
+            STP_SEEK_SETUP,
+            STP_SUCCESS,
+            STP_FAIL,
+            STP_WHITE,
+            STP_SEEK_SETUP + 3,
         ));
-        for case in 0..8 {
-            all.push(Block::new(decode_case(case), End::Jump(STP_SEEK_SETUP)));
-        }
-        all.push(Block::new(seek_setup(), End::Jump(STP_SEEK_TEST)));
-        all.push(Block::new(
-            vec![Node::DupLocal(1), Node::Command(Command::Not)],
-            End::If {
-                then: STP_STEP_SELECT,
-                otherwise: STP_SEEK_STEP,
-            },
-        ));
-        all.push(Block::new(
-            {
-                let mut nodes = ring_by(7, i64::from(PER_CELL));
-                nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
-                nodes
-            },
-            End::Jump(STP_SEEK_TEST),
-        ));
-        all.push(Block::new(
-            {
-                let mut nodes = vec![
-                    Node::Command(Command::Pop),
-                    Node::DupLocal(3),
-                    Node::Const(2),
-                    Node::Command(Command::Divide),
-                ];
-                nodes.extend(dispatch(1, STP_STEP));
-                nodes
-            },
-            End::Computed,
-        ));
-        for dp in 0..4 {
-            all.push(Block::new(step_roll(dp), End::Jump(STP_DECIDE)));
-        }
-        all.push(Block::new(
-            vec![
-                Node::DupLocal(8),
-                Node::Const(i64::from(GUARD_CODE) - 1),
-                Node::Command(Command::Greater),
-            ],
-            End::If {
-                then: STP_FAIL,
-                otherwise: STP_BLACK,
-            },
-        ));
-        all.push(Block::new(
-            colour_is(BLACK_CODE),
-            End::If {
-                then: STP_FAIL,
-                otherwise: STP_WHITE_CHECK,
-            },
-        ));
-        all.push(Block::new(
-            colour_is(WHITE_CODE),
-            End::If {
-                then: STP_WHITE,
-                otherwise: STP_SUCCESS,
-            },
-        ));
-        all.push(Block::new(move_nodes(), End::Halt));
+        all.push(Block::new(move_nodes(6), End::Halt));
         all.push(Block::new(
             vec![Node::Const(-1), Node::Command(Command::OutNumber)],
             End::Halt,
@@ -1318,10 +1611,46 @@ mod tests {
         all
     }
 
+    /// The exit program's blocks, as `exit_program` assembles them.
+    fn exit_blocks_for_test() -> Vec<Block> {
+        exit_blocks()
+    }
+
     fn numbers(text: &str) -> Vec<i64> {
         text.split_whitespace()
             .map(|token| token.parse().unwrap())
             .collect()
+    }
+
+    /// A grid from rows of characters, as in the integration tests.
+    fn grid(rows: &[&str]) -> CodelGrid {
+        let height = rows.len() as u32;
+        let width = rows.first().map_or(0, |row| row.len() as u32);
+        let mut codels = Vec::with_capacity((width as usize) * (height as usize));
+        for row in rows {
+            for cell in row.chars() {
+                codels.push(match cell {
+                    '.' => Color::White,
+                    '#' => Color::Black,
+                    'r' => Color::chromatic(Hue::Red, Lightness::Normal),
+                    'b' => Color::chromatic(Hue::Blue, Lightness::Normal),
+                    other => panic!("unknown cell {other:?}"),
+                });
+            }
+        }
+        CodelGrid::from_colors(width, height, codels).unwrap()
+    }
+
+    /// Run the exit program's blocks over one query.
+    fn exit_vm(grid: &CodelGrid, block: BlockId, dp: Direction, cc: Chooser) -> String {
+        let stream = format!(
+            "{} {} {} {}",
+            stream_of(grid).unwrap(),
+            dp as u32,
+            cc as u32,
+            label_of(grid, block).unwrap()
+        );
+        execute(&exit_blocks_for_test(), &numbers(&stream), 200_000_000)
     }
 
     #[test]
@@ -1340,6 +1669,75 @@ mod tests {
         let output = execute(&edge_blocks_for_test(), &numbers(&stream), 5_000_000);
         // Right, left chooser: the rightmost codel, topmost of that column.
         assert_eq!(output, "1 0 ");
+    }
+
+    #[test]
+    fn the_exit_program_steps_onto_the_neighbour() {
+        let red = Color::chromatic(Hue::Red, Lightness::Normal);
+        let green = Color::chromatic(Hue::Green, Lightness::Normal);
+        let grid = canvas::CodelGrid::from_colors(2, 1, vec![red, green]).unwrap();
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let label = blocks.blocks()[0]
+            .codels()
+            .iter()
+            .map(|point| ring_index(&grid, *point))
+            .min()
+            .unwrap();
+
+        // The query is dp, cc, then the label.
+        let stream = format!("{} 0 0 {}", stream_of(&grid).unwrap(), label);
+        let output = execute(&exit_blocks_for_test(), &numbers(&stream), 40_000_000);
+        assert_eq!(output, "6 0 0");
+    }
+
+    #[test]
+    fn the_exit_program_gives_up_on_a_single_codel() {
+        let red = Color::chromatic(Hue::Red, Lightness::Normal);
+        let grid = canvas::CodelGrid::from_colors(1, 1, vec![red]).unwrap();
+        let label = ring_index(&grid, canvas::Point::new(0, 0));
+        let stream = format!("{} 0 0 {}", stream_of(&grid).unwrap(), label);
+        let output = execute(&exit_blocks_for_test(), &numbers(&stream), 40_000_000);
+        assert_eq!(output, "-1");
+    }
+
+    #[test]
+    fn the_exit_program_slides_to_the_first_colour() {
+        let grid = grid(&["r...b"]);
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let red = blocks.block_id_at(Point::new(0, 0)).unwrap();
+        let blue = blocks.block_id_at(Point::new(4, 0)).unwrap();
+        let expected = format!("{} 0 0", label_of(&grid, blue).unwrap());
+        assert_eq!(
+            exit_vm(&grid, red, Direction::Right, Chooser::Left),
+            expected
+        );
+    }
+
+    #[test]
+    fn the_exit_program_terminates_on_a_white_dead_end() {
+        let grid = grid(&["r.", "#."]);
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let red = blocks.block_id_at(Point::new(0, 0)).unwrap();
+        assert_eq!(exit_vm(&grid, red, Direction::Right, Chooser::Left), "-1");
+    }
+
+    #[test]
+    fn the_exit_program_restarts_the_slide_from_the_current_codel() {
+        // Right is blocked at the top-right, so the slide turns down, runs to
+        // the black, and turns back onto the red with dp left.
+        let grid = grid(&["r..", "#.#", ".b."]);
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let red = blocks.block_id_at(Point::new(0, 0)).unwrap();
+        let expected = format!(
+            "{} {} {}",
+            label_of(&grid, red).unwrap(),
+            Direction::Left as u32,
+            Chooser::Left as u32
+        );
+        assert_eq!(
+            exit_vm(&grid, red, Direction::Right, Chooser::Left),
+            expected
+        );
     }
 
     #[test]
