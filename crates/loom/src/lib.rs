@@ -44,6 +44,7 @@
 mod error;
 mod flow;
 mod graph;
+mod grid;
 mod interpreter;
 mod linear;
 mod paint;
@@ -54,6 +55,7 @@ mod walker;
 pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;
+pub use grid::splitter;
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
