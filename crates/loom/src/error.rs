@@ -49,6 +49,9 @@ pub enum Error {
     #[error("the interpreted program needs input the stream does not carry")]
     InputExhausted,
 
+    #[error("a ring of {cells} cells is not a whole number of records")]
+    Ring { cells: u32 },
+
     #[error("no layout keeps every block separate")]
     NoLayout,
 

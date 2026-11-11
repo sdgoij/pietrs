@@ -201,6 +201,28 @@ The interpreter's own program is still the substack: a step loop, a dispatch on
 the record's command, per-command handlers, and the jump. That is the next slice,
 and it is large.
 
+**The control path is now built and tested** (`crates/loom/src/walker.rs`,
+`crates/loom/tests/walker.rs`). `skeleton(ring)` loads a ring from the input
+stream and follows it: read `N` numbers, report the head record's command, halt
+on a zero command, otherwise roll the ring by the record's offset. The stream is
+read **highest record first**, so the last record read is record zero and it is
+the initial head — that is what makes the stored offsets plain, `3 * k` forward
+and `-3 * k` back, with no program counter and no initial roll. Records have to
+be a whole number of `command, block size, offset` triples; anything else is
+`Error::Ring`.
+
+The cases: a two-record ring reports `1 0 `; a four-record chain reports every
+command in order; a forward offset of six skips the record that would print
+nine; a negative offset wraps to the last record; a ten-record ring keeps the
+head aligned across repeated rolls; rings of 0, 1, 3, 4, 5 and 7 cells are
+refused. Breaking the jump so it reads the record's block size instead of its
+offset fails three of them, which is the non-vacuity check.
+
+What the skeleton does *not* do: it carries the block size without using it, and
+it cannot tell a misaligned offset from an aligned one. Both are the handlers'
+problem. The image is 57 x 52, and it does not grow with the number of records:
+the ring is data, not geometry.
+
 ### S4. Interpret the grid (optional)
 
 Move the partition and the movement rules into the image, so the host only hands
@@ -214,14 +236,18 @@ program.
 
 ## Recommendation
 
-S1, S2 and S3 landed: the image now follows a program's own control flow,
-branches included, with the trace gone. That is full Piet semantics for one
-program, at a cost of five cells of width per state.
+S1 and S2 landed: the image follows a program's own control flow, branches
+included, with the trace gone. S3's control path landed too — a fixed image can
+now read a program from its input and follow its records — but it runs no
+handlers yet, so it reports a program rather than executing it.
 
-The remaining gap is *scale*, and it is one piece of work: the fixed-image
-walker of S3 above, whose memory model (the ring on top, fixed-depth
-temporaries below) is pinned and whose hardest mechanism — a computed-depth
-roll — is already built and tested. That is the path to *Piet's Quest*, and it
-is a large slice rather than an increment.
+The remaining gap is still the walker's second half: the per-command handlers
+and the value stack they need. This is where the design has an open question,
+not just unwritten code: a `roll` always starts at the top of the stack, so a
+program ring on top and a mutable value stack below cannot both be cheap to
+reach. The candidates are a second value-shaped ring above the program ring, or
+accepting two rolls per value access. Either way the memory model (ring on top,
+fixed-depth temporaries below) and the hardest mechanism — a computed-depth roll
+— are already built and tested.
 
 S4 is a separate, optional build and should be decided on its own.
