@@ -538,18 +538,35 @@ for this state" but "the codel a move leaves from", fallback included. The raw
 selection is now public as `tessera::block_edge` so both levels can be tested
 against the same oracle.
 
-**What remains is the rest of the movement rules.** Everything below is data the
-ring already holds.
+**The step needs a guard on every side, and now has one.** Stepping right from
+the last column used to wrap onto the first codel of the next row, because the
+ring is a cycle and only the top and left were guarded. The border is now one cell
+wide all round, so a step in any direction is `±4` or `±stride` and lands on a
+guard when it leaves the grid. A guard's colour code is `22 + index`, so `colour
+>= 22` is the same signal as black, and the partition is unaffected.
+
+**The fallback is the next piece, and it reuses the edge scan.** The scan already
+takes its case from a live value, so the eight attempts are a loop that sets
+`case` from `(dp, cc, attempt)` — `dp_i = (dp + attempt/2) % 4` and
+`cc_i = (cc + attempt/2 + attempt%2) % 2`, which is `attempt(dp, cc, index)` from
+`tessera` — resets `index` and `best`, and runs the same blocks. The one catch is
+the live count: the exit keeps `attempt`, `dp` and `cc` under the scan's six
+values, and `ring_by` finds the record's ring size from the *total* live count, so
+the scan's data roll must be told the total (nine). Every other depth in the scan
+is relative to the top and needs no change.
+
+After the scan, the winner's ring index is `row * row cells + column`; seek to it
+with the same one-cell advance loop, step once in `dp_i`, and read the neighbour's
+colour. A guard or black means the next attempt; white means the slide; anything
+else is the move, and its label and the attempt's `(dp_i, cc_i)` are the answer.
+The slide needs a bound instead of a visited set: its state is `(codel, dp)`, so
+more than `4 * cells` steps without reaching a colour is a retrace.
+
+Still to build, in the order each can be checked:
 
 - *The start state* is the block of ring index `stride/4 + 1`, one `stride` and
   one cell from cell zero; sliding through a white upper-left codel reuses the
-  slide below.
-- *The step, the fallback and the slide.* The next codel is `edge ± 4` or
-  `± stride`; its label and colour decide. A black or absent neighbour means the
-  next attempt; a white one means the slide walk, which moves along white cells
-  until a colour is reached and gives up on retracing the same `(codel, dp)`. The
-  eight attempts are `attempt(dp, cc, index)` from `tessera`; since the edge
-  stage already selects one, the fallback is eight calls to it.
+  slide above.
 - *The command* is the colour transition between the two blocks, and the dispatch,
   the value stack and the handlers are exactly what `walker.rs` already runs. The
   end state is therefore: partition, compute `exit`, append the record the walker
