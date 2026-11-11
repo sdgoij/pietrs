@@ -63,4 +63,4 @@ pub use grid::{block_edge, exit_state, splitter, start_state, step_state};
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
-pub use walker::{COMMAND_DEPTH, RECORD, graph_walker, skeleton, walker};
+pub use walker::{COMMAND_DEPTH, RECORD, graph_walker, record_code, skeleton, walker};

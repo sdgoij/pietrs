@@ -89,7 +89,10 @@
 //! from the attempt and the query, and each attempt starts with the ring back at
 //! cell zero because the scan's coordinates are the loop index. The slide steps
 //! and turns the case in place, bounded by `4 * cells` turns, which is the
-//! retrace the host detects with a visited set.
+//! retrace the host detects with a visited set. A direct move also reports the
+//! walker's record code for the colour transition — the hue and lightness deltas
+//! of the two blocks, with `pointer` and `switch` in their walker codes — and a
+//! slide reports `nop` (16), because a slide runs no command.
 //!
 //! # The start stage
 //!
@@ -157,6 +160,8 @@ const EXIT_SLIDE: u32 = 51;
 const EXIT_ZERO: u32 = 65;
 const EXIT_ZERO_ADVANCE: u32 = 66;
 const EXIT_EDGE_COLOUR: u32 = 67;
+const EXIT_SOURCE_COLOUR: u32 = 68;
+const EXIT_SLIDE_MOVE: u32 = 69;
 const EXIT_TERMINATE: u32 = 49;
 const EXIT_CONTINUE: u32 = 50;
 
@@ -210,7 +215,8 @@ pub fn step_state(
 ///
 /// The eight attempts are tried in `tessera`'s order, and a white neighbour is
 /// slid along until a colour is reached. The image prints the move — the target
-/// block's label and the attempt's `(dp, cc)` — or `-1` when every attempt
+/// block's label, the attempt's `(dp, cc)`, and the walker's record code for the
+/// colour transition (16, `nop`, after a slide) — or `-1` when every attempt
 /// fails, when the slide retraces itself, or when the block is not chromatic.
 pub fn exit_state(
     grid: &CodelGrid,
@@ -499,7 +505,7 @@ fn exit_blocks() -> Vec<Block> {
     all.extend(slide_blocks(
         &slide_ids(EXIT_SLIDE),
         9,
-        EXIT_MOVE,
+        EXIT_SLIDE_MOVE,
         EXIT_TERMINATE,
     ));
     // The scan's coordinates are the loop index, so every attempt starts with
@@ -526,8 +532,34 @@ fn exit_blocks() -> Vec<Block> {
         ],
         End::If {
             then: EXIT_TERMINATE,
-            otherwise: EXIT_SEEK_SETUP + 3,
+            otherwise: EXIT_SOURCE_COLOUR,
         },
+    ));
+    // Keep the source colour in the dead `best` slot: the move prints its
+    // command from the source and the target's colours.
+    all.push(Block::new(
+        vec![
+            Node::DupLocal(12),
+            Node::Roll(3, 1),
+            Node::Roll(4, 3),
+            Node::Command(Command::Pop),
+        ],
+        End::Jump(EXIT_SEEK_SETUP + 3),
+    ));
+    // A slide runs no command, so its move prints `nop` rather than a
+    // transition.
+    all.push(Block::new(
+        {
+            let mut nodes = bare_move_nodes(9);
+            nodes.extend([
+                Node::Const(32),
+                Node::Command(Command::OutChar),
+                Node::Const(16),
+                Node::Command(Command::OutNumber),
+            ]);
+            nodes
+        },
+        End::Halt,
     ));
     all
 }
@@ -568,7 +600,7 @@ fn start_blocks() -> Vec<Block> {
         START_MOVE,
         START_TERMINATE,
     ));
-    all.push(Block::new(move_nodes(9), End::Halt));
+    all.push(Block::new(bare_move_nodes(9), End::Halt));
     all
 }
 
@@ -867,7 +899,7 @@ fn step_program() -> Result<Program, Error> {
         STP_WHITE,
         STP_SEEK_SETUP + 3,
     ));
-    all.push(Block::new(move_nodes(6), End::Halt));
+    all.push(Block::new(bare_move_nodes(6), End::Halt));
     all.push(Block::new(
         vec![Node::Const(-1), Node::Command(Command::OutNumber)],
         End::Halt,
@@ -1103,7 +1135,35 @@ fn colour_is(depth: u32, code: u32) -> Vec<Node> {
 }
 
 /// Print the move: the neighbour's label, then the attempt's `(dp, cc)`.
+/// Print the move: the neighbour's label, the attempt's `(dp, cc)`, and the
+/// walker's record code for the colour transition from the source block.
 fn move_nodes(live: u32) -> Vec<Node> {
+    let mut nodes = vec![
+        Node::DupLocal(live + 1),
+        Node::Command(Command::OutNumber),
+        Node::Const(32),
+        Node::Command(Command::OutChar),
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Divide),
+        Node::Command(Command::OutNumber),
+        Node::Const(32),
+        Node::Command(Command::OutChar),
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        Node::Command(Command::OutNumber),
+        Node::Const(32),
+        Node::Command(Command::OutChar),
+    ];
+    nodes.extend(command_nodes(live));
+    nodes.push(Node::Command(Command::OutNumber));
+    nodes
+}
+
+/// The start's move and the step stage's success: the same three fields, but no
+/// command, because neither the start state nor a single attempt has one.
+fn bare_move_nodes(live: u32) -> Vec<Node> {
     vec![
         Node::DupLocal(live + 1),
         Node::Command(Command::OutNumber),
@@ -1119,6 +1179,77 @@ fn move_nodes(live: u32) -> Vec<Node> {
         Node::Const(2),
         Node::Command(Command::Modulo),
         Node::Command(Command::OutNumber),
+    ]
+}
+
+/// The walker's record code for the colour transition from the source block to
+/// the target.
+///
+/// On entry the source colour is at depth two — the `best` slot, dead once the
+/// seek has run — and the target's at `live + 2`, the ring head's colour. The
+/// code is left on top.
+///
+/// The transition is the hue and lightness deltas, `hue * 3 + lightness`;
+/// `tessera`'s table maps that to a command, and the walker's record code is
+/// `e` from one to nine, `17` and `18` for `pointer` and `switch`, `e - 2` above
+/// them, and `16` (`nop`) when the transition runs nothing.
+fn command_nodes(live: u32) -> Vec<Node> {
+    vec![
+        // source and target
+        Node::DupLocal(2),
+        Node::DupLocal(live + 3),
+        // hue = (target / 3 + 6 - source / 3) % 6
+        Node::DupLocal(1),
+        Node::Const(3),
+        Node::Command(Command::Divide),
+        Node::Const(6),
+        Node::Command(Command::Add),
+        Node::DupLocal(3),
+        Node::Const(3),
+        Node::Command(Command::Divide),
+        Node::Command(Command::Subtract),
+        Node::Const(6),
+        Node::Command(Command::Modulo),
+        // lightness = (target % 3 + 3 - source % 3) % 3
+        Node::DupLocal(2),
+        Node::Const(3),
+        Node::Command(Command::Modulo),
+        Node::Const(3),
+        Node::Command(Command::Add),
+        Node::DupLocal(4),
+        Node::Const(3),
+        Node::Command(Command::Modulo),
+        Node::Command(Command::Subtract),
+        Node::Const(3),
+        Node::Command(Command::Modulo),
+        // e = 3 * hue + lightness
+        Node::Swap,
+        Node::Const(3),
+        Node::Command(Command::Multiply),
+        Node::Command(Command::Add),
+        // code = e + 7 * (e / 10) * (e / 12 == 0) - 2 * (e / 12) + 16 * (e == 0)
+        Node::DupLocal(1),
+        Node::Command(Command::Not),
+        Node::Const(16),
+        Node::Command(Command::Multiply),
+        Node::DupLocal(2),
+        Node::Const(10),
+        Node::Command(Command::Divide),
+        Node::DupLocal(3),
+        Node::Const(12),
+        Node::Command(Command::Divide),
+        Node::Command(Command::Not),
+        Node::Command(Command::Multiply),
+        Node::Const(7),
+        Node::Command(Command::Multiply),
+        Node::DupLocal(3),
+        Node::Const(12),
+        Node::Command(Command::Divide),
+        Node::Const(-2),
+        Node::Command(Command::Multiply),
+        Node::Command(Command::Add),
+        Node::Command(Command::Add),
+        Node::Command(Command::Add),
     ]
 }
 
@@ -1759,7 +1890,7 @@ mod tests {
             STP_WHITE,
             STP_SEEK_SETUP + 3,
         ));
-        all.push(Block::new(move_nodes(6), End::Halt));
+        all.push(Block::new(bare_move_nodes(6), End::Halt));
         all.push(Block::new(
             vec![Node::Const(-1), Node::Command(Command::OutNumber)],
             End::Halt,
@@ -1859,10 +1990,11 @@ mod tests {
             .min()
             .unwrap();
 
-        // The query is dp, cc, then the label.
+        // The query is dp, cc, then the label. Red to green is two hues on
+        // (code six), the walker's `divide`.
         let stream = format!("{} 0 0 {}", stream_of(&grid).unwrap(), label);
         let output = execute(&exit_blocks_for_test(), &numbers(&stream), 40_000_000);
-        assert_eq!(output, "6 0 0");
+        assert_eq!(output, "6 0 0 6");
     }
 
     #[test]
@@ -1915,11 +2047,12 @@ mod tests {
 
     #[test]
     fn the_exit_program_slides_to_the_first_colour() {
+        // A slide runs no command, so the fourth field is `nop`.
         let grid = grid(&["r...b"]);
         let blocks = canvas::Blocks::partition(grid.clone());
         let red = blocks.block_id_at(Point::new(0, 0)).unwrap();
         let blue = blocks.block_id_at(Point::new(4, 0)).unwrap();
-        let expected = format!("{} 0 0", label_of(&grid, blue).unwrap());
+        let expected = format!("{} 0 0 16", label_of(&grid, blue).unwrap());
         assert_eq!(
             exit_vm(&grid, red, Direction::Right, Chooser::Left),
             expected
@@ -1942,7 +2075,7 @@ mod tests {
         let blocks = canvas::Blocks::partition(grid.clone());
         let red = blocks.block_id_at(Point::new(0, 0)).unwrap();
         let expected = format!(
-            "{} {} {}",
+            "{} {} {} 16",
             label_of(&grid, red).unwrap(),
             Direction::Left as u32,
             Chooser::Left as u32

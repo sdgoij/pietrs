@@ -331,12 +331,7 @@ pub fn graph_walker(
             // A state with no successor halts, running no command.
             continue;
         };
-        let code = match first.command {
-            None => NOP,
-            Some(Command::Pointer) => POINTER,
-            Some(Command::Switch) => SWITCH,
-            Some(command) => u32::from(code_of(command).ok_or(Error::NoHandler { command })?),
-        };
+        let code = record_code(first.command);
         let size = blocks
             .block(state.block)
             .map_or(0, |block| block.size() as i64);
@@ -843,6 +838,19 @@ fn lift_two() -> Vec<Node> {
 ///
 /// `pointer` and `switch` have no opcode: a straight-line program cannot run
 /// them, and the graph builder gives them codes of its own.
+/// The record code for a state's command.
+///
+/// `nop` when the transition runs no command, and the branch codes for
+/// `pointer` and `switch`; every other command is its opcode.
+pub fn record_code(command: Option<Command>) -> u32 {
+    match command {
+        None => NOP,
+        Some(Command::Pointer) => POINTER,
+        Some(Command::Switch) => SWITCH,
+        Some(command) => code_of(command).map_or(NOP, u32::from),
+    }
+}
+
 fn code_of(command: Command) -> Option<u8> {
     opcode(command)
 }

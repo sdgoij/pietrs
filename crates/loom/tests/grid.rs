@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
-use loom::{block_edge, exit_state, splitter, start_state, step_state};
+use loom::{block_edge, exit_state, record_code, splitter, start_state, step_state};
 use runtime::BufferIo;
 use tessera::{Chooser, Direction};
 
@@ -39,6 +39,7 @@ fn grid(rows: &[&str]) -> CodelGrid {
                 'g' => Color::chromatic(Hue::Green, Lightness::Normal),
                 'd' => Color::chromatic(Hue::Cyan, Lightness::Dark),
                 'l' => Color::chromatic(Hue::Cyan, Lightness::Light),
+                'k' => Color::chromatic(Hue::Red, Lightness::Dark),
                 'b' => Color::chromatic(Hue::Blue, Lightness::Normal),
                 other => panic!("unknown cell {other:?}"),
             });
@@ -310,10 +311,16 @@ fn check_exits(rows: &[&str], blocks_to_check: Option<usize>) {
 
                 let expected = match tessera::exit(&blocks, block.id(), dp, cc) {
                     tessera::Exit::Terminate => vec![-1],
-                    tessera::Exit::Move { target, dp, cc, .. } => vec![
+                    tessera::Exit::Move {
+                        target,
+                        dp,
+                        cc,
+                        command,
+                    } => vec![
                         i64::from(label(target)),
                         i64::from(dp as u32),
                         i64::from(cc as u32),
+                        i64::from(record_code(command)),
                     ],
                 };
                 let what = format!("{rows:?} block {} {dp:?} {cc:?}", block.id().0);
@@ -326,6 +333,14 @@ fn check_exits(rows: &[&str], blocks_to_check: Option<usize>) {
 #[test]
 fn the_exit_matches_tessera() {
     check_exits(&["rrgg"], Some(1));
+}
+
+#[test]
+fn the_exit_reports_pointer_and_switch() {
+    // Red normal to cyan dark is hue +3, lightness +1: `pointer` (17).
+    check_exits(&["rd"], Some(1));
+    // Cyan light to red dark is hue +3, lightness +2: `switch` (18).
+    check_exits(&["lk"], Some(1));
 }
 
 #[test]
@@ -345,6 +360,8 @@ fn the_exit_matches_tessera_everywhere() {
     check_exits(&["r...b"], None);
     check_exits(&["r.", "#."], None);
     check_exits(&["r..", "#.#", ".b."], None);
+    check_exits(&["rd"], None);
+    check_exits(&["lk"], None);
     check_exits(&["rgggr", "rg.gd", "rg.gg", "rrrrd"], None);
 }
 

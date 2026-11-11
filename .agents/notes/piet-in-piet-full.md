@@ -588,12 +588,14 @@ in release: the eight-attempt fallback, the slide to a colour, the slide that
 retraces, the slide that restarts from its current codel, and non-chromatic
 blocks.
 
-Still to build, in the order each can be checked:
-
-- *The command* is the colour transition between the two blocks, and the dispatch,
-  the value stack and the handlers are exactly what `walker.rs` already runs. The
-  end state is therefore: partition, compute `exit`, append the record the walker
-  would have been given, and hand over — no host-side tessellation at all.
+**The command is built too.** `exit_state` prints a fourth field: the walker's
+record code for the colour transition. The source block's colour is stashed in
+the dead `best` slot before the step, and the target's is the ring head's colour
+after it, so the exit computes the hue and lightness deltas and maps
+`hue * 3 + lightness` to the walker's codes — 1 to 15, 17 and 18 for `pointer`
+and `switch`, and 16 (`nop`) when the transition runs nothing. A slide's move is
+not a transition, so it has its own move block and prints 16; that is the
+interpreter's semantics, not an image shortcut.
 
 The **start state is built** (`loom::start_state`). The partition ends with the
 ring at cell zero, so the upper-left codel is one row down and one cell right:
@@ -630,8 +632,8 @@ What is left is not capability but cost, and it is worth saying which is which.
   the graph decides its reads at run time and the stream has to be unambiguous.
   That is an interface wart, not a semantic one.
 
-S4 is nearly built: the partition, the edge codel, the step, the eight-attempt
-fallback, the white slide and the start state are in the image and agree with
-`canvas::Blocks` and `tessera` on every fixture. The colour transition is the
-last piece before the walker can be handed a record with no host-side
-tessellation.
+S4 is built: the partition, the edge codel, the step, the eight-attempt
+fallback, the white slide, the start state and the colour transition are in the
+image and agree with `canvas::Blocks` and `tessera` on every fixture. What
+remains for the hand-over is the record around the move — the block size and the
+offset — and the walker's own dispatch.
