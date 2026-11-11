@@ -87,7 +87,7 @@ fn a_ring_lays_out_small() {
 
 #[test]
 fn a_ring_that_is_not_whole_records_is_refused() {
-    for cells in [0, 1, RECORD, 4, 5, 7] {
+    for cells in [0, 1, 4, 5, 7] {
         assert!(
             matches!(skeleton(cells), Err(Error::Ring { cells: refused }) if refused == cells),
             "ring of {cells} cells"

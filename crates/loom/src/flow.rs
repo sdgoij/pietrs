@@ -68,6 +68,11 @@ pub enum Node {
 pub enum End {
     /// Push the target's id and dispatch to it.
     Jump(u32),
+    /// The block has already left the successor id on the stack; dispatch to it.
+    ///
+    /// This is what lets one block serve many successors: a handler table laid
+    /// out contiguously can be selected arithmetically from the command code.
+    Computed,
     /// Pop a condition and dispatch to `then` when it is non-zero.
     If { then: u32, otherwise: u32 },
     /// Push an id no block has, which falls through the dispatcher and stops.
@@ -124,6 +129,7 @@ impl Program {
         for block in &self.blocks {
             match block.end {
                 End::Jump(id) => check(id)?,
+                End::Computed => {}
                 End::If { then, otherwise } => {
                     check(then)?;
                     check(otherwise)?;
@@ -385,6 +391,7 @@ fn node_commands(node: Node, commands: &mut Vec<Command>) {
 fn end_commands(end: End, commands: &mut Vec<Command>) {
     match end {
         End::Jump(id) => commands.extend(constant(i64::from(id))),
+        End::Computed => {}
         End::Halt => commands.extend(constant(0)),
         End::If { then, otherwise } => {
             // m is one when the condition is non-zero. The difference is always

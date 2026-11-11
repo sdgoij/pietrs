@@ -223,6 +223,53 @@ it cannot tell a misaligned offset from an aligned one. Both are the handlers'
 problem. The image is 57 x 52, and it does not grow with the number of records:
 the ring is data, not geometry.
 
+**The handlers are built and tested** (`walker(&instructions)`, same file and
+`crates/loom/tests/handlers.rs`). It weaves the fixed image and returns the
+stream that loads the ring. Twelve of the fifteen commands have handlers: push,
+pop, the arithmetic set including divide and modulo (the image's own runtime
+supplies the floored semantics), not, greater, duplicate, out number and out
+char. `roll`, `in number` and `in char` are refused when the ring is built with
+`Error::NoHandler` — the first because it needs a dynamic rotation of the
+*values*, the other two because the interpreted program's input is not carried
+after the ring yet.
+
+The memory model is the one pinned above, made concrete: the values sit *below*
+the ring, so the head's fields stay at fixed depths and every value access is a
+rotation of the ring past the values — `roll(N+1,1)` to insert, `roll(N+1,N)` to
+bring one value up, `roll(N+2,N)` to bring two up in their original order, and
+`roll(N+2,2)` after a `dup` to put both copies back. Every amount is a multiple
+of the record width, so the head stays on a record boundary. A handler is then
+one block, and the command code indexes the handler table arithmetically
+(`next = 7 + code`), which needed one addition to the structured backend: a block
+that leaves a *computed* successor instead of a literal one (`End::Computed`).
+
+Checkpoints, all against `interp`:
+
+- a push/out char pair prints `A`, and the pair really is `push 65`;
+- subtract reads its operands in Piet order: `10 4 -` is 6, `4 10 -` is -6;
+- `((2+3)*4)/2` prints 10, so values survive a chain of handlers;
+- `dup` leaves exactly one extra copy: two prints of 7, and `dup add` on 7 is 14;
+- `pop` drops only the top value;
+- an empty program halts;
+- the canonical *Hello world!*'s own instruction stream runs from a ring with
+  identical output.
+
+Non-vacuity: making the binary access bring up one value instead of two fails
+three cases, and reading the block size one cell too deep (the offset) fails six,
+including *Hello world!*.
+
+Cost: the walker is 137 x 56 for a two-record ring and 137 x 93 for a
+sixty-five-record one. The width is the dispatch table and does not move with the
+program; the height moves only because a constant for a bigger ring takes more
+cells to build.
+
+The known divergence, and the next piece: **underflow**. The runtime ignores a
+`roll` deeper than the stack, so a handler that reaches for a value which is not
+there silently pops a ring cell, where `interp` ignores the underflowing command.
+The fix is a fourth record cell holding the value depth — the head's cells are at
+fixed depths, so poking and testing it are cheap rolls — and a guard in front of
+each access.
+
 ### S4. Interpret the grid (optional)
 
 Move the partition and the movement rules into the image, so the host only hands
@@ -236,18 +283,21 @@ program.
 
 ## Recommendation
 
-S1 and S2 landed: the image follows a program's own control flow, branches
-included, with the trace gone. S3's control path landed too — a fixed image can
-now read a program from its input and follow its records — but it runs no
-handlers yet, so it reports a program rather than executing it.
+S1, S2 and the walker's read-execute-jump loop all landed. The image now follows
+a program held in its input, runs twelve of the fifteen commands on a value
+stack below the ring, and matches `interp` on the canonical *Hello world!* from a
+fixed 137-column image.
 
-The remaining gap is still the walker's second half: the per-command handlers
-and the value stack they need. This is where the design has an open question,
-not just unwritten code: a `roll` always starts at the top of the stack, so a
-program ring on top and a mutable value stack below cannot both be cheap to
-reach. The candidates are a second value-shaped ring above the program ring, or
-accepting two rolls per value access. Either way the memory model (ring on top,
-fixed-depth temporaries below) and the hardest mechanism — a computed-depth roll
-— are already built and tested.
+The remaining gaps, in order of size:
+
+- **Underflow** is a divergence, not a missing feature: an access from an empty
+  value stack pops a ring cell instead of being ignored. A depth cell in the
+  record fixes it.
+- **`roll`** needs a dynamic rotation of the values, which means rotating the
+  ring out of the way and back; it is the last of the fifteen.
+- **Input** needs the interpreted program's stream carried after the ring, and a
+  `in char` encoding that does not collide with the numbers.
+- **Scale** is then a matter of putting a real program's graph into records, with
+  offsets that are multiples of three, and measuring against *Piet's Quest*.
 
 S4 is a separate, optional build and should be decided on its own.

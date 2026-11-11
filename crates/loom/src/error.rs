@@ -49,6 +49,9 @@ pub enum Error {
     #[error("the interpreted program needs input the stream does not carry")]
     InputExhausted,
 
+    #[error("the walker has no handler for {command:?}")]
+    NoHandler { command: Command },
+
     #[error("a ring of {cells} cells is not a whole number of records")]
     Ring { cells: u32 },
 
