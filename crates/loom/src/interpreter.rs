@@ -89,12 +89,18 @@ pub fn interpreter() -> Result<CodelGrid, Error> {
     Err(Error::NoLayout)
 }
 
-/// The command that runs an opcode. Every opcode runs itself except `push`,
-/// whose operand is the block size the interpreter reads from its input.
-const fn handler(opcode: Command) -> Command {
+/// The commands that run an opcode, after the lane has popped the zero the
+/// test left behind.
+///
+/// Every opcode runs itself except two. `push` reads its operand from the
+/// input. `in char` skips the separator the encoder writes before a character,
+/// so a character that is also a digit cannot be mistaken for part of the
+/// opcode before it.
+fn handler(opcode: Command, commands: &mut Vec<Command>) {
     match opcode {
-        Command::Push => Command::InNumber,
-        other => other,
+        Command::Push => commands.push(Command::InNumber),
+        Command::InChar => commands.extend([Command::InChar, Command::Pop, Command::InChar]),
+        other => commands.push(other),
     }
 }
 
@@ -155,15 +161,25 @@ fn build(start: Shade, lane: Shade, lane_row: u32) -> Result<CodelGrid, Error> {
         let column = lane_x(test);
         let pointer = shades[(column - 1) as usize];
         let first = pointer.advance(Command::Pop);
-        let second = first.advance(handler(*opcode));
-        let filler = neutral_filler(second, above_lane, (lane_row - 3) as usize)?;
+
+        let mut body = Vec::new();
+        handler(*opcode, &mut body);
+        let body_len = body.len() as u32;
+        // One codel for the residual pop, then the handler.
+        if lane_row < body_len + 2 {
+            return Err(Error::NoLayout);
+        }
 
         canvas.put(column, 1, first.color())?;
-        canvas.put(column, 2, second.color())?;
-        let mut shade = second;
+        let mut shade = first;
+        for (offset, command) in body.iter().enumerate() {
+            shade = shade.advance(*command);
+            canvas.put(column, 2 + offset as u32, shade.color())?;
+        }
+        let filler = neutral_filler(shade, above_lane, (lane_row - 2 - body_len) as usize)?;
         for (offset, command) in filler.iter().enumerate() {
             shade = shade.advance(*command);
-            canvas.put(column, 3 + offset as u32, shade.color())?;
+            canvas.put(column, 2 + body_len + offset as u32, shade.color())?;
         }
     }
 

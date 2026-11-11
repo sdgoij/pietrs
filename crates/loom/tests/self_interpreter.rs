@@ -4,7 +4,7 @@
 
 use canvas::{Blocks, CodelGrid};
 use interp::{ExitReason, Options, Run};
-use loom::{Instruction, encode, instructions, interpreter, linear_program};
+use loom::{Instruction, assemble, encode, instructions, interpreter, linear_program};
 use runtime::BufferIo;
 use tessera::Command;
 
@@ -136,8 +136,93 @@ fn the_interpreter_passes_its_input_through() {
 }
 
 #[test]
+fn the_interpreter_reads_a_digit_character() {
+    // in char; out char, and the character is a digit that could be mistaken
+    // for part of the opcode
+    let program = [
+        Instruction {
+            command: Command::InChar,
+            block_size: 1,
+        },
+        Instruction {
+            command: Command::OutChar,
+            block_size: 1,
+        },
+    ];
+    let stream = encode(&program, "7").unwrap();
+    let (output, _) = run(&interpreter().unwrap(), &stream);
+    assert_eq!(output, "7");
+}
+
+#[test]
 fn the_interpreter_ignores_an_underflowing_pop() {
     // pop; push 66; out char
     let (output, _) = run(&interpreter().unwrap(), "2 1 66 15 0");
     assert_eq!(output, "B");
+}
+
+/// A small deterministic generator, so the sweep is the same on every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+}
+
+/// Every opcode whose input is a number, so one stream of numbers feeds a
+/// whole program.
+const SWEEP: [Command; 14] = [
+    Command::Push,
+    Command::Pop,
+    Command::Add,
+    Command::Subtract,
+    Command::Multiply,
+    Command::Divide,
+    Command::Modulo,
+    Command::Not,
+    Command::Greater,
+    Command::Duplicate,
+    Command::Roll,
+    Command::InNumber,
+    Command::OutNumber,
+    Command::OutChar,
+];
+
+const SWEEP_INPUT: &str = "5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25";
+
+#[test]
+fn the_interpreter_agrees_with_the_reference_on_arbitrary_programs() {
+    let machine = interpreter().unwrap();
+    let mut rng = Rng(0x5eed_1234_abcd_0001);
+    for case in 0..48 {
+        let mut program = Vec::new();
+        for _ in 0..14 {
+            let command = SWEEP[(rng.next() % SWEEP.len() as u64) as usize];
+            let block_size = if command == Command::Push {
+                1 + rng.next() % 9
+            } else {
+                1
+            };
+            program.push(Instruction {
+                command,
+                block_size,
+            });
+        }
+
+        let image = assemble(&program).unwrap();
+        let (expected, direct) = run(&image, SWEEP_INPUT);
+        assert_eq!(direct.reason, ExitReason::Terminated);
+
+        let blocks = Blocks::partition(image);
+        let mut io = BufferIo::new("");
+        let trace = instructions(&blocks, &mut io, &bounded()).unwrap();
+        let stream = encode(&trace, SWEEP_INPUT).unwrap();
+        let (actual, interpreted) = run(&machine, &stream);
+        assert_eq!(actual, expected, "case {case}: {program:?}");
+        assert_eq!(interpreted.reason, ExitReason::Terminated);
+    }
 }

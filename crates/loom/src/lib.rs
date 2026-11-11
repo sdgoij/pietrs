@@ -4,9 +4,10 @@
 //! [`interpreter`] weaves an image that reads a program from its input and
 //! runs it. The interpreted program is Piet's straight-line fragment — the
 //! fifteen commands that leave the direction pointer alone — encoded as a
-//! stream of opcodes. [`linear_program`] builds a sample program in that
-//! fragment, and [`instructions`] reads a program's instruction sequence back
-//! out of its trace, so the two images can be checked against each other.
+//! stream of opcodes. [`assemble`] builds an image for any instruction
+//! sequence in that fragment, [`linear_program`] builds one that prints text,
+//! and [`instructions`] reads a program's instruction sequence back out of its
+//! trace, so the two images can be checked against each other.
 //!
 //! The interpreter image is generated rather than drawn: every command in Piet
 //! is a colour transition, so a program is a colour walk over a grid, and a
@@ -40,5 +41,5 @@ mod shade;
 
 pub use error::Error;
 pub use interpreter::interpreter;
-pub use linear::linear_program;
+pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};

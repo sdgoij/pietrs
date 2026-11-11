@@ -102,7 +102,9 @@ pub(crate) const fn delta(command: Command) -> (u8, u8) {
 /// `not` is unary and the arithmetic commands are binary, so the arithmetic
 /// macros push their own operands and discard the result. `roll` with a depth
 /// of one is an identity; `duplicate` copies the top and the trailing `pop`
-/// removes the copy. An empty stack makes every one of them a no-op.
+/// removes the copy. `roll` pops its two operands and pushes nothing, so
+/// pushing those two is enough to cancel it. An empty stack makes every one of
+/// them a no-op.
 const NEUTRAL: [&[Command]; 11] = [
     &[Command::Push, Command::Pop],
     &[Command::Duplicate, Command::Pop],
@@ -123,7 +125,7 @@ const NEUTRAL: [&[Command]; 11] = [
     &[Command::Push, Command::Push, Command::Divide, Command::Pop],
     &[Command::Push, Command::Push, Command::Modulo, Command::Pop],
     &[Command::Push, Command::Push, Command::Greater, Command::Pop],
-    &[Command::Push, Command::Push, Command::Roll, Command::Pop],
+    &[Command::Push, Command::Push, Command::Roll],
     &[
         Command::Push,
         Command::Not,
@@ -249,6 +251,21 @@ const fn all() -> [Shade; Shade::COUNT] {
 mod tests {
     use super::*;
 
+    /// How many values a command adds to the stack.
+    const fn net_effect(command: Command) -> i32 {
+        use Command::{
+            Add, Divide, Duplicate, Greater, InChar, InNumber, Modulo, Multiply, Not, OutChar,
+            OutNumber, Pointer, Pop, Push, Roll, Subtract, Switch,
+        };
+        match command {
+            Push | Duplicate | InNumber | InChar => 1,
+            Pop | OutNumber | OutChar | Pointer | Switch => -1,
+            Add | Subtract | Multiply | Divide | Modulo | Greater => -1,
+            Not => 0,
+            Roll => -2,
+        }
+    }
+
     #[test]
     fn every_command_is_an_invertible_translation() {
         for shade in Shade::ALL {
@@ -300,6 +317,27 @@ mod tests {
                 assert_eq!(tessera::command(from, to), Some(command));
             }
         }
+    }
+
+    #[test]
+    fn every_neutral_macro_has_no_stack_effect() {
+        for commands in NEUTRAL {
+            let effect = commands
+                .iter()
+                .map(|command| net_effect(*command))
+                .sum::<i32>();
+            assert_eq!(effect, 0, "{commands:?} changes the stack depth");
+        }
+        let short = ZERO_SHORT
+            .iter()
+            .map(|command| net_effect(*command))
+            .sum::<i32>();
+        let long = ZERO_LONG
+            .iter()
+            .map(|command| net_effect(*command))
+            .sum::<i32>();
+        assert_eq!(short, 0);
+        assert_eq!(long, 0);
     }
 
     #[test]

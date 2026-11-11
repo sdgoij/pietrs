@@ -29,9 +29,10 @@ number outside `1..=15`. A program is therefore a whitespace-separated stream:
 ```
 
 The stream *is* the interpreted program's input as well as its code, so the
-encoder inlines the program's own input at each `in number` or `in char`. One
-consequence: `in char` cannot read an ASCII digit, because the digit would join
-the opcode before it. `encode` reports that rather than mis-encoding it.
+encoder inlines the program's own input at each `in number` or `in char`. An
+`in char` writes a separator before the character and the handler reads the
+separator and throws it away, so a character that is also a digit cannot be
+mistaken for part of the opcode before it.
 
 ## Why the image is built, not drawn
 
@@ -69,10 +70,11 @@ S H [push][sub][dup][not][pointer] … [push][pointer]      row 0, the bus
 - Each test subtracts one from the opcode, duplicates, negates and runs
   `pointer`: a match turns the direction pointer down into that opcode's lane,
   no match walks on to the next test.
-- A lane's first transition pops the zero the test left behind, and its second
-  runs the opcode itself, so the interpreter's stack *is* the interpreted
-  stack. The interpreted `push` is the one exception: it runs `in number`, which
-  reads the block size from the stream.
+- A lane's first transition pops the zero the test left behind, and the rest
+  runs the opcode's handler, so the interpreter's stack *is* the interpreted
+  stack. A handler is a command sequence, not one command: `push` runs
+  `in number` to read its operand, `in char` runs `in char, pop, in char` to
+  discard the separator, and every other opcode runs itself.
 - The rest of the lane is neutral filler that walks to the colour the shared
   return path needs.
 - The return path is one wide block. Entering it runs one filler `push`, the
@@ -85,14 +87,16 @@ S H [push][sub][dup][not][pointer] … [push][pointer]      row 0, the bus
   ends of every edge, and the entry codel is in the middle, so the program
   terminates.
 
-## The sample program
+## The sample programs
 
-`linear_program(text)` builds a straight-line program that prints `text`. One
-character costs three blocks: a block of `code` codels, a one-codel block whose
-entry runs `push` (pushing the previous block's size, which is the character
-code), and a one-codel block whose entry runs `out char`. A launcher of three
-codels puts the upper-left codel in the start block while keeping the program
-row low enough for the terminator bar to reach above it.
+`assemble(instructions)` builds an image for any instruction sequence: one
+block per instruction, sized to its `push` operand, whose exit runs the
+instruction. A three-codel launcher exits with a `pop` that the empty start
+stack ignores, and a three-codel bar terminates the program.
+
+`linear_program(text)` is the same builder over instructions that print text.
+One character costs two instructions: `push` of the character code, then
+`out char`.
 
 ## Tests
 
@@ -100,15 +104,24 @@ row low enough for the terminator bar to reach above it.
 through `interp`, reads its trace back with `instructions`, encodes that trace,
 and runs the *interpreter image* on the encoding. The two outputs must agree,
 which checks the image against the reference semantics rather than against
-itself. Separate cases name every opcode the interpreter claims to run, the
-halt on an unknown opcode, and the input inlining.
+itself.
+
+A deterministic sweep does that for twenty-four pseudo-random programs over the
+whole opcode set, including arithmetic, `roll`, output and number input, and
+compares stdout for every one. Separate cases name every opcode the interpreter
+claims to run, the halt on an unknown opcode, and character input including a
+digit.
 
 ## Limits
 
 - Only the linear fragment. A program whose trace contains `pointer` or
   `switch` is refused, not mis-executed.
 - The interpreter does not model the interpreted program's direction pointer or
-  codel chooser, so it cannot run programs that use them to branch.
+  codel chooser, so it cannot run programs that use them to branch. Doing so
+  needs the interpreted program's block geometry and random access to it, and
+  the interpreter has one stack and no memory beyond it.
 - The interpreted stack is the interpreter's stack, so a program that overflows
   the runtime's stack overflows while being interpreted too.
-- `in char` cannot read an ASCII digit, as above.
+- A truncated stream is not a supported input: `in char` reads its separator
+  unconditionally, so a stream that ends at an `in char` leaves the interpreted
+  stack one value short.

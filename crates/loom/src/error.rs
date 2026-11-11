@@ -22,6 +22,9 @@ pub enum Error {
     #[error("a block cannot have zero codels")]
     EmptyBlock,
 
+    #[error("a push operand of {operand} does not fit in a block")]
+    BlockTooLarge { operand: u64 },
+
     #[error("no stack-neutral filler of {length} commands reaches the target colour")]
     NoFiller { length: usize },
 
@@ -33,9 +36,6 @@ pub enum Error {
 
     #[error("the interpreted program needs input the stream does not carry")]
     InputExhausted,
-
-    #[error("an in-char cannot read an ASCII digit: it would join the opcode")]
-    AmbiguousInput,
 
     #[error("no layout keeps every block separate")]
     NoLayout,

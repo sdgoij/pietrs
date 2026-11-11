@@ -100,11 +100,9 @@ pub fn encode(instructions: &[Instruction], input: &str) -> Result<String, Error
                 stream.push(' ');
             }
             Command::InChar => {
-                stream.push_str("13");
+                // A separator, so a digit is not swallowed by the opcode.
+                stream.push_str("13 ");
                 let character = feed.character().ok_or(Error::InputExhausted)?;
-                if character.is_ascii_digit() {
-                    return Err(Error::AmbiguousInput);
-                }
                 stream.push(character);
             }
             other => {
@@ -214,7 +212,7 @@ mod tests {
                 block_size: 1,
             },
         ];
-        assert_eq!(encode(&instructions, "A").expect("encodes"), "13A15 0");
+        assert_eq!(encode(&instructions, "A").expect("encodes"), "13 A15 0");
     }
 
     #[test]
@@ -230,15 +228,12 @@ mod tests {
     }
 
     #[test]
-    fn a_digit_cannot_be_read_as_a_character() {
+    fn a_digit_can_be_read_as_a_character() {
         let instructions = [Instruction {
             command: Command::InChar,
             block_size: 1,
         }];
-        assert!(matches!(
-            encode(&instructions, "7"),
-            Err(Error::AmbiguousInput)
-        ));
+        assert_eq!(encode(&instructions, "7").expect("encodes"), "13 70");
     }
 
     #[test]
