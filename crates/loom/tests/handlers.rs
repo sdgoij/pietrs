@@ -6,7 +6,7 @@
 
 use canvas::{Blocks, CodelGrid};
 use interp::{ExitReason, Options, Run};
-use loom::{Error, Instruction, instructions, walker};
+use loom::{Error, Instruction, assemble, instructions, walker};
 use runtime::BufferIo;
 use tessera::Command;
 
@@ -42,6 +42,12 @@ fn push(value: u64) -> Instruction {
         command: Command::Push,
         block_size: value,
     }
+}
+
+/// The reference path for a straight-line sequence: the same instructions as a
+/// real image, run by `interp` with its own runtime.
+fn straight_line(program: &[Instruction]) -> (String, Run) {
+    run(&assemble(program).unwrap(), "")
 }
 
 #[test]
@@ -162,6 +168,132 @@ fn the_walker_width_does_not_grow_with_the_program() {
     assert!(small.width() <= 256, "width {}", small.width());
     assert!(small.height() <= 192, "height {}", small.height());
     assert!(large.height() <= 192, "height {}", large.height());
+}
+
+#[test]
+fn an_underflowing_command_is_ignored() {
+    // Popping, duplicating, negating, outputting or combining an empty stack does
+    // nothing, so the program still prints A.
+    for command in [
+        Command::Pop,
+        Command::Duplicate,
+        Command::Not,
+        Command::OutNumber,
+        Command::OutChar,
+        Command::Add,
+        Command::Subtract,
+        Command::Greater,
+    ] {
+        let mut program = vec![step(command), step(command)];
+        program.extend([push(65), step(Command::OutChar)]);
+        let (output, result) = walk(&program);
+        assert_eq!(output, "A", "{command:?}");
+        assert_eq!(result.reason, ExitReason::Terminated, "{command:?}");
+        let (expected, _) = straight_line(&program);
+        assert_eq!(output, expected, "{command:?}");
+    }
+}
+
+#[test]
+fn a_zero_divisor_consumes_both_values() {
+    // 7 / 0 and 7 % 0 leave nothing behind, so the next push is the only value.
+    // The zero comes from 1 - 1: a Piet push cannot push zero.
+    for command in [Command::Divide, Command::Modulo] {
+        let program = [
+            push(7),
+            push(1),
+            push(1),
+            step(Command::Subtract),
+            step(command),
+            push(65),
+            step(Command::OutChar),
+        ];
+        let (output, _) = walk(&program);
+        assert_eq!(output, "A", "{command:?}");
+        let (expected, _) = straight_line(&program);
+        assert_eq!(output, expected, "{command:?}");
+    }
+}
+
+#[test]
+fn a_zero_divisor_leaves_the_depth_counter_exact() {
+    // After 7 / 0 the stack is empty, so the subtract needs two values it does
+    // not have and must be skipped: only the 9 is left to print. A counter that
+    // still said one would let the subtract read a ring cell.
+    for command in [Command::Divide, Command::Modulo] {
+        let program = [
+            push(7),
+            push(1),
+            push(1),
+            step(Command::Subtract),
+            step(command),
+            push(9),
+            step(Command::Subtract),
+            step(Command::OutNumber),
+        ];
+        let (output, _) = walk(&program);
+        assert_eq!(output, "9", "{command:?}");
+        let (expected, _) = straight_line(&program);
+        assert_eq!(output, expected, "{command:?}");
+    }
+}
+
+/// A deterministic generator, so a failure names a seed that reproduces it.
+struct XorShift(u64);
+
+impl XorShift {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+}
+
+fn random_program(seed: u64, length: usize) -> Vec<Instruction> {
+    // The output and push commands are repeated so the programs say something.
+    let commands = [
+        Command::Push,
+        Command::Push,
+        Command::OutNumber,
+        Command::OutChar,
+        Command::OutNumber,
+        Command::Add,
+        Command::Subtract,
+        Command::Multiply,
+        Command::Divide,
+        Command::Modulo,
+        Command::Not,
+        Command::Greater,
+        Command::Duplicate,
+        Command::Pop,
+    ];
+    let mut random = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    (0..length)
+        .map(|_| {
+            let command = commands[(random.next() % commands.len() as u64) as usize];
+            let block_size = if command == Command::Push {
+                random.next() % 9 + 1
+            } else {
+                1
+            };
+            Instruction {
+                command,
+                block_size,
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn the_walker_agrees_with_the_straight_line_reference() {
+    for seed in 0..32 {
+        let program = random_program(seed, 24);
+        let (expected, reference) = straight_line(&program);
+        let (actual, walked) = walk(&program);
+        assert_eq!(actual, expected, "seed {seed}: {program:?}");
+        assert_eq!(walked.reason, reference.reason, "seed {seed}");
+    }
 }
 
 #[test]

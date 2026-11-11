@@ -263,19 +263,49 @@ sixty-five-record one. The width is the dispatch table and does not move with th
 program; the height moves only because a constant for a bigger ring takes more
 cells to build.
 
-The known divergence, and the next piece: **underflow**. The runtime ignores a
-`roll` deeper than the stack, so a handler that reaches for a value which is not
-there silently pops a ring cell, where `interp` ignores the underflowing command.
+**Underflow is handled.** A command that needs more values than the stack holds
+is ignored, as `interp` has it; the runtime would ignore the over-deep roll
+instead, and the handler would then pop a ring cell. The fix is a depth counter.
 
-A depth counter has to live at a depth a jump does not change, and the obvious
-answer — a fourth cell in each record — does not work. The depth is global, so a
-jump would have to migrate it into the new head's cell, and that cell sits at the
-depth the record's *offset* names, which is data. The workable shape is a fixed
-register block between the values and the ring: the ring is rotated by whole
-records, so a block below it keeps its depth across jumps, and pushes land
-between the block and the ring. Reading the counter then costs two ring
-rotations, and poking it two more, which is the price of matching `interp` on
-underflow.
+A counter has to live at a depth a jump does not change, and the obvious answer —
+a fourth cell in each record — does not work. The depth is global, so a jump
+would have to migrate it into the new head's cell, and that cell sits at the
+depth the record's *offset* names, which is data. The shape that does work is a
+**fixed register block between the values and the ring**: the ring is rotated by
+whole records, so a block below it keeps its depth across jumps, and a push
+lands between the block and the ring. The stack is then
+
+```text
+  [ value 1 … value k | depth | head record ]
+```
+
+with the depth at `N+1` and the values below it, so reading the counter costs
+`roll(N+1,N)` and writing it two of those. Each handler is two blocks — a guard
+that tests the counter, then the body — and `push` is the only unguarded one.
+
+`divide` and `modulo` need one more branch. A zero divisor consumes both operands
+and pushes nothing, so the depth falls by two rather than one, and the handler
+has to know which happened before the operands are gone: it tests the divisor and
+the two paths differ only in the amount they subtract from the counter.
+
+Checkpoints, all against a reference:
+
+- every underflowing command (`pop`, `dup`, `not`, both outputs, both binary
+  forms) is ignored, and the program still prints `A`;
+- `7 / 0` and `7 % 0` consume both operands, and a following subtract that needs
+  two values is skipped — the counter is exact, not merely close;
+- 32 generated 24-instruction programs, each compared against the *same*
+  instruction sequence assembled into a real image and run by `interp`
+  (`assemble`, the straight-line backend). That is the differential case that
+  catches a counter drifting anywhere.
+
+Non-vacuity, each observed then reverted: removing the guard fails three cases;
+leaving binary operations' depth unchanged fails two, including a generated one;
+sending a zero divisor down the normal path fails the exactness case.
+
+Cost: 232 x 85 for a two-record ring and 232 x 157 for a sixty-five-record one.
+The width is 42 blocks of dispatch table and does not move with the program; the
+height moves only with the digits of the ring size.
 
 ### S4. Interpret the grid (optional)
 
@@ -292,14 +322,11 @@ program.
 
 S1, S2 and the walker's read-execute-jump loop all landed. The image now follows
 a program held in its input, runs twelve of the fifteen commands on a value
-stack below the ring, and matches `interp` on the canonical *Hello world!* from a
-fixed 137-column image.
+stack below the ring — underflow included — and matches `interp` on the
+canonical *Hello world!* from a fixed 232-column image.
 
 The remaining gaps, in order of size:
 
-- **Underflow** is a divergence, not a missing feature: an access from an empty
-  value stack pops a ring cell instead of being ignored. A depth cell in the
-  record fixes it.
 - **`roll`** needs a dynamic rotation of the values, which means rotating the
   ring out of the way and back; it is the last of the fifteen.
 - **Input** needs the interpreted program's stream carried after the ring, and a
