@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
-use loom::{block_edge, exit_state, splitter, step_state};
+use loom::{block_edge, exit_state, splitter, start_state, step_state};
 use runtime::BufferIo;
 use tessera::{Chooser, Direction};
 
@@ -346,6 +346,91 @@ fn the_exit_matches_tessera_everywhere() {
     check_exits(&["r.", "#."], None);
     check_exits(&["r..", "#.#", ".b."], None);
     check_exits(&["rgggr", "rg.gd", "rg.gg", "rrrrd"], None);
+}
+
+/// The start state of `rows`, against `tessera::start`.
+fn check_starts(rows: &[&str]) {
+    let grid = grid(rows);
+    let blocks = Blocks::partition(grid.clone());
+    let width = grid.width();
+    let label = |id: BlockId| {
+        blocks
+            .block(id)
+            .unwrap()
+            .codels()
+            .iter()
+            .map(|point| (point.y + 1) * (width + 2) + (point.x + 1))
+            .min()
+            .unwrap()
+    };
+
+    let (image, stream) = start_state(&grid).unwrap();
+    let (output, result) = run(&image, &stream, 40_000_000);
+    assert_eq!(result.reason, ExitReason::Terminated);
+    let found: Vec<i64> = output
+        .split_whitespace()
+        .map(|token| token.parse().unwrap())
+        .collect();
+
+    let expected = match tessera::start(&blocks) {
+        tessera::Start::Terminate => vec![-1],
+        tessera::Start::State(state) => vec![
+            i64::from(label(state.block)),
+            i64::from(state.dp as u32),
+            i64::from(state.cc as u32),
+        ],
+    };
+    assert_eq!(found, expected, "{rows:?}");
+}
+
+#[test]
+fn the_start_matches_tessera() {
+    check_starts(&["r"]);
+    check_starts(&["rg", "gg"]);
+    check_starts(&["#r"]);
+}
+
+#[test]
+fn the_start_slides_through_a_white_corner() {
+    check_starts(&["..b"]);
+    check_starts(&[".#", "r."]);
+    check_starts(&["r.", "#."]);
+}
+
+#[test]
+#[ignore = "a real image: cargo test -p loom --release --test grid -- --ignored"]
+fn the_canonical_hello_world_starts() {
+    let png = include_bytes!("../fixtures/hello-world/program.png");
+    let grid = CodelGrid::from_image(png).unwrap();
+    let blocks = Blocks::partition(grid.clone());
+    let width = grid.width();
+    let label = |id: BlockId| {
+        blocks
+            .block(id)
+            .unwrap()
+            .codels()
+            .iter()
+            .map(|point| (point.y + 1) * (width + 2) + (point.x + 1))
+            .min()
+            .unwrap()
+    };
+
+    let (image, stream) = start_state(&grid).unwrap();
+    let (output, result) = run(&image, &stream, 400_000_000);
+    assert_eq!(result.reason, ExitReason::Terminated);
+    let found: Vec<i64> = output
+        .split_whitespace()
+        .map(|token| token.parse().unwrap())
+        .collect();
+    let expected = match tessera::start(&blocks) {
+        tessera::Start::Terminate => vec![-1],
+        tessera::Start::State(state) => vec![
+            i64::from(label(state.block)),
+            i64::from(state.dp as u32),
+            i64::from(state.cc as u32),
+        ],
+    };
+    assert_eq!(found, expected);
 }
 
 #[test]

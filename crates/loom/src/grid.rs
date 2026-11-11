@@ -82,6 +82,22 @@
 //! cycle. The scan stops on the last cell it scored, so the step stage advances
 //! once more before seeking, which is what puts the index's origin at cell zero.
 //!
+//! # The exit stage
+//!
+//! [`exit_state`] wraps that step in the movement rules' eight attempts and the
+//! white slide. The attempts differ only in the `(dp, cc)` case, which is rebuilt
+//! from the attempt and the query, and each attempt starts with the ring back at
+//! cell zero because the scan's coordinates are the loop index. The slide steps
+//! and turns the case in place, bounded by `4 * cells` turns, which is the
+//! retrace the host detects with a visited set.
+//!
+//! # The start stage
+//!
+//! [`start_state`] needs no query at all: the upper-left codel is one row and one
+//! cell from cell zero, so `row cells + 1`. Black terminates, a chromatic codel is
+//! `(label, right, left)`, and white enters the same slide with `case` at right
+//! and left.
+//!
 //! # Input and output
 //!
 //! The stream is the number of ring cells, then every record highest index
@@ -137,17 +153,22 @@ const EXIT_SEEK_SETUP: u32 = 35;
 const EXIT_MOVE: u32 = 46;
 const EXIT_NEXT: u32 = 47;
 const EXIT_SLIDE_ENTRY: u32 = 48;
-const EXIT_SLIDE_DISPATCH: u32 = 51;
-const EXIT_SLIDE_STEP: u32 = 52;
-const EXIT_SLIDE_CHECK: u32 = 56;
-const EXIT_SLIDE_TURN_DISPATCH: u32 = 59;
-const EXIT_SLIDE_UNDO: u32 = 60;
-const EXIT_SLIDE_TURN: u32 = 64;
+const EXIT_SLIDE: u32 = 51;
 const EXIT_ZERO: u32 = 65;
 const EXIT_ZERO_ADVANCE: u32 = 66;
 const EXIT_EDGE_COLOUR: u32 = 67;
 const EXIT_TERMINATE: u32 = 49;
 const EXIT_CONTINUE: u32 = 50;
+
+/// The start stage's blocks.
+const START_SETUP: u32 = 13;
+const START_BLACK: u32 = 14;
+const START_WHITE: u32 = 15;
+const START_SLIDE_SETUP: u32 = 16;
+const START_TERMINATE: u32 = 17;
+const START_PRINT: u32 = 18;
+const START_SLIDE: u32 = 19;
+const START_MOVE: u32 = 33;
 
 /// The step stage's blocks: the same scan, then a decode, a seek, a roll and a
 /// colour decision.
@@ -167,7 +188,7 @@ const STP_WHITE: u32 = 48;
 /// and the neighbour it lands on. The image prints the move's target label and
 /// the attempt's `(dp, cc)` when the neighbour is chromatic, `-1` when it is off
 /// the grid or black (the caller would try the next attempt), and `-2` when it is
-/// white (the case that slides, which is not built yet).
+/// white (the case the exit stage slides through).
 pub fn step_state(
     grid: &CodelGrid,
     block: BlockId,
@@ -206,6 +227,17 @@ pub fn exit_state(
         label_of(grid, block)?
     ));
     Ok((exit_program()?.image()?, stream))
+}
+
+/// A splitter image that resolves the program's start state, and the stream that
+/// carries the grid to it.
+///
+/// The upper-left codel decides: black terminates, a chromatic codel is the
+/// state `(label, right, left)`, and white slides from that codel with the same
+/// rules the exit stage uses. The image prints the state's label and `(dp, cc)`,
+/// or `-1`.
+pub fn start_state(grid: &CodelGrid) -> Result<(CodelGrid, String), Error> {
+    Ok((start_program()?.image()?, stream_of(grid)?))
 }
 
 /// The block's label: the lowest ring position among its codels.
@@ -450,7 +482,7 @@ fn exit_blocks() -> Vec<Block> {
     // The white branch starts the slide with no turns taken.
     all.push(Block::new(
         vec![Node::Command(Command::Pop), Node::Const(0)],
-        End::Jump(EXIT_SLIDE_DISPATCH),
+        End::Jump(EXIT_SLIDE),
     ));
     all.push(Block::new(
         vec![Node::Const(-1), Node::Command(Command::OutNumber)],
@@ -464,50 +496,11 @@ fn exit_blocks() -> Vec<Block> {
         },
         End::Jump(EXIT_ZERO),
     ));
-    // The slide: step, look at what was hit, and turn when refused.
-    all.push(Block::new(slide_dispatch(EXIT_SLIDE_STEP), End::Computed));
-    for dp in 0..4 {
-        all.push(Block::new(step_roll(dp, 9), End::Jump(EXIT_SLIDE_CHECK)));
-    }
-    all.push(Block::new(
-        vec![
-            Node::DupLocal(11),
-            Node::Const(i64::from(GUARD_CODE) - 1),
-            Node::Command(Command::Greater),
-        ],
-        End::If {
-            then: EXIT_SLIDE_TURN_DISPATCH,
-            otherwise: EXIT_SLIDE_CHECK + 1,
-        },
-    ));
-    all.push(Block::new(
-        colour_is(11, BLACK_CODE),
-        End::If {
-            then: EXIT_SLIDE_TURN_DISPATCH,
-            otherwise: EXIT_SLIDE_CHECK + 2,
-        },
-    ));
-    all.push(Block::new(
-        colour_is(11, WHITE_CODE),
-        End::If {
-            then: EXIT_SLIDE_DISPATCH,
-            otherwise: EXIT_MOVE,
-        },
-    ));
-    // A guard or black: step back, then turn.
-    all.push(Block::new(slide_dispatch(EXIT_SLIDE_UNDO), End::Computed));
-    for dp in 0..4 {
-        all.push(Block::new(
-            step_roll((dp + 2) % 4, 9),
-            End::Jump(EXIT_SLIDE_TURN),
-        ));
-    }
-    all.push(Block::new(
-        slide_turn(),
-        End::If {
-            then: EXIT_TERMINATE,
-            otherwise: EXIT_SLIDE_DISPATCH,
-        },
+    all.extend(slide_blocks(
+        &slide_ids(EXIT_SLIDE),
+        9,
+        EXIT_MOVE,
+        EXIT_TERMINATE,
     ));
     // The scan's coordinates are the loop index, so every attempt starts with
     // the ring back at cell zero. Cell zero is the only record whose label is
@@ -537,6 +530,126 @@ fn exit_blocks() -> Vec<Block> {
         },
     ));
     all
+}
+
+/// The splitter image, extended with the start state.
+fn start_program() -> Result<Program, Error> {
+    Program::new(start_blocks(), ENTRY)
+}
+
+/// The start program's blocks, as `start_program` assembles them.
+fn start_blocks() -> Vec<Block> {
+    let mut all = blocks();
+    all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(START_SETUP));
+    all.push(Block::new(start_setup(), End::Jump(START_BLACK)));
+    all.push(Block::new(
+        colour_is(2, BLACK_CODE),
+        End::If {
+            then: START_TERMINATE,
+            otherwise: START_WHITE,
+        },
+    ));
+    all.push(Block::new(
+        colour_is(2, WHITE_CODE),
+        End::If {
+            then: START_SLIDE_SETUP,
+            otherwise: START_PRINT,
+        },
+    ));
+    all.push(Block::new(start_slide_setup(), End::Jump(START_SLIDE)));
+    all.push(Block::new(
+        vec![Node::Const(-1), Node::Command(Command::OutNumber)],
+        End::Halt,
+    ));
+    all.push(Block::new(start_print(), End::Halt));
+    all.extend(slide_blocks(
+        &slide_ids(START_SLIDE),
+        9,
+        START_MOVE,
+        START_TERMINATE,
+    ));
+    all.push(Block::new(move_nodes(9), End::Halt));
+    all
+}
+
+/// The entry points of a slide's fourteen blocks.
+struct Slide {
+    /// Step in the case's direction.
+    dispatch: u32,
+    /// The four step blocks, `step + dp`.
+    step: u32,
+    /// The guard test; the black and white tests follow it.
+    check: u32,
+    /// Re-dispatch to the undo blocks after a refusal.
+    turn_dispatch: u32,
+    /// The four undo blocks, `undo + dp`.
+    undo: u32,
+    /// Turn the case and check the bound.
+    turn: u32,
+}
+
+fn slide_ids(base: u32) -> Slide {
+    Slide {
+        dispatch: base,
+        step: base + 1,
+        check: base + 5,
+        turn_dispatch: base + 8,
+        undo: base + 9,
+        turn: base + 13,
+    }
+}
+
+/// The fourteen blocks of a slide.
+///
+/// `live` is the number of values above the ring — nine in both programs, with
+/// the case at depth three, `big` at depth four and the turn counter in the
+/// scan's dead index slot. `move_to` and `terminate` are the caller's answers.
+fn slide_blocks(ids: &Slide, live: u32, move_to: u32, terminate: u32) -> Vec<Block> {
+    let colour = live + 2;
+    let mut blocks = vec![Block::new(slide_dispatch(ids.step), End::Computed)];
+    for dp in 0..4 {
+        blocks.push(Block::new(step_roll(dp, live), End::Jump(ids.check)));
+    }
+    blocks.push(Block::new(
+        vec![
+            Node::DupLocal(colour),
+            Node::Const(i64::from(GUARD_CODE) - 1),
+            Node::Command(Command::Greater),
+        ],
+        End::If {
+            then: ids.turn_dispatch,
+            otherwise: ids.check + 1,
+        },
+    ));
+    blocks.push(Block::new(
+        colour_is(colour, BLACK_CODE),
+        End::If {
+            then: ids.turn_dispatch,
+            otherwise: ids.check + 2,
+        },
+    ));
+    blocks.push(Block::new(
+        colour_is(colour, WHITE_CODE),
+        End::If {
+            then: ids.dispatch,
+            otherwise: move_to,
+        },
+    ));
+    blocks.push(Block::new(slide_dispatch(ids.undo), End::Computed));
+    for dp in 0..4 {
+        blocks.push(Block::new(
+            step_roll((dp + 2) % 4, live),
+            End::Jump(ids.turn),
+        ));
+    }
+    blocks.push(Block::new(
+        slide_turn(),
+        End::If {
+            then: terminate,
+            otherwise: ids.dispatch,
+        },
+    ));
+    blocks
 }
 
 /// Dispatch to the step block for the case's direction, `base + dp_i`.
@@ -626,6 +739,53 @@ fn exit_setup() -> Vec<Node> {
     nodes.extend(case_nodes());
     nodes.extend([Node::Const(-1), Node::Const(0)]);
     nodes
+}
+
+/// Two pops for the partition's flags, then one row and one cell: ring index
+/// `row cells + 1`, the upper-left codel.
+fn start_setup() -> Vec<Node> {
+    let mut nodes = vec![Node::Command(Command::Pop), Node::Command(Command::Pop)];
+    nodes.extend(ring_down(0));
+    nodes.extend(ring_by(0, i64::from(PER_CELL)));
+    nodes
+}
+
+/// The nine live values the slide expects, with the case at right/left and the
+/// turn counter at zero.
+///
+/// The slide does not otherwise care about these values; they exist to give
+/// `case` the depth it has in the exit, and `big` the ring's cell count.
+fn start_slide_setup() -> Vec<Node> {
+    vec![
+        Node::Const(0), // dp
+        Node::Const(0), // cc
+        Node::Const(0), // attempt
+        Node::Const(0), // label
+        Node::Const(0), // row cells
+        // big = ring cells / 4, from the ring size five values down
+        Node::DupLocal(9),
+        Node::Const(4),
+        Node::Command(Command::Divide),
+        Node::Const(0), // case: right, left
+        Node::Const(0), // best
+        Node::Const(0), // turns
+    ]
+}
+
+/// The state `(label, right, left)` for a chromatic upper-left codel.
+fn start_print() -> Vec<Node> {
+    vec![
+        Node::DupLocal(1),
+        Node::Command(Command::OutNumber),
+        Node::Const(32),
+        Node::Command(Command::OutChar),
+        Node::Const(0),
+        Node::Command(Command::OutNumber),
+        Node::Const(32),
+        Node::Command(Command::OutChar),
+        Node::Const(0),
+        Node::Command(Command::OutNumber),
+    ]
 }
 
 /// `case = 2 * dp_i + cc_i` for the current attempt, from `[big, row cells,
@@ -1616,6 +1776,11 @@ mod tests {
         exit_blocks()
     }
 
+    /// The start program's blocks, as `start_program` assembles them.
+    fn start_blocks_for_test() -> Vec<Block> {
+        start_blocks()
+    }
+
     fn numbers(text: &str) -> Vec<i64> {
         text.split_whitespace()
             .map(|token| token.parse().unwrap())
@@ -1633,6 +1798,7 @@ mod tests {
                     '.' => Color::White,
                     '#' => Color::Black,
                     'r' => Color::chromatic(Hue::Red, Lightness::Normal),
+                    'g' => Color::chromatic(Hue::Green, Lightness::Normal),
                     'b' => Color::chromatic(Hue::Blue, Lightness::Normal),
                     other => panic!("unknown cell {other:?}"),
                 });
@@ -1651,6 +1817,15 @@ mod tests {
             label_of(grid, block).unwrap()
         );
         execute(&exit_blocks_for_test(), &numbers(&stream), 200_000_000)
+    }
+
+    /// Run the start program's blocks over one grid.
+    fn start_vm(grid: &CodelGrid) -> String {
+        execute(
+            &start_blocks_for_test(),
+            &numbers(&stream_of(grid).unwrap()),
+            200_000_000,
+        )
     }
 
     #[test]
@@ -1698,6 +1873,44 @@ mod tests {
         let stream = format!("{} 0 0 {}", stream_of(&grid).unwrap(), label);
         let output = execute(&exit_blocks_for_test(), &numbers(&stream), 40_000_000);
         assert_eq!(output, "-1");
+    }
+
+    #[test]
+    fn the_start_program_finds_the_upper_left_block() {
+        let grid = grid(&["rg", "gg"]);
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let red = blocks.block_id_at(Point::new(0, 0)).unwrap();
+        let expected = format!("{} 0 0", label_of(&grid, red).unwrap());
+        assert_eq!(start_vm(&grid), expected);
+    }
+
+    #[test]
+    fn the_start_program_terminates_on_black() {
+        assert_eq!(start_vm(&grid(&["#r"])), "-1");
+    }
+
+    #[test]
+    fn the_start_program_slides_from_a_white_corner() {
+        let grid = grid(&["..b"]);
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let blue = blocks.block_id_at(Point::new(2, 0)).unwrap();
+        let expected = format!("{} 0 0", label_of(&grid, blue).unwrap());
+        assert_eq!(start_vm(&grid), expected);
+    }
+
+    #[test]
+    fn the_start_program_turns_a_blocked_slide() {
+        // The corner slides right into the black, turns down, and finds the red.
+        let grid = grid(&[".#", "r."]);
+        let blocks = canvas::Blocks::partition(grid.clone());
+        let red = blocks.block_id_at(Point::new(0, 1)).unwrap();
+        let expected = format!(
+            "{} {} {}",
+            label_of(&grid, red).unwrap(),
+            Direction::Down as u32,
+            Chooser::Right as u32
+        );
+        assert_eq!(start_vm(&grid), expected);
     }
 
     #[test]

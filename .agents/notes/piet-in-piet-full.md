@@ -590,13 +590,21 @@ blocks.
 
 Still to build, in the order each can be checked:
 
-- *The start state* is the block of ring index `stride/4 + 1`, one `stride` and
-  one cell from cell zero; sliding through a white upper-left codel reuses the
-  slide above.
 - *The command* is the colour transition between the two blocks, and the dispatch,
   the value stack and the handlers are exactly what `walker.rs` already runs. The
   end state is therefore: partition, compute `exit`, append the record the walker
   would have been given, and hand over — no host-side tessellation at all.
+
+The **start state is built** (`loom::start_state`). The partition ends with the
+ring at cell zero, so the upper-left codel is one row down and one cell right:
+`row cells + 1`, the ring index `stride/4 + 1` the note predicted. Its colour
+decides: black is `-1`, a chromatic codel is the state `(label, right, left)`, and
+white hands the same slide blocks the exit stage uses a nine-value live layout
+with `case` at right/left and the turn counter at zero. The slide is now one
+builder (`slide_blocks`) with derived ids, shared by both programs.
+
+Every start fixture agrees with `tessera::start`, including the canonical hello
+world, which starts in its upper-left block without sliding.
 
 The staging is deliberate. Each step above is a scan over the ring plus a batch
 of comparisons, and each can be checked against `tessera::block_edge`,
@@ -622,7 +630,8 @@ What is left is not capability but cost, and it is worth saying which is which.
   the graph decides its reads at run time and the stream has to be unambiguous.
   That is an interface wart, not a semantic one.
 
-S4 is mostly built: the partition, the edge codel, the step, the eight-attempt
-fallback and the white slide are in the image and agree with `canvas::Blocks`
-and `tessera` on every fixture. The start state and the colour transition remain
-before the walker can be handed a record with no host-side tessellation.
+S4 is nearly built: the partition, the edge codel, the step, the eight-attempt
+fallback, the white slide and the start state are in the image and agree with
+`canvas::Blocks` and `tessera` on every fixture. The colour transition is the
+last piece before the walker can be handed a record with no host-side
+tessellation.
