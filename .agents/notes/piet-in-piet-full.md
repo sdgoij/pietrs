@@ -120,49 +120,86 @@ about 2 000 codels. The bus is five cells per block, and the lane height is set
 by the longest block, which is longer than it looks because a constant expands
 to up to twelve commands and `dup local` to twelve more.
 
-That is the lever for S2. A sixty-block interpreter would be roughly 320 columns
-and, with blocks of that complexity, 60 to 100 rows: 20 000 to 30 000 codels,
-ten times the current image. Two cheap wins before writing it: push a constant
-with a multi-codel block (one command instead of up to twelve), and give
-`dup local` a shorter form. Neither changes the IR.
+That is the lever for later stages. A sixty-block interpreter would be roughly
+320 columns and, with blocks of that complexity, 60 to 100 rows: 20 000 to
+30 000 codels, ten times the current image. Of the two shortcuts I predicted,
+only one paid: `dup local` at depth one is now a plain `dup` (one command
+instead of ten). Pushing a constant with a multi-codel block trades one command
+for one lane cell each, so it is a wash up to about twelve and a loss above it;
+the arithmetic form stayed.
 
 
-### S2. Walk the state graph
+### S2. Walk the state graph — done, as a graph compiler
 
-**First slice: the tape — done.** `crates/loom/tests/tape.rs` fills a tape with
-1..=n and prints it in order, which means reaching the oldest value every time
-at a depth that changes as the tape drains. It does that with a `roll` whose
-depth is computed from the remaining length, so the roll is not a fixed-depth
-move any more.
+This landed differently from the plan, and the difference is the important
+part. With one lane per state, a *program counter* is unnecessary: the state's
+block ends with a jump to its successor, so the dispatcher is the program
+counter. Nothing about the graph is baked into the *input* any more — the trace
+is gone, and `pointer`/`switch` choose their successor from the value stack at
+run time.
 
-The layout it establishes, which the interpreter reuses:
+`crates/loom/src/graph.rs` compiles a `StateGraph` and the partition into a
+`flow::Program`: one block per state, the command's stack effect in the block,
+and either a literal jump or a chain of equality tests over the popped value.
+Each successor gets a trampoline that drops the selector and jumps.
+
+Checkpoints, all green, each against `interp`:
+
+- the canonical *Hello world!*: 25 states, output identical, both terminate;
+- `xtask/fixtures/pointer`, which uses `pointer` **and** `switch`: the image
+  makes the same decisions, compared as a prefix;
+- `xtask/fixtures/hello`, the loop checkpoint: the image prints its own prefix
+  of the same endless run;
+- `xtask/fixtures/single`, which terminates without a command.
+
+The one real bug this caught: the equality test was written with two `not`s,
+which is the *inequality* test, so every branch took the other arm. The pointer
+case failed with `6` against `A` — which is exactly what an inverted selector
+looks like.
+
+Cost, measured: five cells of bus per state, so 25 states lay out at
+147 x 45 (6 615 codels), the pointer program's 23 states and 39 blocks at
+217 x 44 (9 548), and the five-state loop at 47 x 29 (1 363).
+
+**Why this does not scale to *Piet's Quest*.** 17 964 states at five cells each
+is a 90 000-codel-wide bus, and every jump would run 90 000 equality tests, so
+the dispatch alone would be four orders of magnitude too slow. Compiling the
+graph is the cheap way to reach full semantics for one program; running a big
+program needs the image to be fixed and the program to be data.
+
+### S3. The fixed-image walker (the scale answer)
+
+The ring design is pinned, and the tape above is its first piece:
+
+```text
+  [ interpreted values … | k temporaries | ring of N cells ]
+```
+
+The ring holds the program's records and sits on top, so the head is at the top
+and a jump is one `roll(N, offset)` — relative offsets are stored in each record
+and no program counter has to be maintained. The temporaries and the
+interpreted stack live below the ring at fixed depths `N+1 …`, which is what
+makes their `dup local` depths static. A value-stack access is two rolls (bring
+the cell up, restore the ring); the perf harness prices one at 1.79 µs for an
+18 000-cell ring.
+
+**The tape is built and tested** (`crates/loom/tests/tape.rs`). Its invariant is
+the length on top:
 
 ```text
   [ value 1, value 2, …, value len, len ]
 ```
 
-The length sits *on top*, so it is always reachable, and `value 1` is at
-depth `len + 1`. Rolling exactly that many moves the length to depth two and
-`value 1` to the top; one pop and one decrement leave the tape one shorter with
-the length still on top. The invariant held for n from −3 to 40, and the case
-was proved non-vacuous by breaking the computed depth, which swaps the output
-order for every n above one.
+`value 1` is at depth `len + 1`; rolling exactly that many brings it up and
+leaves `len` at depth two, so one pop and one decrement shrink the tape with the
+length still reachable. The case fills 1..=n and prints it in order — reaching
+the oldest value every time at a depth that changes as the tape drains — for n
+from −3 to 40, and was proved non-vacuous by breaking the computed depth, which
+reverses the output for every n above one. It lays out at 57 x 42.
 
-The tape program lays out at 57 x 42. The remaining work is the walker: records
-of `(command, block size, successors)` in the tape, a program counter, and the
-command handlers, so a loop runs from the program rather than from the trace.
-
-Checkpoint: `crates/xtask/fixtures/hello`, which loops forever, compared byte
-for byte with a bounded `interp` run; plus the canonical *Hello world!*.
-
-### S3. Choose successors
-
-Records carry up to four successors; `pointer` picks one by the popped value
-modulo four, `switch` one of two by its parity.
-
-Checkpoint: `crates/xtask/fixtures/pointer`, and a hand-built branching program,
-both compared with `interp`. **This is full Piet semantics for a compiled
-program**, and it is where the image stops being a trace replayer.
+The interpreter's own program is still the substack: a step loop, a dispatch on
+the record's command, per-command handlers, and the jump. That is the next slice,
+and it is large.
 
 ### S4. Interpret the grid (optional)
 
@@ -177,12 +214,14 @@ program.
 
 ## Recommendation
 
-S1 landed and its checkpoint passed, so the layout risk that gated everything
-else is gone. The next move is S2, and its first slice is the tape: a stack in
-memory addressed by a computed depth, proven by a program that pushes n values
-and reads them back in reverse. Without that, a loop can only carry state in a
-fixed shape, which is enough for the checkpoints and not enough for an
-interpreter.
+S1, S2 and S3 landed: the image now follows a program's own control flow,
+branches included, with the trace gone. That is full Piet semantics for one
+program, at a cost of five cells of width per state.
 
-S3 then closes the gap to full Piet for compiled programs, and is small once S1
-exists. S4 is a separate, optional build and should be decided on its own.
+The remaining gap is *scale*, and it is one piece of work: the fixed-image
+walker of S3 above, whose memory model (the ring on top, fixed-depth
+temporaries below) is pinned and whose hardest mechanism — a computed-depth
+roll — is already built and tested. That is the path to *Piet's Quest*, and it
+is a large slice rather than an increment.
+
+S4 is a separate, optional build and should be decided on its own.

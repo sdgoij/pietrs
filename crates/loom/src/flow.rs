@@ -371,6 +371,8 @@ fn node_commands(node: Node, commands: &mut Vec<Command>) {
         Node::Dup => commands.push(Command::Duplicate),
         Node::Swap => commands.extend(roll(2, 1)),
         Node::Roll(depth, rolls) => commands.extend(roll(depth, rolls)),
+        // Reading the top is the one case that needs no roll at all.
+        Node::DupLocal(1) => commands.push(Command::Duplicate),
         Node::DupLocal(depth) => {
             commands.extend(roll(depth, depth - 1));
             commands.push(Command::Duplicate);

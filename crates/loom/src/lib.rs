@@ -21,6 +21,10 @@
 //! dispatcher — so loops and branches can be generated without ever laying out
 //! a branch. A block that needs two successors selects one arithmetically.
 //!
+//! [`compile`] is the way past a trace. It turns a program's tessellation graph
+//! into a [`Program`]: one block per state, jumps between them, and a `pointer`
+//! or `switch` state selecting its successor from the value stack at run time.
+//!
 //! ```
 //! use canvas::Blocks;
 //! use interp::Options;
@@ -39,6 +43,7 @@
 
 mod error;
 mod flow;
+mod graph;
 mod interpreter;
 mod linear;
 mod paint;
@@ -47,6 +52,7 @@ mod shade;
 
 pub use error::Error;
 pub use flow::{Block, End, Node, Program};
+pub use graph::compile;
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
