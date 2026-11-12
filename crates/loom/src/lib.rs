@@ -67,7 +67,7 @@ pub use grid::{block_edge, exit_state, splitter, start_state, step_state};
 pub use grid_graph::grid_graph;
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
-pub use ppm::{ppm_grid, ppm_program};
+pub use ppm::{ppm_grid, ppm_program, ppm_to_grid};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
 pub use walker::{
     COMMAND_DEPTH, RECORD, graph_walker, record_code, record_command, skeleton, walker,

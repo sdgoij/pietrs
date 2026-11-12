@@ -487,8 +487,13 @@ fn the_graph_reports_pointer_and_switch() {
 #[test]
 #[ignore = "the canonical hello world, one image run per state: cargo test -p loom --release --test grid -- --ignored"]
 fn the_canonical_hello_world_graph_runs() {
+    // From a picture written as text: the PPM image decodes it, the movement
+    // image resolves every move, and the walker runs the records.
     let png = include_bytes!("../fixtures/hello-world/program.png");
-    let grid = CodelGrid::from_image(png).unwrap();
+    let source = CodelGrid::from_image(png).unwrap();
+    let grid = loom::ppm_to_grid(&ppm_of(&source)).unwrap();
+    assert_eq!(grid.codels(), source.codels(), "the image decoded the PPM");
+
     let blocks = Blocks::partition(grid.clone());
     let graph = grid_graph(&grid, 400_000_000).unwrap();
     assert_eq!(
@@ -500,6 +505,16 @@ fn the_canonical_hello_world_graph_runs() {
     let (output, result) = run(&image, &stream, 10_000_000);
     assert_eq!(output, "Hello world!");
     assert_eq!(result.reason, ExitReason::Terminated);
+}
+
+/// A grid as a P3 PPM, which is the only picture the image can read.
+fn ppm_of(grid: &CodelGrid) -> String {
+    let mut text = format!("P3\n{} {}\n255\n", grid.width(), grid.height());
+    for color in grid.codels() {
+        let [red, green, blue] = color.rgb();
+        text.push_str(&format!("{red} {green} {blue}\n"));
+    }
+    text
 }
 
 #[test]

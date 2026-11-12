@@ -143,6 +143,10 @@ come out, so a picture written as text needs no decoder on the host side.
 ```sh
 cargo run -p loom --example ppm -- target/weave/ppm.png
 target/debug/pietrs run target/weave/ppm.png < program.ppm
+
+# The whole frontend, from the picture to the program's output: the image
+# decodes the PPM, the image resolves the moves, the walker runs it.
+cargo run -p loom --example run-ppm -- program.ppm "10 3"
 ```
 
 See [`crates/loom/fixtures/hello-world/`](crates/loom/fixtures/hello-world/)

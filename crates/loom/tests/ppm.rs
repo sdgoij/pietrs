@@ -6,9 +6,9 @@
 //! palette. The fixture is the canonical *Hello world!* program, whose 30 x 29
 //! grid exercises white, black and every chromatic colour.
 
-use canvas::{Blocks, CodelGrid, Color, Point};
+use canvas::{Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options};
-use loom::{graph_walker, ppm_grid};
+use loom::{graph_walker, ppm_grid, ppm_to_grid};
 use runtime::BufferIo;
 use tessera::StateGraph;
 
@@ -115,6 +115,43 @@ fn grid_from_codes(stream: &str) -> CodelGrid {
         .map(|token| Color::ALL[token.parse::<usize>().unwrap()])
         .collect();
     CodelGrid::from_colors(width, height, colors).unwrap()
+}
+
+#[test]
+#[ignore = "one image run per state: cargo test -p loom --release --test ppm -- --ignored"]
+fn a_ppm_program_runs_through_the_image_pipeline() {
+    // The five-codel subtract program: in number, in number, subtract,
+    // out number. Every processing stage is the generated image; the host only
+    // carries text between them and assembles the records.
+    let colors = [
+        Color::chromatic(Hue::Red, Lightness::Normal),
+        Color::chromatic(Hue::Blue, Lightness::Light),
+        Color::chromatic(Hue::Green, Lightness::Dark),
+        Color::chromatic(Hue::Cyan, Lightness::Light),
+        Color::chromatic(Hue::Green, Lightness::Normal),
+    ];
+    let pixels: Vec<[u8; 3]> = colors.iter().map(|color| color.rgb()).collect();
+
+    let grid = ppm_to_grid(&ppm(5, 1, &pixels)).unwrap();
+    assert_eq!(grid.codels(), &colors[..], "the image decoded the PPM");
+
+    let blocks = Blocks::partition(grid.clone());
+    let graph = loom::grid_graph(&grid, 400_000_000).unwrap();
+    let expected = StateGraph::build(&blocks);
+    assert_eq!(
+        graph.states(),
+        expected.states(),
+        "the image resolved the moves"
+    );
+    assert_eq!(graph.edges(), expected.edges());
+
+    let (image, records) = graph_walker(&graph, &blocks, "10 3").unwrap();
+    let (output, reason) = run_image(image, &records, 10_000_000);
+    // A row of codels is a closed loop: the last block cannot leave to the
+    // right, and the fallback walks back leftwards, exactly as the reference
+    // interpreter does. The output is the program's; the stop is the budget.
+    assert_eq!(output, "7");
+    assert_eq!(reason, ExitReason::StepLimit);
 }
 
 #[test]

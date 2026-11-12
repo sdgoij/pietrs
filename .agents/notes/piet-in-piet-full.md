@@ -667,6 +667,39 @@ its bytes are not a UTF-8 stream; a scaled PPM prints the dimensions and then
 `-1`, which no colour code can be. Codel size detection and PNG both stay with
 `canvas`.
 
+### S6. From a picture to a running program (done, for PPM)
+
+S5 plus the movement stages closes the frontend. `ppm_to_grid` runs `ppm_grid`
+and turns the codes back into a grid; `grid_graph` resolves every move with the
+start and exit images; `graph_walker` hands the walker its records. The whole
+path is one command:
+
+```sh
+cargo run -p loom --example run-ppm -- program.ppm "10 3"
+```
+
+What the host still does is what cannot be an image's output: it carries text
+between stages, maps the image's labels to block ids, and fills in the block
+sizes and ring offsets the records carry. The partition the bookkeeping needs is
+still `Blocks::partition`; the splitter image resolves the same partition but its
+ring stream is built by the host, so it is not on this path yet.
+
+The cost is the one S4 measured: `grid_graph` is one image run per state.
+*Hello world!* from its 30 x 29 PPM through the image-resolved graph takes 96 s
+in release (`the_canonical_hello_world_graph_runs`, which now starts from the
+PPM), against 1.4 s when the host resolves the graph
+(`the_hello_world_runs_from_its_pixels`). Both print `Hello world!`. One image
+run per state is why the first is an ignored release case and the second is in
+the default suite.
+
+The step to a *single* image — one that reads a PPM and prints the walker's
+records in one run — needs the ring's reconstruction, the partition's fixpoint,
+the graph's queue and the records' assembly inside one program, with
+dynamic-depth rolls where the stages now take a host-built stream. That is S4's
+third row of the table, not a plumbing change; the five stages above are each
+checkable against `tessera` or against the host's own helper, which is why they
+were worth doing separately first.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line

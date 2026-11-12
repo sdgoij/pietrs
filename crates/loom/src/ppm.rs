@@ -31,7 +31,9 @@
 //! arithmetic: division and remainder cannot tell `0` from `64`, and a
 //! non-standard colour has to be recognised, not approximated.
 
-use canvas::CodelGrid;
+use canvas::{Blocks, CodelGrid, Color};
+use interp::{ExitReason, Options};
+use runtime::BufferIo;
 use tessera::Command;
 
 use crate::error::Error;
@@ -76,6 +78,43 @@ pub fn ppm_program() -> Result<Program, Error> {
 /// The same program, laid out as an image.
 pub fn ppm_grid() -> Result<CodelGrid, Error> {
     ppm_program()?.image()
+}
+
+/// The grid a P3 PPM decodes to, decoded by [`ppm_grid`].
+///
+/// This is the whole of the frontend's host side: run the image, read the codes
+/// back, and package them as a grid. Everything the image cannot print — the
+/// block partition and the walker's records — belongs to [`crate::grid_graph`]
+/// and [`crate::graph_walker`], which take a grid.
+pub fn ppm_to_grid(source: &str) -> Result<CodelGrid, Error> {
+    /// The image reads three numbers per codel and prints one; this is ample.
+    const STEPS: u64 = 20_000_000;
+
+    let image = ppm_grid()?;
+    let blocks = Blocks::partition(image);
+    let mut io = BufferIo::new(source);
+    let options = Options {
+        max_steps: Some(STEPS),
+        ..Options::default()
+    };
+    let result = interp::run(&blocks, &mut io, &options)?;
+    if result.reason != ExitReason::Terminated {
+        return Err(Error::StepLimit(STEPS));
+    }
+
+    let output = io.into_output();
+    let bad = || Error::BadOutput {
+        output: output.clone(),
+    };
+    let mut tokens = output.split_whitespace();
+    let width: u32 = tokens.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let height: u32 = tokens.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let mut codels = Vec::with_capacity((width as usize) * (height as usize));
+    for token in tokens {
+        let code: usize = token.parse().map_err(|_| bad())?;
+        codels.push(*Color::ALL.get(code).ok_or_else(bad)?);
+    }
+    CodelGrid::from_colors(width, height, codels).map_err(Error::Canvas)
 }
 
 /// The colour code for three digits, as `canvas::Color::ALL` numbers them.
