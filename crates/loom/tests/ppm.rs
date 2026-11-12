@@ -10,7 +10,7 @@ use canvas::{Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options};
 use loom::{graph_walker, ppm_grid, ppm_to_grid};
 use runtime::BufferIo;
-use tessera::StateGraph;
+use tessera::{Start, StateGraph};
 
 fn run_image(image: CodelGrid, input: &str, steps: u64) -> (String, ExitReason) {
     let blocks = Blocks::partition(image);
@@ -196,6 +196,35 @@ fn the_hello_world_runs_from_its_pixels() {
     let graph = StateGraph::build(&blocks);
     let (walked, records) = graph_walker(&graph, &blocks, "").unwrap();
     let (output, reason) = run_image(walked, &records, 4_000_000);
+    assert_eq!(reason, ExitReason::Terminated);
+    assert_eq!(output, "Hello world!");
+}
+
+#[test]
+#[ignore = "the canonical hello world through the lazy machine, ~50 s: cargo test -p loom --release --test ppm -- --ignored"]
+fn the_hello_world_runs_from_its_pixels_in_the_machine() {
+    // The whole deliverable: pixels in, the program's output out, with the lazy
+    // machine doing the movement and the commands. The host still carries the
+    // ring stream between the stages until slice 4 puts them in one image.
+    let png = include_bytes!("../fixtures/hello-world/program.png");
+    let source = CodelGrid::from_image(png).unwrap();
+    let pixels: Vec<[u8; 3]> = source.codels().iter().map(|color| color.rgb()).collect();
+
+    let (codes, reason) = run(&ppm(source.width(), source.height(), &pixels));
+    assert_eq!(reason, ExitReason::Terminated);
+    let grid = grid_from_codes(&codes);
+    assert_eq!(
+        grid.codels(),
+        source.codels(),
+        "the image's grid is the PNG's"
+    );
+
+    let blocks = Blocks::partition(grid.clone());
+    let Start::State(start) = tessera::start(&blocks) else {
+        panic!("the fixture terminates before it runs");
+    };
+    let (image, stream) = loom::run(&grid, start.block, start.dp, start.cc).unwrap();
+    let (output, reason) = run_image(image, &stream, 2_000_000_000);
     assert_eq!(reason, ExitReason::Terminated);
     assert_eq!(output, "Hello world!");
 }
