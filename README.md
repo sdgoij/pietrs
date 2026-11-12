@@ -137,6 +137,14 @@ cargo run -p loom --example weave -- target/weave crates/gui/web/hello.png
 target/debug/pietrs run target/weave/interpreter.png --input target/weave/program.txt
 ```
 
+The front end is generated too: a P3 PPM goes in, and the grid's colour codes
+come out, so a picture written as text needs no decoder on the host side.
+
+```sh
+cargo run -p loom --example ppm -- target/weave/ppm.png
+target/debug/pietrs run target/weave/ppm.png < program.ppm
+```
+
 See [`crates/loom/fixtures/hello-world/`](crates/loom/fixtures/hello-world/)
 and [`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md). A program
 that is not linear is refused before it runs, naming the block that branches.

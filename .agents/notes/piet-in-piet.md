@@ -161,6 +161,18 @@ A `pietrs run` of one such image prints the title and nine menus of *Piet's
 Quest* from a single stream. The design and its measured cost are in
 [`piet-in-piet-full.md`](piet-in-piet-full.md).
 
+The front end is in the image too, as far as a format simple enough to read with
+`in number` goes. `loom::ppm_grid` reads a P3 PPM and prints the grid's colour
+codes, so a picture written as text needs no decoder on the host side:
+
+```sh
+cargo run -p loom --example ppm -- target/weave/ppm.png
+target/debug/pietrs run target/weave/ppm.png < program.ppm
+```
+
+PNG, GIF, codel size detection and comments are still the host's; the note's S5
+section says exactly where the boundary is.
+
 ## Limits
 
 - Only the linear fragment. A program whose trace contains `pointer` or

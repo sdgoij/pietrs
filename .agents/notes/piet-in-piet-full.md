@@ -628,6 +628,45 @@ of comparisons, and each can be checked against `tessera::block_edge`,
 `tessera::edge_codel` or `tessera::exit` on the small fixtures before the next is
 added, which is the same way the walker was built.
 
+### S5. Read the pixels (done, for PPM)
+
+The last thing the host still did that the image can do for itself.
+`ppm_grid` (`crates/loom/src/ppm.rs`) reads a P3 PPM from its input and prints
+the grid: the width, the height, then one colour code per codel in row-major
+order. The codes are `canvas::Color::ALL`'s numbering, which is the one the
+splitter and the movement stages already speak, so the host's remaining job is
+to turn the codes back into a grid and assemble the ring.
+
+A component is `0`, `192` or `255` in the palette and something else otherwise,
+so each one becomes the digit `0`, `1`, `2`, or `3` for "not a palette value",
+and the three digits index a 64-entry table of colour codes. The base is four,
+not the palette's three, so a `3` digit stays unambiguous. Anything holding a
+`3`, and the six cells of colour space the palette leaves empty, is white: the
+specification's answer for a non-standard colour, and the answer
+`canvas::Color::quantize` gives.
+
+The digits come from three equality tests per channel rather than from
+arithmetic. Division and remainder cannot tell `0` from `64`, so a component
+that is not a palette value has to be recognised, not approximated.
+
+```text
+P3 2 1 255  255 0 0  255 255 255   ->   2 1 / 1 18
+```
+
+The checkpoint is `crates/loom/tests/ppm.rs`. The palette round-trips through
+pixels; a non-standard colour and an empty palette cell are both white; a `P6`
+and a scaled PPM are refused. The last case runs the canonical hello world end
+to end: its 30 x 29 grid written as a PPM, decoded by the image, turned back
+into a grid, and run by the walker, which prints `Hello world!`. The image is
+512 x 72 and 7 610 blocks, because the dispatcher's five cells per block dominate
+a program with 98 of them.
+
+What it does not do is a picture format: `P6`, a maxval other than 255, comments,
+and a codel size above one are all outside it. `P6` is refused outright because
+its bytes are not a UTF-8 stream; a scaled PPM prints the dimensions and then
+`-1`, which no colour code can be. Codel size detection and PNG both stay with
+`canvas`.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line
