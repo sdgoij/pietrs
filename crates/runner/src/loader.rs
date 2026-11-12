@@ -700,27 +700,75 @@ extern "C" fn piet_roll(context: *mut Context) {
     let Some((depth, rolls)) = pop_two(context) else {
         return;
     };
-    if depth < 0 || depth <= 1 || (depth as u64) > context.sp {
+    if depth < 0 {
         return;
     }
-    let count = depth as usize;
-    let start = context.sp as usize - count;
-    let mut shift = rolls % depth;
-    if shift < 0 {
-        shift += depth;
+    let Ok(depth) = usize::try_from(depth) else {
+        return;
+    };
+    if depth > context.sp as usize || depth <= 1 {
+        return;
     }
-    // SAFETY: `sp` slots starting at `stack` are initialised.
-    let stack = unsafe { std::slice::from_raw_parts_mut(context.stack, context.sp as usize) };
-    for _ in 0..shift {
-        let last = stack[stack.len() - 1];
-        stack.copy_within(start..stack.len() - 1, start + 1);
-        stack[start] = last;
-    }
+    let start = context.sp as usize - depth;
+    let shift = rolls.rem_euclid(depth as i64) as usize;
+    // `rotate_right`, not a shift-by-one loop: `depth` can be a walker's ring
+    // (tens of thousands of values), and a loop is O(shift * depth) per call.
+    // This mirrors `codegen`'s `roll` host function.
+    // SAFETY: `sp` slots starting at `stack` are initialised, and `start..sp`
+    // is inside them.
+    let values = unsafe { std::slice::from_raw_parts_mut(context.stack.add(start), depth) };
+    values.rotate_right(shift);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A context over `stack`'s live values, with room for `extra` pushes.
+    fn context_for(stack: &mut Vec<i64>, extra: usize) -> Context {
+        let live = stack.len();
+        stack.reserve(extra);
+        Context {
+            stack: stack.as_mut_ptr(),
+            capacity: (live + extra) as u64,
+            sp: live as u64,
+            steps: 0,
+            max_steps: 0,
+            reason: REASON_TERMINATED,
+        }
+    }
+
+    /// `roll(depth, rolls)` on `values`, as the host function sees it.
+    fn roll(values: &[i64], rolls: i64) -> Vec<i64> {
+        let mut stack = values.to_vec();
+        let mut context = context_for(&mut stack, 2);
+        push(&mut context, i64::try_from(values.len()).unwrap());
+        push(&mut context, rolls);
+        piet_roll(&mut context as *mut Context);
+        stack
+    }
+
+    #[test]
+    fn a_roll_rotates_the_top_values() {
+        assert_eq!(roll(&[1, 2, 3, 4], 1), [4, 1, 2, 3]);
+        assert_eq!(roll(&[1, 2, 3, 4], 3), [2, 3, 4, 1]);
+    }
+
+    #[test]
+    fn a_negative_roll_rotates_the_other_way() {
+        assert_eq!(roll(&[1, 2, 3, 4], -1), [2, 3, 4, 1]);
+        assert_eq!(roll(&[1, 2, 3, 4], 5), [4, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_deep_roll_rotates_the_whole_window() {
+        // The walker's ring is tens of thousands of values; depth 64 is the
+        // deepest the table weaves, so this exercises the large-window path.
+        let rolled = roll(&(0..64).collect::<Vec<i64>>(), 29);
+        assert_eq!(rolled[0], 35);
+        assert_eq!(rolled[29], 0);
+        assert_eq!(rolled[63], 34);
+    }
 
     #[test]
     fn alignment_is_up_and_power_of_two() {
