@@ -57,18 +57,20 @@ mod linear;
 mod paint;
 mod ppm;
 mod program;
+mod ring;
 mod shade;
 mod walker;
 
 pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;
-pub use grid::{block_edge, exit_state, splitter, start_state, step_state};
+pub use grid::{block_edge, exit_state, ring_stream, splitter, start_state, step_state};
 pub use grid_graph::grid_graph;
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use ppm::{ppm_grid, ppm_program, ppm_to_grid};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
+pub use ring::{grid_codes, ring_grid, ring_program, ring_to_stream};
 pub use walker::{
     COMMAND_DEPTH, RECORD, graph_walker, record_code, record_command, skeleton, walker,
 };

@@ -681,8 +681,8 @@ cargo run -p loom --example run-ppm -- program.ppm "10 3"
 What the host still does is what cannot be an image's output: it carries text
 between stages, maps the image's labels to block ids, and fills in the block
 sizes and ring offsets the records carry. The partition the bookkeeping needs is
-still `Blocks::partition`; the splitter image resolves the same partition but its
-ring stream is built by the host, so it is not on this path yet.
+still `Blocks::partition`; the splitter image resolves the same partition, and
+S7 puts its ring stream in the image too.
 
 The cost is the one S4 measured: `grid_graph` is one image run per state.
 *Hello world!* from its 30 x 29 PPM through the image-resolved graph takes 96 s
@@ -700,11 +700,58 @@ third row of the table, not a plumbing change; the five stages above are each
 checkable against `tessera` or against the host's own helper, which is why they
 were worth doing separately first.
 
+### S7. The ring in the image (done)
+
+`ring_stream` in `crates/loom/src/grid.rs` was the last input the movement stages
+took from the host: the ring size, then one `ring stride colour index` record per
+cell, highest index first. `loom::ring_grid` (`crates/loom/src/ring.rs`) now
+prints that from the colour codes `ppm_grid` emits, so the two frontend images
+speak nothing but text and the host only carries it:
+
+```text
+2 1 / 1 18   ->   12 48 16 33 11 48 16 32 10 ... 48 16 22 0
+```
+
+`loom::grid_codes` writes the input side — the width, the height, one code per
+codel — and `loom::ring_to_stream` runs the image and returns what it printed.
+
+The ring is the grid with a one-cell border, four values per cell. Border cells
+are guards carrying `22 + index`; the interior consumes the colour codes in ring
+order, which is row-major over the grid. Guards never merge, so a guard's colour
+is its index and the label the splitter reads is already in the stream.
+
+Two pieces of arithmetic do the work. A cell is a guard exactly when
+`row * (row - h - 1) * col * (col - w - 1)` is zero, which is three divisions and
+remainders per lap instead of a chain of comparisons against the borders. And the
+records have to come out highest index first, so the image pushes them in forward
+order and pops them, which reverses them for free; the sentinel `-1` goes in first
+so it ends up under every record, and the print loop halts when it surfaces.
+
+The price of that reversal is the one S3 predicted. The loop's counters sit above
+the records it has accumulated, so every lap rolls them back over a window that
+grows by four values per cell: a lap is O(cells), the ring is O(cells squared).
+That is why the stage is for small images and why it is not on the per-state path.
+
+Measured on 2026-11-12, release, the canonical hello world (30 x 29 grid, 992 ring
+cells): 2 403 295 interpreted steps, 45 ms, matching `ring_stream` token for
+token. The image is 72 x 188 codels and 2 314 blocks.
+
+The checkpoint is `crates/loom/tests/ring.rs`: a 1 x 1 codel, a 2 x 2 grid, a
+3 x 3 grid with white and black, and the hello world's own grid, each compared
+with `ring_stream`; `the_stream_is_the_one_the_splitter_reads` pins the ordering
+against `loom::splitter`'s stream, so a disagreement cannot hide behind two
+agreements with the same wrong helper.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line
 or a state graph — runs all fifteen commands, and reaches *Piet's Quest*: 17 964
 states, one 617 x 246 image, nine menus in about 4.5 s for the example case.
+
+The frontend is images too, as far as text goes: a PPM becomes colour codes, and
+the ring the movement stages read is printed from those codes rather than built
+by the host. The only stream a stage still takes from the host is the walker's
+records, which the host assembles from the graph.
 
 What is left is not capability but cost, and it is worth saying which is which.
 

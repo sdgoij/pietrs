@@ -200,7 +200,7 @@ pub fn step_state(
     dp: Direction,
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
-    let mut stream = stream_of(grid)?;
+    let mut stream = ring_stream(grid)?;
     stream.push_str(&format!(
         " {} {} {}",
         label_of(grid, block)?,
@@ -224,7 +224,7 @@ pub fn exit_state(
     dp: Direction,
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
-    let mut stream = stream_of(grid)?;
+    let mut stream = ring_stream(grid)?;
     // The exit reads its query as dp, cc, then the label.
     stream.push_str(&format!(
         " {} {} {}",
@@ -253,7 +253,7 @@ pub(crate) fn exit_image() -> Result<CodelGrid, Error> {
 /// rules the exit stage uses. The image prints the state's label and `(dp, cc)`,
 /// or `-1`.
 pub fn start_state(grid: &CodelGrid) -> Result<(CodelGrid, String), Error> {
-    Ok((start_program()?.image()?, stream_of(grid)?))
+    Ok((start_program()?.image()?, ring_stream(grid)?))
 }
 
 /// The block's label: the lowest ring position among its codels.
@@ -276,7 +276,7 @@ fn label_of(grid: &CodelGrid, block: BlockId) -> Result<u32, Error> {
 /// The image is the same for every grid. Running it prints one label per ring
 /// cell; two cells share a label exactly when they are in the same block.
 pub fn splitter(grid: &CodelGrid) -> Result<(CodelGrid, String), Error> {
-    Ok((program()?.image()?, stream_of(grid)?))
+    Ok((program()?.image()?, ring_stream(grid)?))
 }
 
 /// A splitter image that also resolves a state's own edge codel, and the stream
@@ -293,7 +293,7 @@ pub fn block_edge(
     dp: Direction,
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
-    let mut stream = stream_of(grid)?;
+    let mut stream = ring_stream(grid)?;
     stream.push_str(&format!(
         " {} {} {}",
         label_of(grid, block)?,
@@ -308,8 +308,12 @@ pub(crate) fn ring_index(grid: &CodelGrid, point: Point) -> u32 {
     (point.y + 1) * (grid.width() + 2) + (point.x + 1)
 }
 
-/// The grid half of the stream.
-fn stream_of(grid: &CodelGrid) -> Result<String, Error> {
+/// The ring a grid's colours become: the ring size, then one
+/// `ring stride colour index` record per cell, highest index first.
+///
+/// This is the stream [`splitter`], [`start_state`] and [`exit_state`] take, and
+/// what [`crate::ring_grid`] prints from the colours alone.
+pub fn ring_stream(grid: &CodelGrid) -> Result<String, Error> {
     let width = grid.width();
     let height = grid.height();
     let row = width + 2;
@@ -1952,7 +1956,7 @@ mod tests {
     fn exit_vm(grid: &CodelGrid, block: BlockId, dp: Direction, cc: Chooser) -> String {
         let stream = format!(
             "{} {} {} {}",
-            stream_of(grid).unwrap(),
+            ring_stream(grid).unwrap(),
             dp as u32,
             cc as u32,
             label_of(grid, block).unwrap()
@@ -1964,7 +1968,7 @@ mod tests {
     fn start_vm(grid: &CodelGrid) -> String {
         execute(
             &start_blocks_for_test(),
-            &numbers(&stream_of(grid).unwrap()),
+            &numbers(&ring_stream(grid).unwrap()),
             200_000_000,
         )
     }
@@ -1981,7 +1985,7 @@ mod tests {
             .min()
             .unwrap();
 
-        let stream = format!("{} {} 0 0", stream_of(&grid).unwrap(), label);
+        let stream = format!("{} {} 0 0", ring_stream(&grid).unwrap(), label);
         let output = execute(&edge_blocks_for_test(), &numbers(&stream), 5_000_000);
         // Right, left chooser: the rightmost codel, topmost of that column.
         assert_eq!(output, "1 0 ");
@@ -2002,7 +2006,7 @@ mod tests {
 
         // The query is dp, cc, then the label. Red to green is two hues on
         // (code six), the walker's `divide`.
-        let stream = format!("{} 0 0 {}", stream_of(&grid).unwrap(), label);
+        let stream = format!("{} 0 0 {}", ring_stream(&grid).unwrap(), label);
         let output = execute(&exit_blocks_for_test(), &numbers(&stream), 40_000_000);
         assert_eq!(output, "6 0 0 6");
     }
@@ -2012,7 +2016,7 @@ mod tests {
         let red = Color::chromatic(Hue::Red, Lightness::Normal);
         let grid = canvas::CodelGrid::from_colors(1, 1, vec![red]).unwrap();
         let label = ring_index(&grid, canvas::Point::new(0, 0));
-        let stream = format!("{} 0 0 {}", stream_of(&grid).unwrap(), label);
+        let stream = format!("{} 0 0 {}", ring_stream(&grid).unwrap(), label);
         let output = execute(&exit_blocks_for_test(), &numbers(&stream), 40_000_000);
         assert_eq!(output, "-1");
     }
@@ -2109,7 +2113,7 @@ mod tests {
             .min()
             .unwrap();
 
-        let stream = format!("{} {} 0 0", stream_of(&grid).unwrap(), label);
+        let stream = format!("{} {} 0 0", ring_stream(&grid).unwrap(), label);
         let output = execute(&step_blocks_for_test(), &numbers(&stream), 20_000_000);
         // The red is one cell wide: its own edge is (0, 0), and one step right
         // lands on the green, whose label is 6 in a row four cells long.
