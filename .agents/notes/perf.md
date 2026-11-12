@@ -124,3 +124,12 @@ The partition is the splitter's answer rather than `canvas::Blocks`'s now, which
 adds one splitter run per graph build: the hello world's 992 ring cells take
 79 730 314 steps and 2 s, and the same graph build is 94.45 s with it and 92.45 s
 without. That is the honest price of not running the partition rules twice.
+
+A stage's cost is its layout, not its arithmetic. Every dispatch walks down a lane
+and back up the return column, so a block visit costs about twice the image
+height, and the height is the longest block's command count. The splitter's
+twelve blocks are 2 394 commands, and block 8 is 1 981 of them, which is why
+every stage that includes it is 1 989 codels tall and why a 20-million-step run
+on the edge stage is 4 995 dispatches per entry-column block at 4 000 steps each.
+The same stage's own work is ~5 million steps for a 992-cell ring; the 79.7
+million is the partition the stage re-runs.

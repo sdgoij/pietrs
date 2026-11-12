@@ -796,52 +796,65 @@ walker's tests build directly.
 
 ### S10. One image from pixels to output (measured, not built)
 
-The last row of S4's table is one program that reads a PPM, partitions it, builds
-the state graph and runs it. Three things are missing, and the measurements say
-only one of them is worth attacking first.
+The last row of S4's table is one program that reads a PPM, partitions it and runs
+it. The measurements say where the cost is, and it is not where the staged plan
+assumed.
 
-**The graph walk.** A state costs the exit stage a pass over the ring per attempt.
-Measured on the canonical hello world: 25 states, 24 edges, 2 649 541 351
-interpreted steps in total — 105 981 654 per state, 230 528 868 for the worst —
-and 93.8 s in release, against 16 us for `tessera::StateGraph::build`. The cost is
-linear in the ring, because every cell a scan visits rotates the whole ring: a
-uniform 16 x 16 grid (324 ring cells) costs 75 572 318 steps for one state, and
-the hello world's 106 million per state fall on the same line at 230 000 steps per
-ring cell. At that rate *Piet's Quest* — 17 964 states over 478 815 ring cells —
-is of order 10^11 steps *per state*, which is a year, not a session. Even with a
-cell visit at O(1), the eight attempts times every state times every cell is
-10^11 to 10^12 commands. **An image-resolved graph is a demonstration for programs
-of a few dozen states.** That is why the *Piet's Quest* runs take the graph from
-`tessera` and only the records from an image.
+**Every query re-runs the partition.** Each stage here is "the splitter plus
+something": `edge_program`, `step_program` and `exit_program` all start from
+`blocks()` and jump past the partition only if they could trust someone else's
+labels. On the canonical hello world the stages decompose as: splitter
+79 730 314 steps, edge 84 381 247, step 84 772 539, exit 84 785 578. So a move
+is about 5 million steps and the other 79.7 million are the partition being redone
+for the twenty-fifth time. That is why the image-resolved graph costs 94 s for 25
+states: 25 x 3.2 s of partition plus 25 moves.
+
+**A block visit costs the image's height.** The count above is dominated by
+transport, not by arithmetic. The layout is one bus row, one lane per block, and
+one return column; every dispatch walks down a lane and back up the return path,
+so a block visit costs about twice the image's height. On the edge stage a
+20-million-step run visits each of 12 entry-column blocks 4 995 times — about
+4 000 steps a dispatch, against an image 1 989 codels tall. The height itself is
+set by the longest block: the splitter's twelve blocks total 2 394 commands and
+block 8 (`BODY`, the partition's per-cell rule) is **1 981** of them, so every
+block in every stage that includes it pays for those 1 981 codels on the way up
+and down.
+
+**So the machine is the cheap path, not the dear one.** A single program that
+partitions once and then loops — scan, step, slide, command — spends on the hello
+world 79.7 million steps for the partition and about 5 million per command: 200
+million, four seconds, against the eager graph's 94 s. For a grid of N codels the
+partition is ~80 000 x N and a move ~5 000 x N, so the machine is usable for the
+sizes this repository tests with and out of reach for *Piet's Quest*: 5 000 x
+478 815 is 2.4 billion steps *per command*, and that program has 300 000 of them.
 
 **The storage.** The movement stages keep four values per ring cell, so *Piet's
 Quest*'s 478 815 cells are 1 915 260 values — over the runtime's million-value
-default before one record is pushed. Packing a cell into one value, colour and
-label in the two halves, brings it to 478 815; the records are 4 x 62 945 =
-251 780 plus trampolines, and the slots are 61 987, so the whole single image
-lands near 900 000 values. It fits, barely, and only packed. That pack is a change
-to the movement stages themselves, not a new stage bolted on.
+default before a value is pushed. Packing a cell into one value, colour and label
+in the two halves, brings it to 478 815; that is a change to the ring layout
+itself, and the machine can start without it.
 
-**The image.** The stages are already large: the splitter is 82 x 1989 codels and
-27 912 blocks, the start 187 x 1989 and 69 765, the exit 367 x 1989 and 141 513,
-the walker 617 x 246 and 30 260. Their union is roughly 2.5 million codels and a
-quarter of a million blocks; Cranelift took 2.2 s for the walker's 30 260, so the
-merged image would take tens of seconds to JIT.
+**The shape.** One program, three phases, one stack:
 
-**What could be extracted alone.** The record assembly — offsets, trampolines,
-the ordering — is the one piece of the host that is pure arithmetic on the graph:
-one pass, one deep roll per edge, 35 ms at *Piet's Quest*'s 19 352 edges (1.79 us
-per roll of depth 17 964). It could be a stage. It would not remove the host,
-though: the host would still walk the graph and print it, which is most of what
-`graph_walker` does, so the stage would trade eighty lines of Rust for a large
-image and a slower pipeline without changing where the work happens.
+1. `ppm`'s decoder runs as a subroutine, one pixel per call, over the header and
+   then the pixels;
+2. the ring is built once, as [`crate::ring_grid`] builds it, and the splitter's
+   fixpoint runs on it once;
+3. the loop: read the state `(label, dp, cc)`, scan the ring for that label's
+   edge codel, step and slide, take the command from the colour transition, run
+   it on the value stack, repeat.
 
-**The decision.** The single image is blocked on the ring rotation, not on the
-host. A page above the ring (S3) would make a cell visit O(1) and take the hello
-world's graph from 94 s to about a second, which is the change that makes a
-merged program worth attempting. Until then the boundary is the right one:
-`tessera` builds a graph in microseconds, and the images resolve everything a
-program's *execution* needs.
+Phases 1 and 2 exist as programs and phase 3's pieces exist as `grid.rs`'s scan,
+step and slide blocks and `walker.rs`'s command handlers. What is new is one
+stack layout that all three agree on — the grid ring at the bottom, a live count,
+then the values — and the loop that hands the state from the movement to the
+command and back.
+
+**The slices.** (1) the loop over a ring the caller supplies, printing the state
+trace, checked against `interp`'s trace; (2) the command handlers on the value
+stack, so the hello world prints; (3) slides and `pointer`/`switch`; (4) the PPM
+and partition phases inside the same program. Each slice is checkable against the
+stage it replaces, which is how S1 to S9 were built.
 
 ## Recommendation
 
@@ -877,6 +890,7 @@ release harness; the small cases are in the default suite.
 
 S7 to S9 then took the last three host streams away: the ring, the splitter's
 labels and the block sizes are all printed by images. What remains of the host is
-the graph itself, and S10 says why it should stay there: resolving one state costs
-the exit stage a rotation of the whole ring per cell, 106 million steps for the
-hello world and of order 10^11 per state for *Piet's Quest*.
+the graph, and S10 measures what moving it would take: the eager stages re-run
+the partition on every query, so the hello world's graph costs 94 s where a
+machine that partitions once and then loops would cost about 4 s. The single
+image is worth building, with the lazy loop rather than the graph.
