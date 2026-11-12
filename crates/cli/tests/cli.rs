@@ -180,6 +180,36 @@ fn run_reads_standard_input_when_no_file_is_given() {
 }
 
 #[test]
+fn run_continues_from_standard_input_after_the_file() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("subtract.png");
+    std::fs::write(
+        &path,
+        include_bytes!("../../xtask/fixtures/subtract/program.png"),
+    )
+    .unwrap();
+    let input = dir.path().join("first.txt");
+    std::fs::write(&input, "10 ").unwrap();
+    let mut child = pietrs()
+        .args([
+            "run",
+            path.to_str().unwrap(),
+            "--input",
+            input.to_str().unwrap(),
+            "--max-steps",
+            "200000",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"3").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7");
+}
+
+#[test]
 fn trace_prints_the_transitions() {
     let dir = TempDir::new().unwrap();
     let mut rgba = Vec::new();

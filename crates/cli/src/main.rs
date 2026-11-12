@@ -1,6 +1,5 @@
 //! The `pietrs` command line: check, trace, run, build, and selftest a Piet image.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 #[cfg(feature = "codegen")]
@@ -12,7 +11,7 @@ use std::time::{Duration, Instant};
 use canvas::{Blocks, CodelGrid};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use interp::{ExitReason, Options, run, run_traced};
-use runtime::{BufferIo, Io, StreamIo};
+use runtime::{BufferIo, ChainIo, Io, StreamIo};
 use tessera::{Start, StateGraph, start};
 
 #[derive(Debug, Parser)]
@@ -101,7 +100,7 @@ struct RunArgs {
     /// Stop after this many transitions.
     #[arg(long)]
     max_steps: Option<u64>,
-    /// Read program input from this file instead of standard input.
+    /// Read program input from this file before standard input.
     #[arg(long)]
     input: Option<PathBuf>,
     /// How division and modulo round.
@@ -353,18 +352,21 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
     // With no input file the program reads the terminal, so a menu waits for an
-    // answer instead of seeing an exhausted stream.
-    let mut buffered = match &args.input {
-        Some(path) => Some(BufferIo::new(std::fs::read_to_string(path).map_err(
-            |source| Error::Read {
+    // answer instead of seeing an exhausted stream. A file is read first, then
+    // the terminal, which is how a walker's record prefix is followed by the
+    // interpreted program's reads.
+    let mut chained = match &args.input {
+        Some(path) => Some(ChainIo::new(
+            BufferIo::new(std::fs::read_to_string(path).map_err(|source| Error::Read {
                 path: path.clone(),
                 source,
-            },
-        )?)),
+            })?),
+            StreamIo::new(),
+        )),
         None => None,
     };
     let mut stream = StreamIo::new();
-    let io: &mut dyn Io = match buffered.as_mut() {
+    let io: &mut dyn Io = match chained.as_mut() {
         Some(io) => io,
         None => &mut stream,
     };
@@ -375,11 +377,6 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
         ..codegen::Options::default()
     };
     let result = codegen::run(&blocks, io, &options)?;
-    if let Some(io) = &buffered {
-        let mut stdout = std::io::stdout();
-        stdout.write_all(io.output().as_bytes())?;
-        stdout.flush()?;
-    }
     match result.reason {
         codegen::ExitReason::Terminated => Ok(ExitCode::SUCCESS),
         codegen::ExitReason::StepLimit => {
@@ -397,17 +394,18 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
 fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
-    let mut buffered = match &args.input {
-        Some(path) => Some(BufferIo::new(std::fs::read_to_string(path).map_err(
-            |source| Error::Read {
+    let mut chained = match &args.input {
+        Some(path) => Some(ChainIo::new(
+            BufferIo::new(std::fs::read_to_string(path).map_err(|source| Error::Read {
                 path: path.clone(),
                 source,
-            },
-        )?)),
+            })?),
+            StreamIo::new(),
+        )),
         None => None,
     };
     let mut stream = StreamIo::new();
-    let io: &mut dyn Io = match buffered.as_mut() {
+    let io: &mut dyn Io = match chained.as_mut() {
         Some(io) => io,
         None => &mut stream,
     };
@@ -417,11 +415,6 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
         ..Options::default()
     };
     let result = run(&blocks, io, &options)?;
-    if let Some(io) = &buffered {
-        let mut stdout = std::io::stdout();
-        stdout.write_all(io.output().as_bytes())?;
-        stdout.flush()?;
-    }
     match result.reason {
         ExitReason::Terminated => Ok(ExitCode::SUCCESS),
         ExitReason::StepLimit => {

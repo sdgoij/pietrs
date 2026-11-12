@@ -219,6 +219,45 @@ impl<R, W: Write> Output for StreamIo<R, W> {
     }
 }
 
+/// Input from `first` and then from `second`; output to `second`.
+///
+/// The CLI gives a walker its record stream from a file and then the terminal:
+/// the stream is a fixed prefix, and the interpreted program's reads continue
+/// from standard input once it is exhausted. A number that the first has no
+/// digits for is taken from the second.
+pub struct ChainIo<A, B> {
+    first: A,
+    second: B,
+}
+
+impl<A, B> ChainIo<A, B> {
+    pub fn new(first: A, second: B) -> Self {
+        Self { first, second }
+    }
+}
+
+impl<A: Input, B: Input> Input for ChainIo<A, B> {
+    fn read_char(&mut self) -> Option<char> {
+        self.first.read_char().or_else(|| self.second.read_char())
+    }
+
+    fn read_number(&mut self) -> Option<Value> {
+        self.first
+            .read_number()
+            .or_else(|| self.second.read_number())
+    }
+}
+
+impl<A, B: Output> Output for ChainIo<A, B> {
+    fn write_char(&mut self, c: char) {
+        self.second.write_char(c);
+    }
+
+    fn write_number(&mut self, value: Value) {
+        self.second.write_number(value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +286,20 @@ mod tests {
         io.write_char('A');
         io.write_number(-7);
         assert_eq!(io.output, b"A-7");
+    }
+
+    #[test]
+    fn a_chain_reads_the_first_then_the_second() {
+        let mut io = ChainIo::new(
+            BufferIo::new("10 "),
+            StreamIo::over(Cursor::new(b"3".to_vec()), Vec::<u8>::new()),
+        );
+        assert_eq!(io.read_number(), Some(10));
+        assert_eq!(io.read_number(), Some(3));
+        assert_eq!(io.read_number(), None);
+        io.write_char('A');
+        io.write_number(1);
+        assert_eq!(io.second.output, b"A1");
     }
 
     #[test]

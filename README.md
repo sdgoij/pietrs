@@ -50,7 +50,7 @@ pietrs check program.png
 # interactive program waits for a line.
 pietrs run program.png
 
-# Same, with input and a step bound.
+# Same, with a file of input (read before standard input) and a step bound.
 pietrs run adder.png --input numbers.txt --max-steps 100000
 
 # One line per transition, for debugging or diffing.

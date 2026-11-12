@@ -11,7 +11,7 @@ pub type Value = i64;
 pub use arithmetic::{
     Division, floored_div, floored_mod, greater, not, truncating_div, truncating_mod,
 };
-pub use io::{BufferIo, Input, Io, Output, StreamIo};
+pub use io::{BufferIo, ChainIo, Input, Io, Output, StreamIo};
 pub use stack::Stack;
 
 use thiserror::Error;
