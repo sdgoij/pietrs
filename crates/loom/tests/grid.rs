@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
 use loom::{
-    block_edge, exit_state, grid_graph, record_code, splitter, splitter_image, start_state,
+    Sizes, block_edge, exit_state, grid_graph, record_code, splitter, splitter_image, start_state,
     step_state,
 };
 use runtime::BufferIo;
@@ -468,12 +468,56 @@ fn the_canonical_hello_world_starts() {
     assert_eq!(found, expected);
 }
 
+#[test]
+fn the_image_s_partition_names_and_sizes_what_the_host_partition_does() {
+    // The splitter's labels, read back as ids and sizes, must match
+    // `canvas::Blocks` — the graph is keyed by those ids and the records carry
+    // those sizes, so a mismatched numbering would still run, but on the wrong
+    // program.
+    let grid = grid(&["rg", "gr"]);
+    let blocks = Blocks::partition(grid.clone());
+    let partition = loom::grid_partition(&grid, 40_000_000).unwrap();
+    let labels = expected(&grid);
+
+    assert_eq!(partition.len(), blocks.len());
+    for block in blocks.blocks() {
+        let size = u32::try_from(block.size()).unwrap();
+        assert_eq!(partition.size(block.id()), Some(size), "{block:?}");
+        let label = partition.label_of(block.id()).unwrap();
+        assert_eq!(partition.id_of(label), Some(block.id()));
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|candidate| **candidate == label)
+                .count() as u32,
+            size,
+            "the label's cell count is the block's size"
+        );
+    }
+}
+
+#[test]
+fn the_image_s_partition_sizes_the_walker_the_way_the_host_does() {
+    // A picture resolved by the images and the same picture resolved by the
+    // host must give the walker the same records, byte for byte.
+    let png = include_bytes!("../../xtask/fixtures/pointer/program.png");
+    let grid = CodelGrid::from_image(png).unwrap();
+    let blocks = Blocks::partition(grid.clone());
+    let graph = tessera::StateGraph::build(&blocks);
+    let (_, from_host) = loom::graph_walker(&graph, &blocks, "65 48").unwrap();
+
+    let (found, partition) = grid_graph(&grid, 400_000_000).unwrap();
+    assert_eq!(found, graph, "the images resolved the host's graph");
+    let (_, from_image) = loom::graph_walker(&found, &partition, "65 48").unwrap();
+    assert_eq!(from_image, from_host, "the records carry the same sizes");
+}
+
 /// The image-built graph for `rows`, against `tessera`'s own walk.
 fn check_graphs(rows: &[&str]) {
     let grid = grid(rows);
     let blocks = Blocks::partition(grid.clone());
     let expected = tessera::StateGraph::build(&blocks);
-    let found = grid_graph(&grid, 200_000_000).unwrap();
+    let found = grid_graph(&grid, 200_000_000).unwrap().0;
     assert_eq!(found.start(), expected.start(), "{rows:?}");
     assert_eq!(found.states(), expected.states(), "{rows:?}");
     assert_eq!(found.edges(), expected.edges(), "{rows:?}");
@@ -513,13 +557,13 @@ fn the_canonical_hello_world_graph_runs() {
     assert_eq!(grid.codels(), source.codels(), "the image decoded the PPM");
 
     let blocks = Blocks::partition(grid.clone());
-    let graph = grid_graph(&grid, 400_000_000).unwrap();
+    let (graph, partition) = grid_graph(&grid, 400_000_000).unwrap();
     assert_eq!(
         graph.states().len(),
         tessera::StateGraph::build(&blocks).states().len()
     );
 
-    let (image, stream) = loom::graph_walker(&graph, &blocks, "").unwrap();
+    let (image, stream) = loom::graph_walker(&graph, &partition, "").unwrap();
     let (output, result) = run(&image, &stream, 10_000_000);
     assert_eq!(output, "Hello world!");
     assert_eq!(result.reason, ExitReason::Terminated);

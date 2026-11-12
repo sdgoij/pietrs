@@ -154,7 +154,7 @@ fn a_ppm_program_runs_through_the_image_pipeline() {
     assert_eq!(grid.codels(), &colors[..], "the image decoded the PPM");
 
     let blocks = Blocks::partition(grid.clone());
-    let graph = loom::grid_graph(&grid, 400_000_000).unwrap();
+    let (graph, partition) = loom::grid_graph(&grid, 400_000_000).unwrap();
     let expected = StateGraph::build(&blocks);
     assert_eq!(
         graph.states(),
@@ -163,7 +163,8 @@ fn a_ppm_program_runs_through_the_image_pipeline() {
     );
     assert_eq!(graph.edges(), expected.edges());
 
-    let (image, records) = graph_walker(&graph, &blocks, "10 3").unwrap();
+    // The walker's record sizes come from the image's partition, not the host's.
+    let (image, records) = graph_walker(&graph, &partition, "10 3").unwrap();
     let (output, reason) = run_image(image, &records, 10_000_000);
     // A row of codels is a closed loop: the last block cannot leave to the
     // right, and the fallback walks back leftwards, exactly as the reference

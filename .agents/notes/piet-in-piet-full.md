@@ -613,10 +613,11 @@ world, which starts in its upper-left block without sliding.
 **The hand-over is built** (`loom::grid_graph`). It walks the state graph with
 the image — one `start_state` run and one `exit_state` run per state — and
 assembles the same `StateGraph` that `tessera::StateGraph::build` would, so
-`graph_walker` takes the records unchanged. The host supplies the bookkeeping
-the image's four fields do not: the block sizes, the label-to-block map and the
-offsets. A `Resolver` trait in `tessera` is the seam; `Blocks` implements it, so
-both builders share one walk.
+`graph_walker` takes the records unchanged. At this stage the host still supplied
+the bookkeeping the image's four fields did not: the block sizes, the
+label-to-block map and the offsets; S9 moved the first two into the splitter. A
+`Resolver` trait in `tessera` is the seam; `Blocks` implements it, so both
+builders share one walk.
 
 That closes the checkpoint: the canonical hello world, decoded from its grid,
 partitioned and moved by the images, hands the walker its records and prints
@@ -679,10 +680,9 @@ cargo run -p loom --example run-ppm -- program.ppm "10 3"
 ```
 
 What the host still does is what cannot be an image's output: it carries text
-between stages, maps the image's labels to block ids, and fills in the block
-sizes and ring offsets the records carry. The partition the bookkeeping needs is
-still `Blocks::partition`; the splitter image resolves the same partition, and
-S7 puts its ring stream in the image too.
+between stages, and fills in the ring offsets the records carry. The block ids and
+sizes it also needed at the time are the splitter's since S9, and the ring stream
+has been the image's since S7.
 
 The cost is the one S4 measured: `grid_graph` is one image run per state.
 *Hello world!* from its 30 x 29 PPM through the image-resolved graph takes 96 s
@@ -767,6 +767,32 @@ graph is keyed by, and their sizes are what the walker's `push` records. Moving
 that is a different shape of work — the sizes are a property of the partition the
 splitter already resolves, so its output would have to carry them, not only the
 labels.
+
+### S9. The partition in the image (done)
+
+The last thing the host still partitioned for itself was the walker's
+bookkeeping: `grid_graph` asked `Blocks::partition` for the ids its states are
+keyed by, and `graph_walker` asked it for each block's size, which is what a
+`push` costs. Both now come from the labels the splitter was already printing.
+
+A block's id is `canvas::Blocks`'s numbering, and that numbering is reproducible
+from labels alone: `Blocks` numbers blocks in row-major order of their first
+codel, and the ring visits the codels in the same order, so the host assigns
+`0, 1, 2, …` as each new label appears. A block's size is how many cells carry
+its label. `Partition` holds the result — label to id, id to label, id to size —
+and implements `Sizes`, the one thing the walker asks for; `Blocks` implements it
+too, so the host-resolved and image-resolved paths share the same walker.
+
+`grid_graph` returns the graph and the partition, and runs the splitter once over
+the ring: the hello world's 992 cells take 79.7 million steps, 2 s, on top of the
+states' 92 s. `the_image_s_partition_sizes_the_walker_the_way_the_host_does` runs
+the same program through both partitions and compares the record streams byte for
+byte, which is the check that the reproduced numbering is the host's.
+
+So a grid no longer needs a host partition to run: the images name the blocks,
+size them and resolve every move. `Blocks` stays for tiling the images themselves
+— any image has to be partitioned to be run — and for the host-resolved graph the
+walker's tests build directly.
 
 ## Recommendation
 

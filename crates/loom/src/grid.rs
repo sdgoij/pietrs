@@ -112,11 +112,16 @@
 //! building the records itself. Every stage here takes the same stream and a
 //! query appended by [`with_step_query`] or [`with_exit_query`].
 
+use std::collections::HashMap;
+
 use canvas::{BlockId, Blocks, CodelGrid, Color, Point};
+use interp::{ExitReason, Options};
+use runtime::BufferIo;
 use tessera::{Chooser, Command, Direction};
 
 use crate::error::Error;
 use crate::flow::{Block, End, Node, Program};
+use crate::walker::Sizes;
 
 /// Cells per ring record: label, colour, stride, ring size.
 const PER_CELL: u32 = 4;
@@ -289,6 +294,127 @@ fn label_of(grid: &CodelGrid, block: BlockId) -> Result<u32, Error> {
 /// The splitter image: the same for every grid.
 pub fn splitter_image() -> Result<CodelGrid, Error> {
     program()?.image()
+}
+
+/// The partition the splitter resolves for a grid.
+///
+/// One run of [`splitter_image`] over [`grid_ring`], read back as block ids and
+/// sizes. From here the host needs no partition of its own: the ids name the
+/// states, and the sizes are what the walker's `push` record costs.
+pub fn grid_partition(grid: &CodelGrid, steps: u64) -> Result<Partition, Error> {
+    partition_of(grid.width(), grid.height(), &grid_ring(grid)?, steps)
+}
+
+/// The partition a ring stream's labels describe.
+///
+pub(crate) fn partition_of(
+    width: u32,
+    height: u32,
+    ring: &str,
+    steps: u64,
+) -> Result<Partition, Error> {
+    let image = Blocks::partition(splitter_image()?);
+    let mut io = BufferIo::new(ring);
+    let options = Options {
+        max_steps: Some(steps),
+        ..Options::default()
+    };
+    let result = interp::run(&image, &mut io, &options)?;
+    if result.reason != ExitReason::Terminated {
+        return Err(Error::StepLimit(steps));
+    }
+    let output = io.into_output();
+    let labels = output
+        .split_whitespace()
+        .map(|token| {
+            token.parse().map_err(|_| Error::BadOutput {
+                output: output.clone(),
+            })
+        })
+        .collect::<Result<Vec<i64>, Error>>()?;
+    Partition::from_labels(width, height, &labels)
+}
+
+/// The partition the splitter printed: a block id and a size for each label.
+///
+/// The ids are `canvas::Blocks`'s numbering — blocks are numbered in row-major
+/// order of their first codel, which is the order their labels first appear in
+/// the ring — and a block's size is the number of cells carrying its label. So
+/// the host both names and sizes the partition from the image's answer, without
+/// re-running the rules.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Partition {
+    /// The label of each block, indexed by its id.
+    labels: Vec<u32>,
+    /// The block each label belongs to.
+    by_label: HashMap<u32, BlockId>,
+    /// The codel count of each block, indexed by its id.
+    sizes: Vec<u32>,
+}
+
+impl Partition {
+    /// Reads the splitter's output: one label per ring cell, in ring order.
+    ///
+    /// `width` and `height` say which cells are codels; a guard's label is its
+    /// own ring index and becomes no block, which is what `Blocks` does too.
+    fn from_labels(width: u32, height: u32, labels: &[i64]) -> Result<Self, Error> {
+        let row = u64::from(width) + 2;
+        let rows = u64::from(height) + 2;
+        let cells = row * rows;
+        let bad = || Error::BadOutput {
+            output: format!("{width}x{height} and {} labels", labels.len()),
+        };
+        if labels.len() as u64 != cells {
+            return Err(bad());
+        }
+        let mut partition = Self::default();
+        for (index, token) in labels.iter().enumerate() {
+            let index = index as u64;
+            let (line, column) = (index / row, index % row);
+            if line == 0 || line > u64::from(height) || column == 0 || column > u64::from(width) {
+                continue;
+            }
+            let label = u32::try_from(*token).map_err(|_| bad())?;
+            if u64::from(label) >= cells {
+                return Err(bad());
+            }
+            if let Some(id) = partition.by_label.get(&label).copied() {
+                partition.sizes[id.0 as usize] += 1;
+            } else {
+                let id =
+                    BlockId(u32::try_from(partition.sizes.len()).map_err(|_| Error::TooLarge)?);
+                partition.labels.push(label);
+                partition.sizes.push(1);
+                partition.by_label.insert(label, id);
+            }
+        }
+        Ok(partition)
+    }
+
+    /// The block a label names, if the splitter printed that label.
+    pub fn id_of(&self, label: u32) -> Option<BlockId> {
+        self.by_label.get(&label).copied()
+    }
+
+    /// The label of a block, if the block exists.
+    pub fn label_of(&self, block: BlockId) -> Option<u32> {
+        self.labels.get(block.0 as usize).copied()
+    }
+
+    /// How many blocks the partition has.
+    pub fn len(&self) -> usize {
+        self.sizes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sizes.is_empty()
+    }
+}
+
+impl Sizes for Partition {
+    fn size(&self, block: BlockId) -> Option<u32> {
+        self.sizes.get(block.0 as usize).copied()
+    }
 }
 
 /// A splitter image and the stream that carries `grid`'s colours to it.

@@ -42,19 +42,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let source = std::fs::read_to_string(&path)?;
     let grid = loom::ppm_to_grid(&source)?;
-    let blocks = Blocks::partition(grid.clone());
+    // Both come from images: the splitter names and sizes the blocks, and the
+    // start and exit stages resolve every move.
+    let (graph, partition) = loom::grid_graph(&grid, GRID_STEPS)?;
     println!(
         "{}: {}x{} codels, {} blocks",
         path.display(),
         grid.width(),
         grid.height(),
-        blocks.len()
+        partition.len()
     );
-
-    let graph = loom::grid_graph(&grid, GRID_STEPS)?;
     println!("{} states", graph.states().len());
 
-    let (image, records) = loom::graph_walker(&graph, &blocks, &input)?;
+    let (image, records) = loom::graph_walker(&graph, &partition, &input)?;
     let walker = Blocks::partition(image);
     let mut io = BufferIo::new(&records);
     let options = Options {

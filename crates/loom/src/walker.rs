@@ -131,7 +131,7 @@
 
 use std::collections::HashMap;
 
-use canvas::{Blocks, CodelGrid};
+use canvas::{BlockId, Blocks, CodelGrid};
 use tessera::{Branch, Command, State, StateGraph};
 
 use crate::error::Error;
@@ -278,6 +278,23 @@ pub fn walker(instructions: &[Instruction], input: &str) -> Result<(CodelGrid, S
     Ok((program()?.image()?, stream))
 }
 
+/// Where the walker's records get a block's size.
+///
+/// A record carries the size of the block its state runs in, which is what a
+/// `push` command costs. `canvas::Blocks` answers for a partition the host built;
+/// [`crate::Partition`] answers for the one the splitter printed.
+pub trait Sizes {
+    /// The number of codels in `block`, or `None` when there is no such block.
+    fn size(&self, block: BlockId) -> Option<u32>;
+}
+
+impl Sizes for Blocks {
+    fn size(&self, block: BlockId) -> Option<u32> {
+        self.block(block)
+            .and_then(|target| u32::try_from(target.size()).ok())
+    }
+}
+
 /// A walker image and the stream that runs a program's `graph`.
 ///
 /// The graph decides where to go next, so the records carry the offsets: a
@@ -285,12 +302,16 @@ pub fn walker(instructions: &[Instruction], input: &str) -> Result<(CodelGrid, S
 /// its trampolines — one per successor — directly after its own record, so the
 /// handler only has to widen the popped value into `4 * (1 + index)`.
 ///
+/// `sizes` is where each record's block size comes from: the same partition the
+/// graph was built with, either the host's `Blocks` or the image's
+/// [`crate::Partition`].
+///
 /// `input` is read as whitespace-separated numbers, one per read: a graph picks
 /// its reads at run time, so they cannot be encoded per command. A character
 /// read pushes the number as its code point.
-pub fn graph_walker(
+pub fn graph_walker<S: Sizes + ?Sized>(
     graph: &StateGraph,
-    blocks: &Blocks,
+    sizes: &S,
     input: &str,
 ) -> Result<(CodelGrid, String), Error> {
     let Some(start) = graph.start() else {
@@ -334,9 +355,7 @@ pub fn graph_walker(
             continue;
         };
         let code = record_code(first.command);
-        let size = blocks
-            .block(state.block)
-            .map_or(0, |block| block.size() as i64);
+        let size = sizes.size(state.block).map_or(0, i64::from);
         let offset = match first.branch {
             Branch::Deterministic => jump(slot, at[&first.to], count),
             Branch::Pointer(_) | Branch::Switch(_) => {

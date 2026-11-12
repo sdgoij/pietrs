@@ -28,8 +28,9 @@
 //! [`splitter`] is the way past the host's partition: it reads a grid's colours
 //! and reports the block each ring cell belongs to, so the first half of the
 //! tessellation happens in the image rather than before it. [`grid_graph`]
-//! finishes that path: it walks the state graph with the image's start and exit
-//! stages, so the host only assembles the walker's records.
+//! finishes that path: it resolves the state graph with the image's start and exit
+//! stages and the partition with the splitter, so the host only assembles the
+//! walker's records.
 //!
 //! ```
 //! use canvas::Blocks;
@@ -65,8 +66,8 @@ pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;
 pub use grid::{
-    block_edge, exit_state, grid_ring, ring_stream, splitter, splitter_image, start_state,
-    step_state, with_exit_query, with_step_query,
+    Partition, block_edge, exit_state, grid_partition, grid_ring, ring_stream, splitter,
+    splitter_image, start_state, step_state, with_exit_query, with_step_query,
 };
 pub use grid_graph::grid_graph;
 pub use interpreter::interpreter;
@@ -75,5 +76,5 @@ pub use ppm::{ppm_codes, ppm_grid, ppm_program, ppm_to_grid};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
 pub use ring::{grid_codes, ring_grid, ring_program, ring_to_stream};
 pub use walker::{
-    COMMAND_DEPTH, RECORD, graph_walker, record_code, record_command, skeleton, walker,
+    COMMAND_DEPTH, RECORD, Sizes, graph_walker, record_code, record_command, skeleton, walker,
 };

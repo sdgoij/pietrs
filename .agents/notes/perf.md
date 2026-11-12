@@ -119,3 +119,8 @@ exit, instead of building it on the host per state. The hello world's image-buil
 graph takes 92.45 s either side of that change, so the 17 964 host-side streams it
 removes are lost in a case whose time is 17 964 image runs; the `ring_stream`
 helper stays in the tree as the oracle the image is checked against.
+
+The partition is the splitter's answer rather than `canvas::Blocks`'s now, which
+adds one splitter run per graph build: the hello world's 992 ring cells take
+79 730 314 steps and 2 s, and the same graph build is 94.45 s with it and 92.45 s
+without. That is the honest price of not running the partition rules twice.

@@ -3,63 +3,47 @@
 //! The grid image resolves the movement rules from pixels, so this walk builds
 //! the same state graph [`StateGraph::build`] does — one state per
 //! `(block, dp, cc)`, its outgoing command and its successors — and hands it to
-//! [`crate::graph_walker`]. The host still supplies the record's bookkeeping:
-//! the block sizes and the ring offsets.
+//! [`crate::graph_walker`] along with the partition its records are sized from.
+//! Both come from images: the splitter names and sizes the blocks, and the start
+//! and exit stages resolve the moves.
 
-use std::collections::HashMap;
-
-use canvas::{BlockId, Blocks, CodelGrid};
 use interp::{ExitReason, Options};
 use runtime::BufferIo;
 use tessera::{Chooser, Direction, Exit, Resolver, Start, State, StateGraph};
 
+use canvas::{BlockId, Blocks, CodelGrid};
+
 use crate::error::Error;
-use crate::grid::{exit_image, grid_ring, ring_index, start_image, with_exit_query};
+use crate::grid::{Partition, exit_image, grid_ring, partition_of, start_image, with_exit_query};
 use crate::walker::record_command;
 
 /// Builds the state graph reachable from the upper-left codel, resolving every
-/// move with the grid image.
+/// move with the grid image, and the partition it is keyed by.
 ///
 /// `steps` is the budget for one image run; a grid that needs more is reported
 /// as [`Error::StepLimit`].
-pub fn grid_graph(grid: &CodelGrid, steps: u64) -> Result<StateGraph, Error> {
-    let resolver = GridResolver::new(grid, steps)?;
-    StateGraph::build_with(&resolver)
+pub fn grid_graph(grid: &CodelGrid, steps: u64) -> Result<(StateGraph, Partition), Error> {
+    let ring = grid_ring(grid)?;
+    let partition = partition_of(grid.width(), grid.height(), &ring, steps)?;
+    let resolver = GridResolver::new(&ring, &partition, steps)?;
+    let graph = StateGraph::build_with(&resolver)?;
+    Ok((graph, partition))
 }
 
 /// The image as a resolver of the movement rules.
-struct GridResolver {
-    /// The ring label the image prints for a block, back to the host's id.
-    by_label: HashMap<u32, BlockId>,
-    /// The label to ask the images about, for a block the host named.
-    by_block: HashMap<BlockId, u32>,
-    /// The ring stream, printed once by the ring image for the whole build.
-    ring: String,
+struct GridResolver<'a> {
+    ring: &'a str,
+    partition: &'a Partition,
     start: Blocks,
     exit: Blocks,
     steps: u64,
 }
 
-impl GridResolver {
-    fn new(grid: &CodelGrid, steps: u64) -> Result<Self, Error> {
-        let partition = Blocks::partition(grid.clone());
-        let mut by_label = HashMap::new();
-        let mut by_block = HashMap::new();
-        for block in partition.blocks() {
-            let label = block
-                .codels()
-                .iter()
-                .map(|point| ring_index(grid, *point))
-                .min();
-            if let Some(label) = label {
-                by_label.insert(label, block.id());
-                by_block.insert(block.id(), label);
-            }
-        }
+impl<'a> GridResolver<'a> {
+    fn new(ring: &'a str, partition: &'a Partition, steps: u64) -> Result<Self, Error> {
         Ok(Self {
-            by_label,
-            by_block,
-            ring: grid_ring(grid)?,
+            ring,
+            partition,
             start: Blocks::partition(start_image()?),
             exit: Blocks::partition(exit_image()?),
             steps,
@@ -92,12 +76,9 @@ impl GridResolver {
     }
 
     fn block(&self, label: i64, output: &str) -> Result<BlockId, Error> {
-        let label = u32::try_from(label).map_err(|_| Error::BadOutput {
-            output: output.to_owned(),
-        })?;
-        self.by_label
-            .get(&label)
-            .copied()
+        u32::try_from(label)
+            .ok()
+            .and_then(|label| self.partition.id_of(label))
             .ok_or_else(|| Error::BadOutput {
                 output: output.to_owned(),
             })
@@ -119,19 +100,22 @@ impl GridResolver {
     }
 }
 
-impl Resolver for GridResolver {
+impl Resolver for GridResolver<'_> {
     type Error = Error;
 
     fn start(&self) -> Result<Start, Error> {
-        let output = self.run(&self.start, &self.ring)?;
+        let output = self.run(&self.start, self.ring)?;
         Ok(self.state(&output)?.map_or(Start::Terminate, Start::State))
     }
 
     fn exit(&self, state: State) -> Result<Exit, Error> {
-        let Some(&label) = self.by_block.get(&state.block) else {
-            return Err(Error::TooLarge);
-        };
-        let stream = with_exit_query(&self.ring, state.dp, state.cc, label);
+        // Every state came from a label the splitter printed, so the label is
+        // there; a missing one would be the image disagreeing with itself.
+        let label = self
+            .partition
+            .label_of(state.block)
+            .ok_or(Error::TooLarge)?;
+        let stream = with_exit_query(self.ring, state.dp, state.cc, label);
         let output = self.run(&self.exit, &stream)?;
         let tokens = self.tokens(&output)?;
         match tokens.as_slice() {
