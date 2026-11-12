@@ -10,6 +10,6 @@ fail() {
     exit 1
 }
 
-cargo test --workspace --doc || fail "cargo test --doc"
+cargo test --workspace --doc --release || fail "cargo test --workspace --doc --release"
 
 printf 'OK: %s\n' "$name"

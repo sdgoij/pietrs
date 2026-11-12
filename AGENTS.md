@@ -67,18 +67,20 @@ git --no-pager diff --check
 cargo clippy --workspace --all-targets -- -D warnings
 
 # 3. The suite: unit and integration.
-cargo test --workspace
+#    Release: the gate is interpreter work. Debug turns a few minutes into a
+#    quarter of an hour; release pays one build and runs the same tests.
+cargo test --workspace --release
 
 # 4. The long cases: conformance, differential, end-to-end. CI runs these too.
-cargo test --workspace -- --include-ignored
+cargo test --workspace --release -- --include-ignored
 
 # 5. The feature shapes. The interpreter must stand alone, and the codegen
 #    crate must build without its object-emission feature.
-cargo test -p cli --no-default-features
-cargo test -p codegen --no-default-features
+cargo test -p cli --no-default-features --release
+cargo test -p codegen --no-default-features --release
 
 # 6. Documentation.
-cargo test --workspace --doc
+cargo test --workspace --doc --release
 
 # 7. Licences, advisories, banned crates.
 cargo deny check

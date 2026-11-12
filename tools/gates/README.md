@@ -16,16 +16,22 @@ The order is the CI order described in `AGENTS.md`:
 |---|---|
 | `01-fmt` | `cargo fmt --all -- --check`, `git diff --check` |
 | `02-clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
-| `03-test` | `cargo test --workspace` |
-| `04-long-tests` | `cargo test --workspace -- --include-ignored` |
-| `05-features` | `cargo test -p cli --no-default-features`, `cargo test -p codegen --no-default-features` |
-| `06-doc` | `cargo test --workspace --doc` |
+| `03-test` | `cargo test --workspace --release` |
+| `04-long-tests` | `cargo test --workspace --release -- --include-ignored` |
+| `05-features` | `cargo test -p cli --no-default-features --release`, `cargo test -p codegen --no-default-features --release` |
+| `06-doc` | `cargo test --workspace --doc --release` |
 | `07-deny` | `cargo deny check` |
 | `08-wasm` | `cargo build -p gui --no-default-features --features web --target wasm32-unknown-unknown` |
 
 `just gate` runs the same runner; `.github/workflows/ci.yml` runs it on Linux
 and Windows. The external `xtask conformance` and `xtask e2e` gates are recipes
 in the `Justfile` and are also exercised by the long tests.
+
+The test cases run the **release** profile. They are dominated by interpreter
+work — the S4 image sweeps and the walkers run hundreds of millions of steps —
+so a debug build spends a quarter of an hour where optimised code takes a few
+minutes. The profile is shared by cases 03 to 06, so the gate pays one release
+build and keeps it warm between runs.
 
 To exercise the runner without touching the real cases, point `GATE_CASES` at
 another directory:

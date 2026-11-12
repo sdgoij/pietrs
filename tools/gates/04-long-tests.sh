@@ -1,5 +1,9 @@
 #!/bin/sh
 # The long cases: conformance, differential, and end-to-end.
+#
+# Release for the same reason as the suite: the S4 image sweeps and the
+# interpreted walkers are hundreds of millions of steps, and optimised code is
+# where that cost belongs.
 
 set -u
 
@@ -10,6 +14,6 @@ fail() {
     exit 1
 }
 
-cargo test --workspace -- --include-ignored || fail "cargo test --include-ignored"
+cargo test --workspace --release -- --include-ignored || fail "cargo test --workspace --release --include-ignored"
 
 printf 'OK: %s\n' "$name"
