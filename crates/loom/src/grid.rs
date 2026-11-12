@@ -106,6 +106,11 @@
 //! The stream is the number of ring cells, then every record highest index
 //! first, so the last record read is ring cell zero and the head starts there.
 //! The image prints one label per ring cell, in ring order, separated by spaces.
+//!
+//! That stream is [`grid_ring`]'s: [`crate::ring_grid`] prints it from the
+//! colour codes, so the host carries the text between the two images instead of
+//! building the records itself. Every stage here takes the same stream and a
+//! query appended by [`with_step_query`] or [`with_exit_query`].
 
 use canvas::{BlockId, Blocks, CodelGrid, Color, Point};
 use tessera::{Chooser, Command, Direction};
@@ -186,6 +191,28 @@ const STP_SUCCESS: u32 = 46;
 const STP_FAIL: u32 = 47;
 const STP_WHITE: u32 = 48;
 
+/// The ring stream a grid's colours become, printed by [`crate::ring_grid`].
+///
+/// This is the only way a stage here learns a grid: the colour codes go to the
+/// ring image and what it prints goes to the splitter, the edge stage, the step,
+/// the exit and the start. The stream is never built on the host, and a caller
+/// that runs several stages over one grid can print it once and reuse it.
+pub fn grid_ring(grid: &CodelGrid) -> Result<String, Error> {
+    crate::ring_to_stream(&crate::grid_codes(grid))
+}
+
+/// A ring stream with a step or edge query appended: the block's label, then
+/// the state.
+pub fn with_step_query(ring: &str, label: u32, dp: Direction, cc: Chooser) -> String {
+    format!("{ring} {label} {} {}", dp as u32, cc as u32)
+}
+
+/// A ring stream with an exit query appended: the state, then the block's
+/// label, which is the order the exit stage reads them in.
+pub fn with_exit_query(ring: &str, dp: Direction, cc: Chooser, label: u32) -> String {
+    format!("{ring} {} {} {label}", dp as u32, cc as u32)
+}
+
 /// A splitter image that also resolves one step of the movement rules from a
 /// state, and the stream that asks for it.
 ///
@@ -200,13 +227,7 @@ pub fn step_state(
     dp: Direction,
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
-    let mut stream = ring_stream(grid)?;
-    stream.push_str(&format!(
-        " {} {} {}",
-        label_of(grid, block)?,
-        dp as u32,
-        cc as u32
-    ));
+    let stream = with_step_query(&grid_ring(grid)?, label_of(grid, block)?, dp, cc);
     Ok((step_program()?.image()?, stream))
 }
 
@@ -224,14 +245,8 @@ pub fn exit_state(
     dp: Direction,
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
-    let mut stream = ring_stream(grid)?;
     // The exit reads its query as dp, cc, then the label.
-    stream.push_str(&format!(
-        " {} {} {}",
-        dp as u32,
-        cc as u32,
-        label_of(grid, block)?
-    ));
+    let stream = with_exit_query(&grid_ring(grid)?, dp, cc, label_of(grid, block)?);
     Ok((exit_program()?.image()?, stream))
 }
 
@@ -253,7 +268,7 @@ pub(crate) fn exit_image() -> Result<CodelGrid, Error> {
 /// rules the exit stage uses. The image prints the state's label and `(dp, cc)`,
 /// or `-1`.
 pub fn start_state(grid: &CodelGrid) -> Result<(CodelGrid, String), Error> {
-    Ok((start_program()?.image()?, ring_stream(grid)?))
+    Ok((start_program()?.image()?, grid_ring(grid)?))
 }
 
 /// The block's label: the lowest ring position among its codels.
@@ -271,12 +286,18 @@ fn label_of(grid: &CodelGrid, block: BlockId) -> Result<u32, Error> {
         .ok_or(Error::TooLarge)
 }
 
+/// The splitter image: the same for every grid.
+pub fn splitter_image() -> Result<CodelGrid, Error> {
+    program()?.image()
+}
+
 /// A splitter image and the stream that carries `grid`'s colours to it.
 ///
 /// The image is the same for every grid. Running it prints one label per ring
-/// cell; two cells share a label exactly when they are in the same block.
+/// cell; two cells share a label exactly when they are in the same block. The
+/// stream is the ring image's output, not one the host builds.
 pub fn splitter(grid: &CodelGrid) -> Result<(CodelGrid, String), Error> {
-    Ok((program()?.image()?, ring_stream(grid)?))
+    Ok((splitter_image()?, grid_ring(grid)?))
 }
 
 /// A splitter image that also resolves a state's own edge codel, and the stream
@@ -293,13 +314,7 @@ pub fn block_edge(
     dp: Direction,
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
-    let mut stream = ring_stream(grid)?;
-    stream.push_str(&format!(
-        " {} {} {}",
-        label_of(grid, block)?,
-        dp as u32,
-        cc as u32
-    ));
+    let stream = with_step_query(&grid_ring(grid)?, label_of(grid, block)?, dp, cc);
     Ok((edge_program()?.image()?, stream))
 }
 

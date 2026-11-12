@@ -170,6 +170,11 @@ cargo run -p loom --example ppm -- target/weave/ppm.png
 target/debug/pietrs run target/weave/ppm.png < program.ppm
 ```
 
+A second image turns those codes into the ring stream the splitter and the
+movement stages read, so a grid's colours reach the partition without the host
+building the records. `loom::ppm_codes`, `loom::ring_to_stream` and
+`loom::splitter` are the three seams, and each takes and returns text.
+
 PNG, GIF, codel size detection and comments are still the host's; the note's S5
 section says exactly where the boundary is.
 

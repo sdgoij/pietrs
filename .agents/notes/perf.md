@@ -113,3 +113,9 @@ roll, so the cost per cell is flat at about 2 400 interpreted steps from 9 to 32
 cells. On the canonical hello world's grid (30 x 29, 992 ring cells) it runs
 2 403 295 steps in 45 ms and prints the stream `ring_stream` builds. That is the
 whole cost of the stage, once per image, not per state.
+
+`grid_graph` now prints that stream once and reuses it for the start and every
+exit, instead of building it on the host per state. The hello world's image-built
+graph takes 92.45 s either side of that change, so the 17 964 host-side streams it
+removes are lost in a case whose time is 17 964 image runs; the `ring_stream`
+helper stays in the tree as the oracle the image is checked against.

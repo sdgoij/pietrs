@@ -14,7 +14,7 @@ use runtime::BufferIo;
 use tessera::{Chooser, Direction, Exit, Resolver, Start, State, StateGraph};
 
 use crate::error::Error;
-use crate::grid::{exit_image, exit_state, ring_index, start_image, start_state};
+use crate::grid::{exit_image, grid_ring, ring_index, start_image, with_exit_query};
 use crate::walker::record_command;
 
 /// Builds the state graph reachable from the upper-left codel, resolving every
@@ -28,19 +28,23 @@ pub fn grid_graph(grid: &CodelGrid, steps: u64) -> Result<StateGraph, Error> {
 }
 
 /// The image as a resolver of the movement rules.
-struct GridResolver<'a> {
-    grid: &'a CodelGrid,
+struct GridResolver {
     /// The ring label the image prints for a block, back to the host's id.
     by_label: HashMap<u32, BlockId>,
+    /// The label to ask the images about, for a block the host named.
+    by_block: HashMap<BlockId, u32>,
+    /// The ring stream, printed once by the ring image for the whole build.
+    ring: String,
     start: Blocks,
     exit: Blocks,
     steps: u64,
 }
 
-impl<'a> GridResolver<'a> {
-    fn new(grid: &'a CodelGrid, steps: u64) -> Result<Self, Error> {
+impl GridResolver {
+    fn new(grid: &CodelGrid, steps: u64) -> Result<Self, Error> {
         let partition = Blocks::partition(grid.clone());
         let mut by_label = HashMap::new();
+        let mut by_block = HashMap::new();
         for block in partition.blocks() {
             let label = block
                 .codels()
@@ -49,11 +53,13 @@ impl<'a> GridResolver<'a> {
                 .min();
             if let Some(label) = label {
                 by_label.insert(label, block.id());
+                by_block.insert(block.id(), label);
             }
         }
         Ok(Self {
-            grid,
             by_label,
+            by_block,
+            ring: grid_ring(grid)?,
             start: Blocks::partition(start_image()?),
             exit: Blocks::partition(exit_image()?),
             steps,
@@ -113,17 +119,19 @@ impl<'a> GridResolver<'a> {
     }
 }
 
-impl Resolver for GridResolver<'_> {
+impl Resolver for GridResolver {
     type Error = Error;
 
     fn start(&self) -> Result<Start, Error> {
-        let (_, stream) = start_state(self.grid)?;
-        let output = self.run(&self.start, &stream)?;
+        let output = self.run(&self.start, &self.ring)?;
         Ok(self.state(&output)?.map_or(Start::Terminate, Start::State))
     }
 
     fn exit(&self, state: State) -> Result<Exit, Error> {
-        let (_, stream) = exit_state(self.grid, state.block, state.dp, state.cc)?;
+        let Some(&label) = self.by_block.get(&state.block) else {
+            return Err(Error::TooLarge);
+        };
+        let stream = with_exit_query(&self.ring, state.dp, state.cc, label);
         let output = self.run(&self.exit, &stream)?;
         let tokens = self.tokens(&output)?;
         match tokens.as_slice() {

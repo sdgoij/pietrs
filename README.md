@@ -138,7 +138,9 @@ target/debug/pietrs run target/weave/interpreter.png --input target/weave/progra
 ```
 
 The front end is generated too: a P3 PPM goes in, and the grid's colour codes
-come out, so a picture written as text needs no decoder on the host side.
+come out, so a picture written as text needs no decoder on the host side. The
+ring the movement stages read is printed from those codes by a second image, so
+the frontend's stages are joined by characters and not by host-built streams.
 
 ```sh
 cargo run -p loom --example ppm -- target/weave/ppm.png

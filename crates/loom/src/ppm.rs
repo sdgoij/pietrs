@@ -87,6 +87,27 @@ pub fn ppm_grid() -> Result<CodelGrid, Error> {
 /// block partition and the walker's records — belongs to [`crate::grid_graph`]
 /// and [`crate::graph_walker`], which take a grid.
 pub fn ppm_to_grid(source: &str) -> Result<CodelGrid, Error> {
+    let output = ppm_codes(source)?;
+    let bad = || Error::BadOutput {
+        output: output.clone(),
+    };
+    let mut tokens = output.split_whitespace();
+    let width: u32 = tokens.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let height: u32 = tokens.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let mut codels = Vec::with_capacity((width as usize) * (height as usize));
+    for token in tokens {
+        let code: usize = token.parse().map_err(|_| bad())?;
+        codels.push(*Color::ALL.get(code).ok_or_else(bad)?);
+    }
+    CodelGrid::from_colors(width, height, codels).map_err(Error::Canvas)
+}
+
+/// The colour codes [`ppm_grid`] prints for a P3 PPM.
+///
+/// This is the text the ring image takes, so a picture's whole frontend is
+/// images and the host only carries the characters:
+/// [`ppm_codes`] -> [`crate::ring_to_stream`] -> [`crate::splitter`].
+pub fn ppm_codes(source: &str) -> Result<String, Error> {
     /// The image reads three numbers per codel and prints one; this is ample.
     const STEPS: u64 = 20_000_000;
 
@@ -101,20 +122,7 @@ pub fn ppm_to_grid(source: &str) -> Result<CodelGrid, Error> {
     if result.reason != ExitReason::Terminated {
         return Err(Error::StepLimit(STEPS));
     }
-
-    let output = io.into_output();
-    let bad = || Error::BadOutput {
-        output: output.clone(),
-    };
-    let mut tokens = output.split_whitespace();
-    let width: u32 = tokens.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
-    let height: u32 = tokens.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
-    let mut codels = Vec::with_capacity((width as usize) * (height as usize));
-    for token in tokens {
-        let code: usize = token.parse().map_err(|_| bad())?;
-        codels.push(*Color::ALL.get(code).ok_or_else(bad)?);
-    }
-    CodelGrid::from_colors(width, height, codels).map_err(Error::Canvas)
+    Ok(io.into_output())
 }
 
 /// The colour code for three digits, as `canvas::Color::ALL` numbers them.

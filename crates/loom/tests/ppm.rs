@@ -48,6 +48,24 @@ fn expected(width: u32, height: u32, colors: &[Color]) -> String {
 }
 
 #[test]
+fn the_image_s_codes_are_the_ring_image_s_input() {
+    // The frontend's two images are joined by text only: the codes the PPM image
+    // prints go to the ring image, and what it prints is the splitter's stream.
+    let png = include_bytes!("../fixtures/hello-world/program.png");
+    let grid = CodelGrid::from_image(png).unwrap();
+    let pixels: Vec<[u8; 3]> = grid.codels().iter().map(|color| color.rgb()).collect();
+
+    let source = ppm(grid.width(), grid.height(), &pixels);
+    let codes = loom::ppm_codes(&source).unwrap();
+    assert_eq!(codes, expected(grid.width(), grid.height(), grid.codels()));
+    assert_eq!(
+        loom::ring_to_stream(&codes).unwrap(),
+        loom::ring_stream(&grid).unwrap(),
+        "the ring image's stream is the splitter's"
+    );
+}
+
+#[test]
 fn every_palette_colour_reads_back_as_its_code() {
     let colors = Color::ALL;
     let pixels: Vec<[u8; 3]> = colors.iter().map(|color| color.rgb()).collect();

@@ -9,7 +9,10 @@ use std::collections::HashMap;
 
 use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
-use loom::{block_edge, exit_state, grid_graph, record_code, splitter, start_state, step_state};
+use loom::{
+    block_edge, exit_state, grid_graph, record_code, splitter, splitter_image, start_state,
+    step_state,
+};
 use runtime::BufferIo;
 use tessera::{Chooser, Direction};
 
@@ -97,6 +100,21 @@ fn labels(grid: &CodelGrid, steps: u64) -> Vec<u32> {
 fn check(rows: &[&str]) {
     let grid = grid(rows);
     assert_eq!(labels(&grid, 40_000_000), expected(&grid), "{rows:?}");
+}
+
+#[test]
+fn the_splitter_reads_the_ring_image_s_stream() {
+    // The splitter's input is the text the ring image prints, not a stream the
+    // host builds from the grid: a picture's codes arrive by exactly this path.
+    let grid = grid(&["rg", "gr"]);
+    let ring = loom::ring_to_stream(&loom::grid_codes(&grid)).unwrap();
+    let (output, result) = run(&splitter_image().unwrap(), &ring, 40_000_000);
+    assert_eq!(result.reason, ExitReason::Terminated);
+    let labels: Vec<u32> = output
+        .split_whitespace()
+        .map(|token| token.parse().unwrap())
+        .collect();
+    assert_eq!(labels, expected(&grid));
 }
 
 #[test]

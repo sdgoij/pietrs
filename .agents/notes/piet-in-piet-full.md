@@ -745,6 +745,29 @@ with `ring_stream`; `the_stream_is_the_one_the_splitter_reads` pins the ordering
 against `loom::splitter`'s stream, so a disagreement cannot hide behind two
 agreements with the same wrong helper.
 
+### S8. The stages take the image's stream (done)
+
+`ring_stream` in `grid.rs` built the splitter's input on the host, which left the
+ring image beside the path rather than on it. Every stage now takes the text
+`ring_grid` prints: `grid_ring` prints it once for a grid, `with_step_query` and
+`with_exit_query` append a state and a label, and `splitter`, `block_edge`,
+`step_state`, `exit_state` and `start_state` are thin wrappers over those.
+`ppm_codes` exposes the PPM image's own output, so the frontend is three images
+joined by characters — PPM, then colour codes, then the ring, then labels — and
+the only stream a stage takes from the host is the walker's records.
+
+`grid_graph` prints the ring once and reuses it for the start and every exit.
+That is also where the saving would be: one ring run replaces 17 964 host-side
+`ring_stream` calls on the hello world. Measured, it is 92.45 s against the 96 s
+recorded for the same case before — inside the noise, because a case that spends
+its time in 17 964 image runs does not notice the host's string building.
+
+What the host still does is bookkeeping: `Blocks::partition` names the blocks the
+graph is keyed by, and their sizes are what the walker's `push` records. Moving
+that is a different shape of work — the sizes are a property of the partition the
+splitter already resolves, so its output would have to carry them, not only the
+labels.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line
