@@ -608,6 +608,19 @@ builder (`slide_blocks`) with derived ids, shared by both programs.
 Every start fixture agrees with `tessera::start`, including the canonical hello
 world, which starts in its upper-left block without sliding.
 
+**The hand-over is built** (`loom::grid_graph`). It walks the state graph with
+the image — one `start_state` run and one `exit_state` run per state — and
+assembles the same `StateGraph` that `tessera::StateGraph::build` would, so
+`graph_walker` takes the records unchanged. The host supplies the bookkeeping
+the image's four fields do not: the block sizes, the label-to-block map and the
+offsets. A `Resolver` trait in `tessera` is the seam; `Blocks` implements it, so
+both builders share one walk.
+
+That closes the checkpoint: the canonical hello world, decoded from its grid,
+partitioned and moved by the images, hands the walker its records and prints
+`Hello world!`. One full image run per state makes that an ignored release
+harness; the default suite compares the small fixtures with `tessera`.
+
 The staging is deliberate. Each step above is a scan over the ring plus a batch
 of comparisons, and each can be checked against `tessera::block_edge`,
 `tessera::edge_codel` or `tessera::exit` on the small fixtures before the next is
@@ -632,8 +645,10 @@ What is left is not capability but cost, and it is worth saying which is which.
   the graph decides its reads at run time and the stream has to be unambiguous.
   That is an interface wart, not a semantic one.
 
-S4 is built: the partition, the edge codel, the step, the eight-attempt
-fallback, the white slide, the start state and the colour transition are in the
-image and agree with `canvas::Blocks` and `tessera` on every fixture. What
-remains for the hand-over is the record around the move — the block size and the
-offset — and the walker's own dispatch.
+S4 is built end to end: the partition, the edge codel, the step, the
+eight-attempt fallback, the white slide, the start state, the colour transition
+and the hand-over to the walker are all in the image, and the host only
+assembles the records. Every fixture agrees with `canvas::Blocks` and `tessera`,
+and the canonical hello world runs through the image-built graph to
+`Hello world!`. The cost is one full image run per state, so the big case is a
+release harness; the small cases are in the default suite.

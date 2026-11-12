@@ -136,7 +136,7 @@ use tessera::{Branch, Command, State, StateGraph};
 
 use crate::error::Error;
 use crate::flow::{Block, End, Node, Program};
-use crate::program::{Feed, Instruction, opcode};
+use crate::program::{Feed, Instruction, OPCODES, opcode};
 
 /// Cells per record: command, block size, ring cells, offset.
 pub const RECORD: u32 = 4;
@@ -848,6 +848,20 @@ pub fn record_code(command: Option<Command>) -> u32 {
         Some(Command::Pointer) => POINTER,
         Some(Command::Switch) => SWITCH,
         Some(command) => code_of(command).map_or(NOP, u32::from),
+    }
+}
+
+/// The command a record code names: `nop` is `None`, and the branch codes are
+/// `pointer` and `switch`.
+pub fn record_command(code: u32) -> Option<Command> {
+    match code {
+        NOP => None,
+        POINTER => Some(Command::Pointer),
+        SWITCH => Some(Command::Switch),
+        code => code
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| OPCODES.get(index).copied()),
     }
 }
 

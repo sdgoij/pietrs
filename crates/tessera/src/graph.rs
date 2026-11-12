@@ -1,6 +1,7 @@
 //! The reachable `(block, DP, CC)` execution graph.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::convert::Infallible;
 use std::fmt;
 
 use canvas::Blocks;
@@ -35,15 +36,43 @@ pub struct StateGraph {
     edges: Vec<Edge>,
 }
 
+/// Where a state graph's movement comes from.
+///
+/// [`StateGraph::build`] resolves the rules with `tessera` itself; `loom` can
+/// resolve them from an image's pixels, and both share one walk.
+pub trait Resolver {
+    type Error;
+
+    fn start(&self) -> Result<Start, Self::Error>;
+    fn exit(&self, state: State) -> Result<Exit, Self::Error>;
+}
+
+impl Resolver for Blocks {
+    type Error = Infallible;
+
+    fn start(&self) -> Result<Start, Self::Error> {
+        Ok(start(self))
+    }
+
+    fn exit(&self, state: State) -> Result<Exit, Self::Error> {
+        Ok(exit(self, state.block, state.dp, state.cc))
+    }
+}
+
 impl StateGraph {
     /// Builds the graph reachable from the upper-left start state.
     pub fn build(blocks: &Blocks) -> Self {
-        let Start::State(start) = start(blocks) else {
-            return Self {
+        Self::build_with(blocks).expect("the tessera resolver cannot fail")
+    }
+
+    /// Builds the graph from a resolver of the movement rules.
+    pub fn build_with<R: Resolver>(resolver: &R) -> Result<Self, R::Error> {
+        let Start::State(start) = resolver.start()? else {
+            return Ok(Self {
                 start: None,
                 states: Vec::new(),
                 edges: Vec::new(),
-            };
+            });
         };
 
         let mut seen: HashMap<State, usize> = HashMap::new();
@@ -60,7 +89,7 @@ impl StateGraph {
                 dp,
                 cc,
                 command,
-            } = exit(blocks, state.block, state.dp, state.cc)
+            } = resolver.exit(state)?
             else {
                 continue;
             };
@@ -120,11 +149,11 @@ impl StateGraph {
             }
         }
 
-        Self {
+        Ok(Self {
             start: Some(start),
             states,
             edges,
-        }
+        })
     }
 
     pub fn start(&self) -> Option<State> {

@@ -27,7 +27,9 @@
 //!
 //! [`splitter`] is the way past the host's partition: it reads a grid's colours
 //! and reports the block each ring cell belongs to, so the first half of the
-//! tessellation happens in the image rather than before it.
+//! tessellation happens in the image rather than before it. [`grid_graph`]
+//! finishes that path: it walks the state graph with the image's start and exit
+//! stages, so the host only assembles the walker's records.
 //!
 //! ```
 //! use canvas::Blocks;
@@ -49,6 +51,7 @@ mod error;
 mod flow;
 mod graph;
 mod grid;
+mod grid_graph;
 mod interpreter;
 mod linear;
 mod paint;
@@ -60,7 +63,10 @@ pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;
 pub use grid::{block_edge, exit_state, splitter, start_state, step_state};
+pub use grid_graph::grid_graph;
 pub use interpreter::interpreter;
 pub use linear::{assemble, linear_program};
 pub use program::{Instruction, OPCODES, encode, instructions, opcode};
-pub use walker::{COMMAND_DEPTH, RECORD, graph_walker, record_code, skeleton, walker};
+pub use walker::{
+    COMMAND_DEPTH, RECORD, graph_walker, record_code, record_command, skeleton, walker,
+};

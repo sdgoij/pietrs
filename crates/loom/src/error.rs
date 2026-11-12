@@ -55,6 +55,9 @@ pub enum Error {
     #[error("the graph has no start state")]
     NoStart,
 
+    #[error("the grid image printed {output:?}, which is not a state or move")]
+    BadOutput { output: String },
+
     #[error("no layout keeps every block separate")]
     NoLayout,
 

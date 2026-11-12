@@ -235,7 +235,17 @@ pub fn exit_state(
     Ok((exit_program()?.image()?, stream))
 }
 
-/// A splitter image that resolves the program's start state, and the stream that
+/// The start program's image, without running it.
+pub(crate) fn start_image() -> Result<CodelGrid, Error> {
+    start_program()?.image()
+}
+
+/// The exit program's image, without running it.
+pub(crate) fn exit_image() -> Result<CodelGrid, Error> {
+    exit_program()?.image()
+}
+
+/// A splitter image that also resolves the program's start state, and the stream that
 /// carries the grid to it.
 ///
 /// The upper-left codel decides: black terminates, a chromatic codel is the
@@ -294,7 +304,7 @@ pub fn block_edge(
 }
 
 /// The ring position of a codel.
-fn ring_index(grid: &CodelGrid, point: Point) -> u32 {
+pub(crate) fn ring_index(grid: &CodelGrid, point: Point) -> u32 {
     (point.y + 1) * (grid.width() + 2) + (point.x + 1)
 }
 

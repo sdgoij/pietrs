@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use canvas::{BlockId, Blocks, CodelGrid, Color, Hue, Lightness, Point};
 use interp::{ExitReason, Options, Run};
-use loom::{block_edge, exit_state, record_code, splitter, start_state, step_state};
+use loom::{block_edge, exit_state, grid_graph, record_code, splitter, start_state, step_state};
 use runtime::BufferIo;
 use tessera::{Chooser, Direction};
 
@@ -448,6 +448,58 @@ fn the_canonical_hello_world_starts() {
         ],
     };
     assert_eq!(found, expected);
+}
+
+/// The image-built graph for `rows`, against `tessera`'s own walk.
+fn check_graphs(rows: &[&str]) {
+    let grid = grid(rows);
+    let blocks = Blocks::partition(grid.clone());
+    let expected = tessera::StateGraph::build(&blocks);
+    let found = grid_graph(&grid, 200_000_000).unwrap();
+    assert_eq!(found.start(), expected.start(), "{rows:?}");
+    assert_eq!(found.states(), expected.states(), "{rows:?}");
+    assert_eq!(found.edges(), expected.edges(), "{rows:?}");
+}
+
+#[test]
+#[ignore = "one image run per state: cargo test -p loom --release --test grid -- --ignored"]
+fn the_graph_matches_tessera() {
+    check_graphs(&["rr"]);
+    check_graphs(&["rrgg"]);
+    check_graphs(&["rg", "gr"]);
+}
+
+#[test]
+#[ignore = "one image run per state: cargo test -p loom --release --test grid -- --ignored"]
+fn the_graph_matches_tessera_through_white() {
+    check_graphs(&["r...b"]);
+    check_graphs(&["r.", "#."]);
+    check_graphs(&["r..", "#.#", ".b."]);
+}
+
+#[test]
+#[ignore = "one image run per state: cargo test -p loom --release --test grid -- --ignored"]
+fn the_graph_reports_pointer_and_switch() {
+    check_graphs(&["rd"]);
+    check_graphs(&["lk"]);
+}
+
+#[test]
+#[ignore = "the canonical hello world, one image run per state: cargo test -p loom --release --test grid -- --ignored"]
+fn the_canonical_hello_world_graph_runs() {
+    let png = include_bytes!("../fixtures/hello-world/program.png");
+    let grid = CodelGrid::from_image(png).unwrap();
+    let blocks = Blocks::partition(grid.clone());
+    let graph = grid_graph(&grid, 400_000_000).unwrap();
+    assert_eq!(
+        graph.states().len(),
+        tessera::StateGraph::build(&blocks).states().len()
+    );
+
+    let (image, stream) = loom::graph_walker(&graph, &blocks, "").unwrap();
+    let (output, result) = run(&image, &stream, 10_000_000);
+    assert_eq!(output, "Hello world!");
+    assert_eq!(result.reason, ExitReason::Terminated);
 }
 
 #[test]
