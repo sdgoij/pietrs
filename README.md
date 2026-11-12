@@ -46,7 +46,8 @@ target/release/pietrs --help
 # program can ever terminate.
 pietrs check program.png
 
-# Run it: the JIT, in process.
+# Run it: the JIT, in process. Without --input it reads standard input, so an
+# interactive program waits for a line.
 pietrs run program.png
 
 # Same, with input and a step bound.
