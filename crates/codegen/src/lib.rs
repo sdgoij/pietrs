@@ -19,6 +19,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_codegen::settings;
+use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
@@ -313,9 +314,26 @@ fn pointer_signature<M: Module>(module: &mut M) -> Signature {
     signature
 }
 
+/// The Cranelift settings both emitters compile with.
+///
+/// Cranelift verifies a function again inside `define_function`, but
+/// [`define_main`] already runs the same verification on the finished function
+/// before either path compiles it, so the second pass can only cost time: for
+/// an image with 62 000 states it is about a second and a half of a five second
+/// JIT startup. Everything else stays at the defaults, including unwind
+/// information, which a panic in a host function needs to unwind through the
+/// generated frames.
+fn isa_flags() -> settings::Flags {
+    let mut flags = settings::builder();
+    // `set` fails only for a setting that does not exist, which a Cranelift
+    // bump could cause; keeping the default verifier is the safe direction.
+    let _ = flags.set("enable_verifier", "false");
+    settings::Flags::new(flags)
+}
+
 #[cfg(feature = "object")]
 fn build_object_module(target: Option<&str>) -> Result<ObjectModule, Error> {
-    let flags = settings::Flags::new(settings::builder());
+    let flags = isa_flags();
     let isa = match target {
         Some(target) => cranelift_codegen::isa::lookup_by_name(target)
             .map_err(|error| Error::Cranelift(error.to_string()))?
@@ -335,7 +353,7 @@ fn build_module() -> Result<JITModule, Error> {
     let isa_builder =
         cranelift_native::builder().map_err(|error| Error::Cranelift(error.to_string()))?;
     let isa = isa_builder
-        .finish(settings::Flags::new(settings::builder()))
+        .finish(isa_flags())
         .map_err(|error| Error::Cranelift(error.to_string()))?;
     let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
     builder.symbol("piet_out_char", piet_out_char as *const u8);

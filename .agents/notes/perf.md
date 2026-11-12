@@ -68,3 +68,41 @@ That is 9 ns, 1.79 us and 48.3 us per roll: linear in the depth, which is what
 `Vec::rotate_right` over the tape costs. The first depth is a state-graph record
 window, the second *Piet's Quest*'s state graph, the third its grid. No
 allocations, so the roll itself moves memory but never grows the stack.
+
+## 2026-11-12
+
+AMD Ryzen 9 7950X, Windows, `rustc 1.98.0`, `--release`, single-threaded.
+
+The woven walker (`target/weave/walker.png`, 617 x 246, 30 260 blocks, 61 987
+states, 62 945 edges) is the largest image the project runs, and the JIT's
+startup on it is not covered by a harness. It was measured by hand, three runs
+each, with `--max-steps 1` to isolate compilation:
+
+```sh
+cargo run -r -p cli -- run target/weave/walker.png --max-steps 1
+```
+
+| Stage | Time |
+|---|---|
+| graph build | 16 us |
+| lowering to CLIF | under 1 ms |
+| explicit verification | 200 ms |
+| Cranelift compilation | 2 200 ms |
+| instruction cache flush and symbol resolution | 1 550 ms |
+
+That is 1 929 000 CLIF instructions in 193 922 blocks, and Cranelift's share is
+linear in it. The whole startup was 5 000 ms; turning off Cranelift's own
+verification, which runs again inside `define_function` after the explicit one,
+brought it to 3 600 ms and saved the same second in `pietrs build`.
+
+Compiling the image costs more than running it. The same image executes
+200 000 000 steps in 1 350 ms, 148 000 000 a second, against 1 530 ms for the
+AOT executable on the same record stream: the JIT's wall clock is code
+generation, not the program.
+
+Two shapes were tried and rejected. Collapsing the per-state preamble - one
+shared step-limit block and one shared abort block instead of three blocks per
+state - cut the block count from 310 000 to 194 000, left the compile time
+unchanged within noise, and made the running program 23% slower (1 840 ms
+against 1 340 ms for the same 200 000 000 steps). Setting `opt_level=speed`
+added a second to the compile and bought nothing.
