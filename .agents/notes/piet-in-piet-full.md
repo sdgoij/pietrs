@@ -694,7 +694,7 @@ the default suite.
 
 The step to a *single* image — one that reads a PPM and prints the walker's
 records in one run — needs the ring's reconstruction, the partition's fixpoint,
-the graph's queue and the records' assembly inside one program, with
+the graph's queue and the records' assembly inside the one image, with
 dynamic-depth rolls where the stages now take a host-built stream. That is S4's
 third row of the table, not a plumbing change; the five stages above are each
 checkable against `tessera` or against the host's own helper, which is why they
@@ -796,7 +796,7 @@ walker's tests build directly.
 
 ### S10. One image from pixels to output (measured, not built)
 
-The last row of S4's table is one program that reads a PPM, partitions it and runs
+The last row of S4's table is one image that reads a PPM, partitions it and runs
 it. The measurements say where the cost is, and it is not where the staged plan
 assumed.
 
@@ -871,6 +871,28 @@ cell zero before the scan, because the scan's coordinates are its loop index.
 `the_restart_rebuilds_the_scan_s_nine` checks the rebuild on a `Machine` over
 nodes, with no image at all — which is what made the two swaps in the first
 version findable in a second instead of ninety.
+
+**Slice 2's open question is where the value stack lives.** The movement's rolls
+window the top of the stack — the ring plus its nine live values — and
+`lift_ring` reads the ring's size at `live + 4`, so nothing may sit above the
+nine. That leaves three layouts, and the cheap one was tried and does not work:
+
+- **A spare field per record** (`PER_CELL = 5`) holding the values, with the top
+  of the stack in cell zero's spare. Each record gains a slot under its ring
+  size, which moves every field at `live + 4` and deeper — `lift_ring`,
+  `pass_start`, `exit_setup`, `edge_setup` all read the ring size or the stride
+  there — so it is a refactor of every depth constant in the movement rather
+  than a change of one constant. Reverted.
+- **The values below the ring.** Invisible to the movement, but their top is at
+  the bottom of the stack, so every access needs a whole-stack roll and a depth
+  counter at a fixed depth — and the only fixed depths are the nine.
+- **The values above the nine, moved below the ring for each move.** One roll of
+  the whole stack does it, but the roll needs the total size and the value
+  count, which then have to live in two slots above the values.
+
+The last of the three is the one to build: two header slots above the values,
+one roll each way per move, and the commands work on the top of the stack as they
+should. It is all slice 2; the three are candidate layouts, not stages.
 
 ## Recommendation
 

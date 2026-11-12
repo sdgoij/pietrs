@@ -516,18 +516,8 @@ fn blocks() -> Vec<Block> {
                 otherwise: READ,
             },
         ),
-        // 3: one record: ring size, width, colour, label
-        Block::new(
-            {
-                let mut nodes = Vec::new();
-                for _ in 0..PER_CELL {
-                    nodes.extend([Node::Command(Command::InNumber), Node::Swap]);
-                }
-                nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
-                nodes
-            },
-            End::Jump(TEST),
-        ),
+        // 3: one record: ring size, width, colour, label, and the spare
+        Block::new(read_record(), End::Jump(TEST)),
         // 4: drop the read counter, then push the pass counter and the flag
         Block::new(
             vec![Node::Command(Command::Pop), Node::Const(0), Node::Const(1)],
@@ -590,6 +580,17 @@ fn blocks() -> Vec<Block> {
         // 12: done
         Block::new(Vec::new(), End::Halt),
     ]
+}
+
+/// One record off the stream: its four fields, and the read counter counted
+/// down.
+fn read_record() -> Vec<Node> {
+    let mut nodes = Vec::new();
+    for _ in 0..PER_CELL {
+        nodes.extend([Node::Command(Command::InNumber), Node::Swap]);
+    }
+    nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
+    nodes
 }
 
 /// The splitter image, extended with the edge stage.
@@ -1025,11 +1026,11 @@ fn exit_setup() -> Vec<Node> {
         Node::Command(Command::InNumber),
         // row cells = stride / 4
         Node::DupLocal(7),
-        Node::Const(4),
+        Node::Const(i64::from(PER_CELL)),
         Node::Command(Command::Divide),
         // big = ring cells / 4
         Node::DupLocal(9),
-        Node::Const(4),
+        Node::Const(i64::from(PER_CELL)),
         Node::Command(Command::Divide),
     ];
     nodes.extend(case_nodes());
@@ -1060,7 +1061,7 @@ fn start_slide_setup() -> Vec<Node> {
         Node::Const(0), // row cells
         // big = ring cells / 4, from the ring size five values down
         Node::DupLocal(9),
-        Node::Const(4),
+        Node::Const(i64::from(PER_CELL)),
         Node::Command(Command::Divide),
         Node::Const(0), // case: right, left
         Node::Const(0), // best
@@ -1584,11 +1585,11 @@ fn edge_setup() -> Vec<Node> {
         Node::Command(Command::InNumber),
         // row cells = stride / 4
         Node::DupLocal(4),
-        Node::Const(4),
+        Node::Const(i64::from(PER_CELL)),
         Node::Command(Command::Divide),
         // big = ring cells / 4
         Node::DupLocal(6),
-        Node::Const(4),
+        Node::Const(i64::from(PER_CELL)),
         Node::Command(Command::Divide),
         Node::Command(Command::InNumber),
         Node::Command(Command::InNumber),
@@ -2408,17 +2409,7 @@ mod tests {
                     otherwise: READ,
                 },
             ),
-            Block::new(
-                {
-                    let mut nodes = Vec::new();
-                    for _ in 0..PER_CELL {
-                        nodes.extend([Node::Command(Command::InNumber), Node::Swap]);
-                    }
-                    nodes.extend([Node::Const(1), Node::Command(Command::Subtract)]);
-                    nodes
-                },
-                End::Jump(TEST),
-            ),
+            Block::new(read_record(), End::Jump(TEST)),
             Block::new(
                 vec![Node::Command(Command::Pop), Node::Const(0), Node::Const(0)],
                 End::Jump(PASS),
