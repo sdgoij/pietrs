@@ -32,6 +32,29 @@ The loader supports x86-64 and AArch64 objects in COFF and ELF. The payload
 encoder rejects an unsupported relocation or architecture with a named
 diagnostic at build time.
 
+## The size bound
+
+The JIT and the AOT compiler share one lowering, so they share one cost: one
+native block per state of the image's state graph. That is the right shape for a
+program — the canonical *Hello world!* is 25 states, and the walker image is
+61,987 states and compiles in about four seconds — and the wrong shape for the
+composed machine image, which is 1,224,547 states. A hello-world run through the
+machine visits 409,560 of them.
+
+`pietrs run` builds the graph before it chooses an engine. Above 100,000 states
+it runs the interpreter instead of lowering: the machine image prints what it
+prints in about 44 s, where lowering would take minutes. `pietrs build` refuses
+with a diagnostic naming the state count, because there is no lazy object
+emitter and the payload would be enormous.
+
+Lazy lowering — compiling a state's block the first time it is entered — was
+measured and postponed. It would shrink the 1.2M-state graph to the 409k states
+a run reaches, but that is still a third of the graph, so the per-state backend
+would compile hundreds of thousands of small functions and call each one through
+the driver. The interpreter is the better first answer; a machine image that had
+to be packaged would want a runner that walks the image, not a compiled block
+per state.
+
 ## Targets
 
 `pietrs build --target <triple>` selects the target; without the flag it builds

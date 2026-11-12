@@ -944,6 +944,15 @@ from its pixels in one image, checked against `interp`, and `HANDOFF.md` is gone
 The image's input is the PPM's pixels; anything after them is the interpreted
 program's own input.
 
+Running that image is a separate question from building it. The JIT and the AOT
+compiler lower one native block per state, and the composed image has 1,224,547
+states (a hello-world run visits 409,560 of them). `pietrs run` therefore builds
+the graph first and, above 100,000 states, runs the interpreter: `Hello world!`
+in about 44 s, where lowering would take minutes. Lazy lowering would shrink the
+work to the visited third and was measured, but a third of a graph this size is
+still hundreds of thousands of small functions, so the interpreter stays the
+right engine for the machine image. See `.agents/notes/aot.md`.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line

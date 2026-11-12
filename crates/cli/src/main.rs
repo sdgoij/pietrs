@@ -50,8 +50,14 @@ enum Commands {
     /// Run the interpreter and print its transition trace.
     Trace(TraceArgs),
     /// Run the program and print its output.
+    ///
+    /// Images above 100,000 states run in the interpreter: the JIT lowers one
+    /// native block per state.
     Run(RunArgs),
     /// Write a standalone executable, with no external tools.
+    ///
+    /// Images above 100,000 states are refused: the AOT compiler lowers one
+    /// native block per state.
     Build(BuildArgs),
     /// Run every corpus case through each execution path and compare them.
     Selftest(SelftestArgs),
@@ -182,6 +188,12 @@ enum Error {
 
     #[error("no .png cases in {0}")]
     NoCases(PathBuf),
+
+    #[cfg(feature = "codegen")]
+    #[error(
+        "the image has {states} states, and the AOT compiler lowers one block per state: above {limit} it is not practical. Run it with `pietrs run`, which uses the interpreter at this size."
+    )]
+    TooManyStates { states: usize, limit: usize },
 }
 
 fn main() -> ExitCode {
@@ -267,13 +279,38 @@ fn warn_about_unknown_colours(grid: &CodelGrid) {
 /// The graph is finite and closed, so a program with no terminating state can
 /// only run for ever. Say so before an unbounded run: the alternative is a
 /// silent hang with no explanation.
-fn warn_about_termination(blocks: &Blocks, max_steps: Option<u64>) {
-    if max_steps.is_some() || StateGraph::build(blocks).can_terminate() {
+#[cfg(feature = "codegen")]
+fn warn_about_termination(graph: &StateGraph, max_steps: Option<u64>) {
+    if max_steps.is_some() || graph.can_terminate() {
         return;
     }
     eprintln!(
         "pietrs: warning: the program has no terminating state and will not exit; pass --max-steps to bound it"
     );
+}
+
+/// Above this many states the compiler's one-block-per-state lowering costs more
+/// than the run. The walker image is 62k states and compiles in about four
+/// seconds; the composed machine image is 1.2M states, which is minutes. Past
+/// this bound the interpreter is the right engine.
+#[cfg(feature = "codegen")]
+const JIT_STATE_LIMIT: usize = 100_000;
+
+/// The engine that runs an image with `states` states.
+#[cfg(feature = "codegen")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Engine {
+    Jit,
+    Interpreter,
+}
+
+#[cfg(feature = "codegen")]
+fn engine(states: usize) -> Engine {
+    if states > JIT_STATE_LIMIT {
+        Engine::Interpreter
+    } else {
+        Engine::Jit
+    }
 }
 
 /// Whether `PIETRS_DUMP_GRAPH` is set; read once per process.
@@ -370,7 +407,11 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
         Some(io) => io,
         None => &mut stream,
     };
-    warn_about_termination(&blocks, args.max_steps);
+    let graph = StateGraph::build(&blocks);
+    warn_about_termination(&graph, args.max_steps);
+    if engine(graph.states().len()) == Engine::Interpreter {
+        return run_interpreted(&blocks, io, args);
+    }
     let options = codegen::Options {
         max_steps: args.max_steps,
         division: args.division.into(),
@@ -385,6 +426,24 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
         }
         codegen::ExitReason::StackOverflow => {
             eprintln!("pietrs: the stack overflowed");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Runs an image the JIT is too large for, with the same options and answers.
+#[cfg(feature = "codegen")]
+fn run_interpreted(blocks: &Blocks, io: &mut dyn Io, args: &RunArgs) -> Result<ExitCode, Error> {
+    let options = Options {
+        max_steps: args.max_steps,
+        division: args.division.into(),
+        ..Options::default()
+    };
+    let result = run(blocks, io, &options)?;
+    match result.reason {
+        ExitReason::Terminated => Ok(ExitCode::SUCCESS),
+        ExitReason::StepLimit => {
+            eprintln!("pietrs: step limit reached after {} steps", result.steps);
             Ok(ExitCode::FAILURE)
         }
     }
@@ -693,7 +752,14 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
     let target = args.target.as_deref().unwrap_or(aot::HOST_TARGET);
-    warn_about_termination(&blocks, args.max_steps);
+    let graph = StateGraph::build(&blocks);
+    warn_about_termination(&graph, args.max_steps);
+    if engine(graph.states().len()) == Engine::Interpreter {
+        return Err(Error::TooManyStates {
+            states: graph.states().len(),
+            limit: JIT_STATE_LIMIT,
+        });
+    }
     let output = executable_path(
         args.output
             .clone()
@@ -731,4 +797,22 @@ fn executable_path(mut path: PathBuf, target: &str) -> PathBuf {
         path.set_extension("exe");
     }
     path
+}
+
+#[cfg(all(test, feature = "codegen"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_graph_up_to_the_limit_uses_the_jit() {
+        assert_eq!(engine(0), Engine::Jit);
+        assert_eq!(engine(JIT_STATE_LIMIT), Engine::Jit);
+    }
+
+    #[test]
+    fn a_graph_over_the_limit_uses_the_interpreter() {
+        // The composed machine image is 1.2M states; the walker is 62k.
+        assert_eq!(engine(JIT_STATE_LIMIT + 1), Engine::Interpreter);
+        assert_eq!(engine(1_224_547), Engine::Interpreter);
+    }
 }
