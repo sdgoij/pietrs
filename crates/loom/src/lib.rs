@@ -68,7 +68,7 @@ mod ring;
 mod shade;
 mod walker;
 
-pub use compose::{ppm_ring, ppm_ring_grid};
+pub use compose::{ppm_ring, ppm_ring_grid, ppm_ring_splitter, ppm_ring_splitter_grid};
 pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;

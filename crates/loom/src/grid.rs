@@ -132,7 +132,7 @@ const GUARD_CODE: u32 = 22;
 const ENTRY: u32 = 1;
 const TEST: u32 = 2;
 const READ: u32 = 3;
-const HANDOVER: u32 = 4;
+pub(crate) const HANDOVER: u32 = 4;
 const PASS: u32 = 5;
 const CELL: u32 = 6;
 const PASS_END: u32 = 7;
@@ -503,8 +503,8 @@ fn program() -> Result<Program, Error> {
     Program::new(blocks(), ENTRY)
 }
 
-/// The blocks of the splitter.
-fn blocks() -> Vec<Block> {
+/// The splitter's blocks, numbered from one.
+pub(crate) fn blocks() -> Vec<Block> {
     vec![
         // 1: the ring's cell count
         Block::new(vec![Node::Command(Command::InNumber)], End::Jump(TEST)),
