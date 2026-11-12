@@ -32,6 +32,11 @@
 //! stages and the partition with the splitter, so the host only assembles the
 //! walker's records.
 //!
+//! [`machine`] is the interpreter's control loop: the movement rule applied again
+//! and again to the state it is in, printing the trace. It is the first slice of
+//! one image that runs a program from its pixels, and the note's S10 says what the
+//! rest of that image needs.
+//!
 //! ```
 //! use canvas::Blocks;
 //! use interp::Options;
@@ -66,7 +71,7 @@ pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;
 pub use grid::{
-    Partition, block_edge, exit_state, grid_partition, grid_ring, ring_stream, splitter,
+    Partition, block_edge, exit_state, grid_partition, grid_ring, machine, ring_stream, splitter,
     splitter_image, start_state, step_state, with_exit_query, with_step_query,
 };
 pub use grid_graph::grid_graph;

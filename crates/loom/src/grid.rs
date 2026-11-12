@@ -719,6 +719,115 @@ fn exit_blocks() -> Vec<Block> {
     all
 }
 
+/// The movement stage in a loop: the trace of states, one move per line.
+///
+/// This is the machine's control path — the interpreter's `while` — with nothing
+/// else in it: the image partitions the ring, then repeatedly resolves the move
+/// out of the state it is in, printing `label dp cc command` for the state the
+/// move reached, until the movement rule terminates and it prints `-1`.
+///
+/// `block`, `dp` and `cc` are the state to start from; the value stack is not
+/// part of the image yet, so no command runs and nothing but the trace comes
+/// out. The host resolves the same walk with `tessera` to check it.
+pub fn machine(
+    grid: &CodelGrid,
+    block: BlockId,
+    dp: Direction,
+    cc: Chooser,
+) -> Result<(CodelGrid, String), Error> {
+    let stream = with_exit_query(&grid_ring(grid)?, dp, cc, label_of(grid, block)?);
+    Ok((machine_program()?.image()?, stream))
+}
+
+/// The machine image: the exit stage with its two tails looped back.
+fn machine_program() -> Result<Program, Error> {
+    Program::new(machine_blocks(), ENTRY)
+}
+
+/// The exit stage's blocks, with the moves looping instead of halting.
+fn machine_blocks() -> Vec<Block> {
+    let mut all = exit_blocks();
+    // A chromatic step: print the state and the command, end the line, and
+    // start again from the state the move reached. The command's two
+    // temporaries are still on the stack when the print is done.
+    all[(EXIT_MOVE - 1) as usize] = Block::new(
+        {
+            let mut nodes = move_nodes(9);
+            nodes.extend(line_end());
+            nodes.extend(restart_nodes(2));
+            nodes
+        },
+        End::Jump(EXIT_ZERO),
+    );
+    // A slide runs no command, so it prints `nop` and leaves nothing behind.
+    all[(EXIT_SLIDE_MOVE - 1) as usize] = Block::new(
+        {
+            let mut nodes = bare_move_nodes(9);
+            nodes.extend([
+                Node::Const(32),
+                Node::Command(Command::OutChar),
+                Node::Const(16),
+                Node::Command(Command::OutNumber),
+            ]);
+            nodes.extend(line_end());
+            nodes.extend(restart_nodes(0));
+            nodes
+        },
+        End::Jump(EXIT_ZERO),
+    );
+    all
+}
+
+/// One move per line, so consecutive moves do not run together.
+fn line_end() -> Vec<Node> {
+    vec![Node::Const(10), Node::Command(Command::OutChar)]
+}
+
+/// Rebuild the nine values the scan expects, from the move just printed.
+///
+/// On entry the stack is `[.., extra, turns, best, case, big, row cells, label,
+/// attempt, cc, dp, ring ..]`, with the ring's head on the cell the move
+/// reached. `extra` is the command's own temporaries, which the move block
+/// leaves behind; `turns` and `best` are the scan's dead slots, holding the
+/// slide's counter and the source colour.
+///
+/// The new state is `(head label, case / 2, case % 2)`: a move's `(dp, cc)` are
+/// the attempt's, and attempt zero's case is that same number. The rebuild drops
+/// the four and keeps the shared `big` and `row cells`, so the scan restarts at
+/// cell zero with `index = 0` and `best = -1`.
+fn restart_nodes(extra: u32) -> Vec<Node> {
+    let mut nodes = Vec::new();
+    for _ in 0..extra + 2 {
+        nodes.push(Node::Command(Command::Pop));
+    }
+    // Strip the four state fields, leaving `[case, big, row cells]`.
+    for depth in (4..=7).rev() {
+        nodes.extend([Node::Roll(depth, depth - 1), Node::Command(Command::Pop)]);
+    }
+    // Push the new state's fields in reverse, then roll them under the case.
+    nodes.extend([
+        // dp = case / 2
+        Node::DupLocal(1),
+        Node::Const(2),
+        Node::Command(Command::Divide),
+        // cc = case % 2
+        Node::DupLocal(2),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        // attempt = 0
+        Node::Const(0),
+        // label = the ring head's, which is at depth seven now
+        Node::DupLocal(7),
+        // [label, 0, cc, dp, case, big, row cells] -> [case, big, row cells,
+        // label, 0, cc, dp]
+        Node::Roll(7, 4),
+        // index = 0 on top, best = -1 under it
+        Node::Const(-1),
+        Node::Const(0),
+    ]);
+    nodes
+}
+
 /// The splitter image, extended with the start state.
 fn start_program() -> Result<Program, Error> {
     Program::new(start_blocks(), ENTRY)
@@ -2357,5 +2466,36 @@ mod tests {
         assert_eq!(reason, "Terminated");
         // One space per cell, after both numbers: labels survive the round trip.
         assert_eq!(output, "70 91 ");
+    }
+
+    #[test]
+    fn a_move_leaves_its_two_colour_temporaries() {
+        // The machine's restart relies on this: a move prints and leaves two
+        // values above the nine, so the rebuild pops four, not two.
+        let mut stack = vec![204, 203, 202, 201];
+        stack.extend([109, 108, 107, 106, 105, 104, 4, 102, 101]);
+        let before = stack.len();
+        let mut machine = Machine::new(stack);
+        machine.run(&move_nodes(9));
+        assert_eq!(machine.stack.len(), before + 2);
+        assert_eq!(machine.stack[before..], [102, 202]);
+        assert_eq!(machine.out, "201 2 0 17");
+    }
+
+    #[test]
+    fn the_restart_rebuilds_the_scan_s_nine() {
+        // What a slide leaves: the nine, with the head record of the cell it
+        // reached underneath them, bottom-first. The ring's cell count is 24, so
+        // `big` is 24, the row is 6 cells, and the head is on the block labelled
+        // 10 holding colour 7.
+        let mut stack = vec![204, 203, 202, 201];
+        stack.extend([109, 108, 107, 106, 105, 104, 4, 102, 101]);
+        let mut machine = Machine::new(stack);
+        machine.run(&restart_nodes(0));
+        // [.. dp, cc, attempt, label, row cells, big, case, best, index]
+        assert_eq!(
+            machine.stack,
+            vec![204, 203, 202, 201, 2, 0, 0, 201, 105, 104, 4, -1, 0]
+        );
     }
 }

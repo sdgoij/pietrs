@@ -822,11 +822,14 @@ and down.
 
 **So the machine is the cheap path, not the dear one.** A single program that
 partitions once and then loops — scan, step, slide, command — spends on the hello
-world 79.7 million steps for the partition and about 5 million per command: 200
-million, four seconds, against the eager graph's 94 s. For a grid of N codels the
-partition is ~80 000 x N and a move ~5 000 x N, so the machine is usable for the
-sizes this repository tests with and out of reach for *Piet's Quest*: 5 000 x
-478 815 is 2.4 billion steps *per command*, and that program has 300 000 of them.
+world 79.7 million steps for the partition, 5.1 million on the first move and
+about 21 million on each later one: a move often needs several of the eight
+attempts, and every attempt rescans the ring. The whole walk of 24 moves is
+roughly 600 million steps, twelve seconds in release, against the eager graph's
+94 s. For a grid of N codels the partition is ~80 000 x N and a move ~20 000 x N,
+so the machine is usable for the sizes this repository tests with and out of reach
+for *Piet's Quest*: 20 000 x 478 815 is 9.6 billion steps *per move*, and that
+program has 300 000 of them.
 
 **The storage.** The movement stages keep four values per ring cell, so *Piet's
 Quest*'s 478 815 cells are 1 915 260 values — over the runtime's million-value
@@ -851,10 +854,23 @@ then the values — and the loop that hands the state from the movement to the
 command and back.
 
 **The slices.** (1) the loop over a ring the caller supplies, printing the state
-trace, checked against `interp`'s trace; (2) the command handlers on the value
-stack, so the hello world prints; (3) slides and `pointer`/`switch`; (4) the PPM
-and partition phases inside the same program. Each slice is checkable against the
-stage it replaces, which is how S1 to S9 were built.
+trace, checked against `tessera`'s walk — **done**, as [`crate::machine`]; (2) the
+command handlers on the value stack, so the hello world prints; (3) slides and
+`pointer`/`switch`; (4) the PPM and partition phases inside the same program.
+Each slice is checkable against the stage it replaces, which is how S1 to S9 were
+built.
+
+Slice 1 is the exit stage with its two tails looped back: the move prints, then
+rebuilds the state the move reached and re-enters the scan. The new state is
+`(ring head's label, case / 2, case % 2)` — a move's `(dp, cc)` are the attempt's,
+and attempt zero's case is that same number — with `index = 0`, `best = -1` and
+the attempt counter back to zero. Two things make the rebuild delicate: a move
+leaves the command's two colour temporaries above the nine values, so the slide's
+tail pops two and the move's four; and the ring's head must be brought back to
+cell zero before the scan, because the scan's coordinates are its loop index.
+`the_restart_rebuilds_the_scan_s_nine` checks the rebuild on a `Machine` over
+nodes, with no image at all — which is what made the two swaps in the first
+version findable in a second instead of ninety.
 
 ## Recommendation
 

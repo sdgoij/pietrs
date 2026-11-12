@@ -133,3 +133,10 @@ every stage that includes it is 1 989 codels tall and why a 20-million-step run
 on the edge stage is 4 995 dispatches per entry-column block at 4 000 steps each.
 The same stage's own work is ~5 million steps for a 992-cell ring; the 79.7
 million is the partition the stage re-runs.
+
+The machine (`loom::machine`) partitions once and then loops, so it is the first
+stage whose movement is not paid for in partitions: the hello world's first move
+is 5.1 million steps after the 79.7 million partition, and each later move is
+about 21 million, because a move takes several of the eight attempts and every
+attempt rescans the ring. The walk of 24 moves is ~600 million steps, 12 s in
+release, against the eager graph's 94 s.
