@@ -279,6 +279,14 @@ journal, `.agents/notes/perf.md`; do not gate on a machine-dependent number.
   `refactor:`.
 - Keep the subject under about 50 characters, with no trailing period.
 - Explain what changed and why in the body. One unwrapped line per paragraph.
+- One commit per change, documentation included. A change carries its own text —
+  the `.agents/notes/` section, the area doc, the README row — in the same
+  commit. Never split the code and its documentation into two commits: a revert
+  of the code would leave the docs describing a mechanism that no longer exists.
+  The same applies to a test, a benchmark row, or a skill. If a docs-only
+  follow-up has already been committed and is unpushed, fold it back. A
+  docs-only commit is for a document that is itself the deliverable (a plan, a
+  measurement record, a policy), never a follow-up to someone else's change.
 - Tracked text is LF in the index and the working tree on every platform.
 - Never commit generated artefacts: `target/`, compiled executables, object
   files, downloaded corpora, CLIF dumps, or `npiet` output.
