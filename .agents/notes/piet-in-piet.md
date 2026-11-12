@@ -155,7 +155,7 @@ terminates.
 
 The linear fragment above is what this trace interpreter runs. The way past it
 is the walker in `crates/loom/src/walker.rs`: the program lives in a ring of
-four-cell records, and the image is the same for every program — 337x183 codels
+four-cell records, and the image is the same for every program — 617x246 codels
 whatever the record count, because each record carries the ring's size in cells.
 A `pietrs run` of one such image prints the title and nine menus of *Piet's
 Quest* from a single stream. The design and its measured cost are in

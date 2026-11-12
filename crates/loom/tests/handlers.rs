@@ -164,16 +164,15 @@ fn the_hello_world_program_runs_from_a_ring() {
 #[test]
 fn the_walker_width_does_not_grow_with_the_program() {
     // One fixed image serves every program: the ring is data, not geometry. The
-    // width is exactly the dispatch table; the height moves only because a
-    // constant for a bigger ring takes more cells to build.
+    // dispatch and roll tables set the grid; a program only changes the stream.
     let (small, _) = walker(&[push(1)], "").unwrap();
     let long: Vec<Instruction> = (0..64).map(push).collect();
     let (large, _) = walker(&long, "").unwrap();
     assert_eq!(small.width(), large.width());
-    // 63 blocks of dispatch table, five cells each.
-    assert!(small.width() <= 384, "width {}", small.width());
-    assert!(small.height() <= 320, "height {}", small.height());
-    assert!(large.height() <= 320, "height {}", large.height());
+    assert_eq!(small.height(), large.height());
+    // A sanity ceiling for the table's layout, not a contract on exact size.
+    assert!(small.width() <= 1024, "width {}", small.width());
+    assert!(small.height() <= 1024, "height {}", small.height());
 }
 
 #[test]
@@ -282,7 +281,7 @@ fn a_roll_rotates_the_top_values() {
 
 #[test]
 fn a_roll_of_each_depth_the_table_covers_agrees() {
-    for depth in 2..=8 {
+    for depth in 2..=64 {
         let mut program = (1..=depth).map(push).collect::<Vec<_>>();
         program.extend([push(depth), push(1), step(Command::Roll)]);
         for _ in 0..depth {
@@ -327,11 +326,11 @@ fn a_roll_deeper_than_the_values_is_ignored() {
 
 #[test]
 fn a_roll_past_the_table_stops() {
-    // Nine is deeper than the table covers. Stopping is the documented boundary:
-    // the alternative is rotating the ring instead of the values.
-    let mut program = (1..=9).map(push).collect::<Vec<_>>();
-    program.extend([push(9), push(1), step(Command::Roll)]);
-    for _ in 0..9 {
+    // Sixty-five is deeper than the table covers. Stopping is the documented
+    // boundary: the alternative is rotating the ring instead of the values.
+    let mut program = (1..=65).map(push).collect::<Vec<_>>();
+    program.extend([push(65), push(1), step(Command::Roll)]);
+    for _ in 0..65 {
         program.push(step(Command::OutNumber));
     }
     let (output, result) = walk(&program);

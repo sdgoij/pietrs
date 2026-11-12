@@ -174,8 +174,10 @@ const SWITCH_ZERO: u32 = EXTRA_BASE + 5;
 
 /// The deepest `roll` the table covers. A roll deeper than this stops the walker
 /// rather than doing the wrong thing: the depth has to be known at weave time to
-/// compute the put-back, and the table is one block per depth.
-const ROLL_DEPTH: u32 = 8;
+/// compute the put-back, and the table is one block per depth. Sixty-four covers
+/// the longest string a program is likely to keep on the stack; Piet's Quest
+/// needs 29 for a room description.
+const ROLL_DEPTH: u32 = 64;
 /// Case `d` is `ROLL_CASE_BASE + d`. The base sits below the table, so the two
 /// shallowest values cannot index a case; they take the skip path instead.
 const ROLL_CASE_BASE: u32 = EXTRA_BASE + 4;

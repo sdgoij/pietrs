@@ -358,14 +358,16 @@ amount which cannot survive the lift. With the depth known at weave time there i
 no such problem: `roll(d+N+3, N+1)` lifts the values and both operands above the
 ring, the `roll` command rotates the values, and `roll(d+N+1, d)` puts them back —
 three constant rotations. So the handler is a table with one case per depth from
-two to eight, selected arithmetically from the popped value, and a deeper roll
-stops the walker instead of rotating ring cells.
+two to sixty-four, selected arithmetically from the popped value, and a deeper
+roll stops the walker instead of rotating ring cells. The bound is a trade-off,
+not a limit of the design: Piet's Quest's bedroom needs 29 to print its room
+description, so eight was too shallow.
 
 Checkpoints, against the straight-line reference: rotations of one, two and three
-of three values; every depth from two to eight; a depth of one, which is a no-op
-that still consumes its operands; a depth beyond the stack, which is ignored; and
-a depth past the table, which stops. Non-vacuity, observed and reverted: shortening
-the lift window by one cell fails both rotation cases.
+of three values; every depth from two to sixty-four; a depth of one, which is a
+no-op that still consumes its operands; a depth beyond the stack, which is
+ignored; and a depth past the table, which stops. Non-vacuity, observed and
+reverted: shortening the lift window by one cell fails both rotation cases.
 
 **Piet's Quest runs.** Measured on 2026-11-11, debug build, this machine: 17 964
 states and 19 352 edges become a ring of about 30 000 records — a 158 KB stream —
@@ -465,7 +467,7 @@ by one cell.
 ring size as the record's third cell, and the stream begins with the cell count,
 which the loader reads and counts down — so neither the roll amounts nor the
 number of records reaches the geometry. `program()` takes no argument, and
-`one_image_serves_every_program` pins one 337x183 image for a two-command
+`one_image_serves_every_program` pins one 617x246 image for a two-command
 program, a sixty-five-record one, and a state graph alike.
 
 *Piet's Quest* — 17 964 states, 20 110 records, an 80 440-cell ring — weaves to a
@@ -630,11 +632,11 @@ added, which is the same way the walker was built.
 
 Everything landed. The image follows a program held in its input — a straight line
 or a state graph — runs all fifteen commands, and reaches *Piet's Quest*: 17 964
-states, one 337 x 183 image, nine menus in about 4.5 s for the example case.
+states, one 617 x 246 image, nine menus in about 4.5 s for the example case.
 
 What is left is not capability but cost, and it is worth saying which is which.
 
-- **`roll`'s bound.** The table covers depths two to eight. Extending it is one
+- **`roll`'s bound.** The table covers depths two to sixty-four. Extending it is one
   block per depth; removing the bound needs the values addressable at the top of
   the stack, which no layout that keeps the ring on top allows (the analysis is
   in the S3 section). A deeper roll stops rather than lying.
