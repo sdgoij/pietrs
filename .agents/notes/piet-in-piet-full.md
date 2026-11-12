@@ -855,8 +855,11 @@ command and back.
 
 **The slices.** (1) the loop over a ring the caller supplies, printing the state
 trace, checked against `tessera`'s walk — **done**, as [`crate::machine`]; (2) the
-command handlers on the value stack, so the hello world prints; (3) slides and
-`pointer`/`switch`; (4) the PPM and partition phases inside the same program.
+command handlers on the value stack, so the hello world prints — **done**, as
+[`crate::run`], with a value stack below the ring (below); (3) slides and
+`pointer`/`switch` — **done**, slides in the loop since slice 1 and the two branch
+handlers in the run image; (4) the PPM and partition phases inside the same
+program.
 Each slice is checkable against the stage it replaces, which is how S1 to S9 were
 built.
 
@@ -872,27 +875,30 @@ cell zero before the scan, because the scan's coordinates are its loop index.
 nodes, with no image at all — which is what made the two swaps in the first
 version findable in a second instead of ninety.
 
-**Slice 2's open question is where the value stack lives.** The movement's rolls
-window the top of the stack — the ring plus its nine live values — and
-`lift_ring` reads the ring's size at `live + 4`, so nothing may sit above the
-nine. That leaves three layouts, and the cheap one was tried and does not work:
+**Slice 2's open question was where the value stack lives**, and the answer is
+**below the ring, always** — not the two-header-slot scheme sketched here before
+the image was built. The movement only ever rolls the top `nine + ring values`,
+so anything under the ring is invisible to it and `lift_ring` keeps reading the
+ring size at depth thirteen. That makes the layout
 
-- **A spare field per record** (`PER_CELL = 5`) holding the values, with the top
-  of the stack in cell zero's spare. Each record gains a slot under its ring
-  size, which moves every field at `live + 4` and deeper — `lift_ring`,
-  `pass_start`, `exit_setup`, `edge_setup` all read the ring size or the stride
-  there — so it is a refactor of every depth constant in the movement rather
-  than a change of one constant. Reverted.
-- **The values below the ring.** Invisible to the movement, but their top is at
-  the bottom of the stack, so every access needs a whole-stack roll and a depth
-  counter at a fixed depth — and the only fixed depths are the nine.
-- **The values above the nine, moved below the ring for each move.** One roll of
-  the whole stack does it, but the roll needs the total size and the value
-  count, which then have to live in two slots above the values.
+```text
+  [index best case big row label attempt cc dp | ring | k | V1 .. Vk]
+```
 
-The last of the three is the one to build: two header slots above the values,
-one roll each way per move, and the commands work on the top of the stack as they
-should. It is all slice 2; the three are candidate layouts, not stages.
+stable across a move: there is no phase boundary, no whole-stack roll per move,
+and no spare field per record (the `PER_CELL = 5` attempt, reverted). The one
+trick is how a handler reaches a value. With the nine on top the ring size `N` is
+at depth thirteen, so `k` is at `N + 10` and `V1` at `N + 11`; a handler builds
+those depths at run time and rolls the values above the ring, applies the command,
+and rolls them back. `k` never has to be known in advance, which is what the
+three earlier layouts were all fighting. `roll` dispatches on its depth to a table
+of blocks (depth two to sixty-four, as the walker does), so the lift and put-back
+amounts are constants; a deeper roll consumes its operands and does nothing.
+
+The commands run on the machine stack directly (the image's own `add`, `divide`,
+and so on), so the arithmetic and the zero-divisor rule are the runtime's. The
+hello world — `push`, `duplicate`, `out char` — prints `Hello world!` from the one
+image, checked against `interp`.
 
 ## Recommendation
 

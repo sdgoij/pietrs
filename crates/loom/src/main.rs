@@ -5,10 +5,10 @@
 //! ```
 //!
 //! One image, the same for every program: it takes a ring stream and a start
-//! state on its input and prints the trace of the walk it resolves. Slicing 2 and
-//! 3 of the note add the value stack and the commands, and slice 4 puts the PPM
-//! decoder in front, at which point the input is a picture and the output is the
-//! interpreted program's own output.
+//! state on its input, resolves the walk, and runs each state's command on a
+//! value stack, printing what the interpreted program prints. Slice 4 puts the
+//! PPM decoder in front, at which point the input is a picture instead of a
+//! stream.
 //!
 //! Run it the way any image runs:
 //!
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args_os()
         .nth(1)
         .map_or_else(|| PathBuf::from(DEFAULT), PathBuf::from);
-    let image = loom::machine_grid()?;
+    let image = loom::run_grid()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

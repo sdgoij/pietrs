@@ -147,3 +147,61 @@ fn there_is_one_image_for_every_program() {
     .unwrap();
     assert_eq!(image, one);
 }
+
+#[test]
+fn the_run_image_is_the_same_for_every_program() {
+    // The run machine is one image too: it carries the commands and the value
+    // stack, and a program changes only the ring stream.
+    let one = loom::run_grid().unwrap();
+    let (image, _) = loom::run(
+        &grid(&["rg", "gr"]),
+        canvas::BlockId(1),
+        tessera::Direction::Right,
+        tessera::Chooser::Left,
+    )
+    .unwrap();
+    assert_eq!(image, one);
+}
+
+/// The output `interp` produces from the source grid, the oracle for the run.
+fn host_output(grid: &CodelGrid) -> String {
+    let mut io = BufferIo::new("");
+    interp::run(
+        &Blocks::partition(grid.clone()),
+        &mut io,
+        &Options {
+            max_steps: Some(HELLO_STEPS),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    io.into_output()
+}
+
+#[test]
+#[ignore = "the canonical hello world, ~40 s: cargo test -p loom --release --test machine -- --ignored"]
+fn the_hello_world_runs_from_one_image() {
+    // Slice 2: the image runs the program's commands and prints its output, not
+    // its trace.
+    let png = include_bytes!("../fixtures/hello-world/program.png");
+    let grid = CodelGrid::from_image(png).unwrap();
+    let blocks = Blocks::partition(grid.clone());
+    let Start::State(start) = tessera::start(&blocks) else {
+        panic!("the fixture terminates before it runs");
+    };
+    let want = host_output(&grid);
+    assert_eq!(want, "Hello world!");
+
+    let (image, stream) = loom::run(&grid, start.block, start.dp, start.cc).unwrap();
+    let mut io = BufferIo::new(&stream);
+    interp::run(
+        &Blocks::partition(image),
+        &mut io,
+        &Options {
+            max_steps: Some(HELLO_STEPS),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(io.into_output(), want);
+}

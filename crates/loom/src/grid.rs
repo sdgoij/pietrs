@@ -834,6 +834,579 @@ fn restart_nodes(extra: u32) -> Vec<Node> {
     nodes
 }
 
+/// The run machine: the movement loop plus a value stack and the commands.
+///
+/// The stack, top first, is the movement's nine values, the ring, the value
+/// count `k`, and the values `V1 .. Vk`:
+///
+/// ```text
+///   [index best case big row label attempt cc dp | ring | k | V1 .. Vk]
+/// ```
+///
+/// The movement only ever rolls the top `nine + ring values`, so `k` and the
+/// values below the ring are invisible to it and `lift_ring` keeps reading the
+/// ring size at a fixed depth. A handler works on the values by rolling past the
+/// ring: `k` sits at depth `ring size + 10` and `V1` at `ring size + 11`, which
+/// are constants once the ring size (depth 13) is known, so no handler has to
+/// know `k` in advance.
+///
+/// `block`, `dp` and `cc` are the state to start from. The host resolves the same
+/// walk with `tessera` to check the trace; the image prints only what the
+/// interpreted program prints.
+pub fn run(
+    grid: &CodelGrid,
+    block: BlockId,
+    dp: Direction,
+    cc: Chooser,
+) -> Result<(CodelGrid, String), Error> {
+    let stream = with_exit_query(&grid_ring(grid)?, dp, cc, label_of(grid, block)?);
+    Ok((run_grid()?, stream))
+}
+
+/// The run machine's image: the same for every program.
+pub fn run_grid() -> Result<CodelGrid, Error> {
+    run_program()?.image()
+}
+
+fn run_program() -> Result<Program, Error> {
+    Program::new(run_blocks(), ENTRY)
+}
+
+/// Where `k` sits below the ring, counted from the ring size's own depth.
+const K_OFFSET: u32 = 10;
+
+/// The deepest `roll` the table covers, as in the walker. A deeper roll consumes
+/// its operands and does nothing; extending the table is one block per depth.
+const ROLL_DEPTH: u32 = 64;
+
+/// The exit stage with the commands and a value stack below the ring.
+fn run_blocks() -> Vec<Block> {
+    let mut all = exit_blocks();
+    let base = all.len() as u32 + 1;
+
+    // One block per command code, the shared skip and the two divide paths, the
+    // push loop, and one body per command. The ids are fixed here so the
+    // handlers can name blocks that are built after them.
+    let setup = base;
+    let restart = base + 1;
+    let handler = |code: u32| base + 2 + code;
+    let skip = base + 21;
+    let div_nonzero = base + 22;
+    let mod_nonzero = base + 23;
+    let zero_path = base + 24;
+    let push_test = base + 25;
+    let push_body = base + 26;
+    let push_done = base + 27;
+    let body_pop = base + 28;
+    let body_dup = base + 29;
+    let body_not = base + 30;
+    let body_add = base + 31;
+    let body_sub = base + 32;
+    let body_mul = base + 33;
+    let body_div = base + 34;
+    let body_mod = base + 35;
+    let body_greater = base + 36;
+    let body_out_number = base + 37;
+    let body_out_char = base + 38;
+    let body_pointer = base + 39;
+    let body_switch = base + 40;
+    let roll_valid = base + 41;
+    let roll_invalid = base + 42;
+    let roll_validate = base + 43;
+    // The table block for depth `d` is `table_base + d`.
+    let table_base = base + 42;
+
+    // The partition hands over to the setup, which inserts `k = 0` below the ring
+    // before the first scan.
+    all[(EXIT_SETUP - 1) as usize] = Block::new(exit_setup(), End::Jump(setup));
+    // A chromatic move resolves the command and runs it; the trace is gone.
+    all[(EXIT_MOVE - 1) as usize] = Block::new(
+        {
+            let mut nodes = command_nodes(9);
+            nodes.extend(dispatch(1, handler(0)));
+            nodes
+        },
+        End::Computed,
+    );
+    // A slide runs no command; it rebuilds the state and loops.
+    all[(EXIT_SLIDE_MOVE - 1) as usize] = Block::new(restart_nodes(0), End::Jump(EXIT_ZERO));
+    // The movement rule ending is the interpreted program halting.
+    all[(EXIT_TERMINATE - 1) as usize] = Block::new(Vec::new(), End::Halt);
+
+    let guarded = |needed: i64, body: u32| {
+        let mut nodes = run_pops();
+        nodes.extend(guard(needed));
+        Block::new(
+            nodes,
+            End::If {
+                then: body,
+                otherwise: skip,
+            },
+        )
+    };
+    let unguarded = |body: Vec<Node>| {
+        let mut nodes = run_pops();
+        nodes.extend(body);
+        Block::new(nodes, End::Jump(restart))
+    };
+
+    let mut extra = Vec::with_capacity(44 + ROLL_DEPTH as usize - 1);
+    // 0: the value stack starts empty below the ring.
+    extra.push(Block::new(run_setup(), End::Jump(EXIT_ZERO)));
+    // 1: rebuild the nine and loop.
+    extra.push(Block::new(restart_nodes(0), End::Jump(EXIT_ZERO)));
+    // 2..20: one handler per code.
+    extra.push(Block::new(run_pops(), End::Jump(skip))); // code 0 never occurs
+    extra.push(Block::new(
+        {
+            let mut nodes = run_pops();
+            nodes.extend(push_setup());
+            nodes
+        },
+        End::Jump(push_test),
+    ));
+    extra.push(guarded(1, body_pop)); // 2 pop
+    extra.push(guarded(2, body_add)); // 3 add
+    extra.push(guarded(2, body_sub)); // 4 subtract
+    extra.push(guarded(2, body_mul)); // 5 multiply
+    extra.push(guarded(2, body_div)); // 6 divide
+    extra.push(guarded(2, body_mod)); // 7 modulo
+    extra.push(guarded(1, body_not)); // 8 not
+    extra.push(guarded(2, body_greater)); // 9 greater
+    extra.push(guarded(1, body_dup)); // 10 duplicate
+    extra.push(guarded(2, roll_validate)); // 11 roll
+    extra.push(unguarded(run_in(Command::InNumber))); // 12 in number
+    extra.push(unguarded(run_in(Command::InChar))); // 13 in char
+    extra.push(guarded(1, body_out_number)); // 14 out number
+    extra.push(guarded(1, body_out_char)); // 15 out char
+    extra.push(Block::new(run_pops(), End::Jump(restart))); // 16 nop
+    extra.push(guarded(1, body_pointer)); // 17 pointer
+    extra.push(guarded(1, body_switch)); // 18 switch
+    // 21: a guarded command with too few values leaves the stack alone.
+    extra.push(Block::new(Vec::new(), End::Jump(restart)));
+    // 22, 23: the two non-zero division paths.
+    extra.push(Block::new(
+        run_divide_path(Command::Divide),
+        End::Jump(restart),
+    ));
+    extra.push(Block::new(
+        run_divide_path(Command::Modulo),
+        End::Jump(restart),
+    ));
+    // 24: a zero divisor consumes both operands and pushes nothing.
+    extra.push(Block::new(run_zero_division(), End::Jump(restart)));
+    // 25..27: the push loop, which counts the source block's cells.
+    extra.push(Block::new(
+        vec![Node::DupLocal(1), Node::Command(Command::Not)],
+        End::If {
+            then: push_done,
+            otherwise: push_body,
+        },
+    ));
+    extra.push(Block::new(
+        {
+            let mut nodes = vec![
+                Node::DupLocal(10),
+                Node::DupLocal(7),
+                Node::Command(Command::Subtract),
+                Node::Command(Command::Not),
+                Node::Roll(3, 2),
+                Node::Command(Command::Add),
+                Node::Roll(2, 1),
+                Node::Const(1),
+                Node::Command(Command::Subtract),
+            ];
+            nodes.extend(ring_by(9, i64::from(PER_CELL)));
+            nodes
+        },
+        End::Jump(push_test),
+    ));
+    extra.push(Block::new(
+        {
+            let mut nodes = vec![Node::DupLocal(2)];
+            nodes.extend(insert_top());
+            nodes.extend(k_add(1));
+            nodes
+        },
+        End::Jump(restart),
+    ));
+    // 28..: one body per guarded command.
+    extra.push(Block::new(run_pop(), End::Jump(restart)));
+    extra.push(Block::new(run_dup(), End::Jump(restart)));
+    extra.push(Block::new(run_not(), End::Jump(restart)));
+    extra.push(Block::new(run_binary(Command::Add), End::Jump(restart)));
+    extra.push(Block::new(
+        run_binary(Command::Subtract),
+        End::Jump(restart),
+    ));
+    extra.push(Block::new(
+        run_binary(Command::Multiply),
+        End::Jump(restart),
+    ));
+    extra.push(Block::new(
+        run_division(),
+        End::If {
+            then: zero_path,
+            otherwise: div_nonzero,
+        },
+    ));
+    extra.push(Block::new(
+        run_division(),
+        End::If {
+            then: zero_path,
+            otherwise: mod_nonzero,
+        },
+    ));
+    extra.push(Block::new(run_binary(Command::Greater), End::Jump(restart)));
+    extra.push(Block::new(run_out(Command::OutNumber), End::Jump(restart)));
+    extra.push(Block::new(run_out(Command::OutChar), End::Jump(restart)));
+    extra.push(Block::new(run_pointer(), End::Jump(restart)));
+    extra.push(Block::new(run_switch(), End::Jump(restart)));
+    // 41: a valid roll dispatches on its depth, with the two copies cleaned up
+    // and the table block's id on top.
+    extra.push(Block::new(
+        vec![
+            Node::Roll(2, 1),
+            Node::Command(Command::Pop),
+            Node::Const(i64::from(table_base)),
+            Node::Command(Command::Add),
+        ],
+        End::Computed,
+    ));
+    // 42: a roll deeper than the values or shallower than two consumes its
+    // operands and does nothing, as the reference does for the first two.
+    extra.push(Block::new(
+        {
+            let mut nodes = vec![Node::Command(Command::Pop), Node::Command(Command::Pop)];
+            nodes.extend(lift_two());
+            nodes.extend([Node::Command(Command::Pop), Node::Command(Command::Pop)]);
+            nodes.extend(k_add(-2));
+            nodes
+        },
+        End::Jump(restart),
+    ));
+    // 43: two values are present, so the depth can be read and checked.
+    extra.push(Block::new(
+        roll_guard(),
+        End::If {
+            then: roll_valid,
+            otherwise: roll_invalid,
+        },
+    ));
+    // 44..: one block per depth, the way the walker's roll table works.
+    for depth in 2..=ROLL_DEPTH {
+        extra.push(Block::new(roll_table(depth), End::Jump(restart)));
+    }
+
+    all.extend(extra);
+    all
+}
+
+/// `k = 0` below the ring: `[nine | ring]` becomes `[nine | ring | 0]`.
+fn run_setup() -> Vec<Node> {
+    let mut nodes = vec![Node::Const(0)];
+    // The new zero is on top; roll the whole stack left by one to put it under
+    // the ring, past `nine + ring` values.
+    nodes.extend(n_plus(14, K_OFFSET));
+    nodes.extend([Node::Const(1), Node::Command(Command::Roll)]);
+    nodes
+}
+
+/// The dispatcher's id and the two colour temporaries `command_nodes` leaves.
+fn run_pops() -> Vec<Node> {
+    vec![
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+        Node::Command(Command::Pop),
+    ]
+}
+
+/// `N + add`, where the ring size `N` sits `at` slots down.
+fn n_plus(at: u32, add: u32) -> Vec<Node> {
+    if add == 0 {
+        return vec![Node::DupLocal(at)];
+    }
+    vec![
+        Node::DupLocal(at),
+        Node::Const(i64::from(add)),
+        Node::Command(Command::Add),
+    ]
+}
+
+/// `roll(N + depth_add, N + rolls_add)`: a rotation past the ring.
+fn roll_n(at: u32, depth_add: u32, rolls_add: u32) -> Vec<Node> {
+    let mut nodes = n_plus(at, depth_add);
+    nodes.extend(n_plus(at + 1, rolls_add));
+    nodes.push(Node::Command(Command::Roll));
+    nodes
+}
+
+/// `roll(N + depth_add, rolls)`: the same with a constant roll.
+fn roll_const(at: u32, depth_add: u32, rolls: i64) -> Vec<Node> {
+    let mut nodes = n_plus(at, depth_add);
+    nodes.extend([Node::Const(rolls), Node::Command(Command::Roll)]);
+    nodes
+}
+
+/// Bring `V1` above the ring: `[nine | ring | k | V1 ..]` becomes
+/// `[V1 | nine | ring | k | V2 ..]`.
+fn lift_one() -> Vec<Node> {
+    roll_n(13, K_OFFSET + 1, K_OFFSET)
+}
+
+/// Bring `V1` and `V2` above the ring, `V1` on top.
+fn lift_two() -> Vec<Node> {
+    roll_n(13, K_OFFSET + 2, K_OFFSET)
+}
+
+/// Put a value that sits on top of the nine into the value stack: `[x | nine |
+/// ring | k | V ..]` becomes `[nine | ring | k | x | V ..]`.
+fn insert_top() -> Vec<Node> {
+    roll_const(14, K_OFFSET + 1, 1)
+}
+
+/// `k += delta`, leaving the value stack otherwise untouched.
+fn k_add(delta: i64) -> Vec<Node> {
+    if delta == 0 {
+        return Vec::new();
+    }
+    let mut nodes = roll_n(13, K_OFFSET, K_OFFSET - 1);
+    let operation = if delta > 0 {
+        Command::Add
+    } else {
+        Command::Subtract
+    };
+    nodes.extend([Node::Const(delta.abs()), Node::Command(operation)]);
+    nodes.extend(roll_const(14, K_OFFSET, 1));
+    nodes
+}
+
+/// Leave `k >= needed` on top, with the stack otherwise restored.
+fn guard(needed: i64) -> Vec<Node> {
+    let mut nodes = roll_n(13, K_OFFSET, K_OFFSET - 1);
+    nodes.push(Node::Dup);
+    nodes.extend(roll_const(15, K_OFFSET + 1, 1));
+    nodes.extend([Node::Const(needed - 1), Node::Command(Command::Greater)]);
+    nodes
+}
+
+/// Duplicate the value at depth `N + j`, leaving the copy on top and the stack
+/// otherwise unchanged. `N` is `at` slots down.
+fn dup_at(at: u32, j: u32) -> Vec<Node> {
+    let mut nodes = roll_n(at, j, j - 1);
+    nodes.push(Node::Dup);
+    nodes.extend(roll_const(at + 2, j + 1, 1));
+    nodes
+}
+
+/// Decide whether `roll`'s depth is in range: `2 <= d <= min(k - 2, ROLL_DEPTH)`.
+///
+/// The two copies are consumed by the test; the leaves `d` and `k` on the stack
+/// for the two branches to clean up. The upper bound is the table's, so a depth
+/// past it takes the no-op path rather than dispatching to a block that is not
+/// there.
+fn roll_guard() -> Vec<Node> {
+    let mut nodes = dup_at(13, K_OFFSET);
+    nodes.extend(dup_at(14, K_OFFSET + 3));
+    nodes.extend([
+        // d > 1
+        Node::DupLocal(1),
+        Node::Const(1),
+        Node::Command(Command::Greater),
+        // (k - 2) - d > -1, i.e. k - 2 >= d
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Subtract),
+        Node::DupLocal(3),
+        Node::Command(Command::Subtract),
+        Node::Const(-1),
+        Node::Command(Command::Greater),
+        // (ROLL_DEPTH - d) > -1, i.e. d <= ROLL_DEPTH
+        Node::Const(i64::from(ROLL_DEPTH)),
+        Node::DupLocal(4),
+        Node::Command(Command::Subtract),
+        Node::Const(-1),
+        Node::Command(Command::Greater),
+        Node::Command(Command::Multiply),
+        Node::Command(Command::Multiply),
+    ]);
+    nodes
+}
+
+/// `roll` for a depth known at weave time.
+///
+/// The depth and both operands are lifted above the ring, the command rotates
+/// the values, and a second rotation of the same size puts them back below the
+/// ring. Both amounts are the ring size plus a literal, so no runtime `k` is
+/// needed.
+fn roll_table(depth: u32) -> Vec<Node> {
+    let mut nodes = roll_n(13, 12 + depth, K_OFFSET);
+    nodes.push(Node::Command(Command::Roll));
+    nodes.extend(roll_const(depth + 13, K_OFFSET + depth, i64::from(depth)));
+    nodes.extend(k_add(-2));
+    nodes
+}
+
+/// `push`: count the source block's cells into `best`, then push the count.
+///
+/// The state's label is still the block the move left, because `restart` has not
+/// run yet. `index` and `best` are the scan's dead slots, so the rescan uses them
+/// as the remaining-cell counter and the match count without touching the live
+/// values.
+fn push_setup() -> Vec<Node> {
+    vec![
+        // index = big, the number of cells to visit
+        Node::DupLocal(4),
+        Node::Roll(2, 1),
+        Node::Command(Command::Pop),
+        // best = 0
+        Node::Roll(2, 1),
+        Node::Command(Command::Pop),
+        Node::Const(0),
+        Node::Roll(2, 1),
+    ]
+}
+
+/// `pop`: drop `V1`.
+fn run_pop() -> Vec<Node> {
+    let mut nodes = lift_one();
+    nodes.push(Node::Command(Command::Pop));
+    nodes.extend(k_add(-1));
+    nodes
+}
+
+/// `duplicate`: push a second copy of `V1`.
+fn run_dup() -> Vec<Node> {
+    let mut nodes = lift_one();
+    nodes.push(Node::Dup);
+    nodes.extend(roll_const(15, K_OFFSET + 2, 2));
+    nodes.extend(k_add(1));
+    nodes
+}
+
+/// `not`: replace `V1`.
+fn run_not() -> Vec<Node> {
+    let mut nodes = lift_one();
+    nodes.push(Node::Command(Command::Not));
+    nodes.extend(insert_top());
+    nodes
+}
+
+/// A binary command: pop two, push one.
+fn run_binary(command: Command) -> Vec<Node> {
+    let mut nodes = lift_two();
+    nodes.push(Node::Command(command));
+    nodes.extend(insert_top());
+    nodes.extend(k_add(-1));
+    nodes
+}
+
+/// The two operands above the ring, then test the divisor for zero.
+fn run_division() -> Vec<Node> {
+    let mut nodes = lift_two();
+    nodes.extend([Node::Dup, Node::Command(Command::Not)]);
+    nodes
+}
+
+/// A non-zero division: the result replaces the two operands.
+fn run_divide_path(command: Command) -> Vec<Node> {
+    let mut nodes = vec![Node::Command(command)];
+    nodes.extend(insert_top());
+    nodes.extend(k_add(-1));
+    nodes
+}
+
+/// A zero divisor consumes both operands and pushes nothing.
+fn run_zero_division() -> Vec<Node> {
+    let mut nodes = vec![Node::Command(Command::Pop), Node::Command(Command::Pop)];
+    nodes.extend(k_add(-2));
+    nodes
+}
+
+/// One command whose result is the value stack's top: `out`.
+fn run_out(command: Command) -> Vec<Node> {
+    let mut nodes = lift_one();
+    nodes.push(Node::Command(command));
+    nodes.extend(k_add(-1));
+    nodes
+}
+
+/// `in`: the read pushes a value, which becomes `V1`.
+fn run_in(command: Command) -> Vec<Node> {
+    let mut nodes = vec![Node::Command(command)];
+    nodes.extend(insert_top());
+    nodes.extend(k_add(1));
+    nodes
+}
+
+/// `pointer`: pop a value and turn the direction pointer by it modulo four.
+///
+/// The nine are `[index best case big row label attempt cc dp]`; after the value
+/// is lifted they are one deeper. `case` is what `restart` rebuilds `dp` and `cc`
+/// from, so the handler only has to replace it.
+fn run_pointer() -> Vec<Node> {
+    let mut nodes = lift_one();
+    // newdp = (dp + v) % 4
+    nodes.extend([
+        Node::DupLocal(10),
+        Node::DupLocal(2),
+        Node::Command(Command::Add),
+        Node::Const(4),
+        Node::Command(Command::Modulo),
+    ]);
+    // newcase = newdp * 2 + cc
+    nodes.extend([
+        Node::Const(2),
+        Node::Command(Command::Multiply),
+        Node::DupLocal(10),
+        Node::Command(Command::Add),
+    ]);
+    nodes.extend(stash_case());
+    nodes
+}
+
+/// `switch`: pop a value and toggle the chooser when it is odd.
+fn run_switch() -> Vec<Node> {
+    let mut nodes = lift_one();
+    // newcc = (v % 2 + cc) % 2
+    nodes.extend([
+        Node::DupLocal(1),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        Node::DupLocal(10),
+        Node::Command(Command::Add),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+    ]);
+    // newcase = dp * 2 + newcc
+    nodes.extend([
+        Node::DupLocal(11),
+        Node::Const(2),
+        Node::Command(Command::Multiply),
+        Node::Command(Command::Add),
+    ]);
+    nodes.extend(stash_case());
+    nodes
+}
+
+/// Replace the lifted nine's `case` with the value on top and drop `V1`.
+///
+/// On entry the stack is `[newcase, V1, index, best, case, big, ..]`; the value is
+/// consumed and the register comes down by one.
+fn stash_case() -> Vec<Node> {
+    let mut nodes = vec![
+        // [V1, index, best, newcase, case, big, ..]
+        Node::Roll(4, 1),
+        // the old case to the top, then gone
+        Node::Roll(5, 4),
+        Node::Command(Command::Pop),
+        // V1 is the popped operand
+        Node::Command(Command::Pop),
+    ];
+    nodes.extend(k_add(-1));
+    nodes
+}
+
 /// The splitter image, extended with the start state.
 fn start_program() -> Result<Program, Error> {
     Program::new(start_blocks(), ENTRY)
@@ -2493,5 +3066,304 @@ mod tests {
             machine.stack,
             vec![204, 203, 202, 201, 2, 0, 0, 201, 105, 104, 4, -1, 0]
         );
+    }
+
+    /// The run machine's stack, top first.
+    fn run_stack(top_first: &[i64]) -> Machine {
+        Machine::new(top_first.iter().rev().copied().collect())
+    }
+
+    fn run_top_first(machine: &Machine) -> Vec<i64> {
+        machine.stack.iter().rev().copied().collect()
+    }
+
+    /// Nine live values, a two-cell ring with size eight, and two values.
+    const RUN_NINE: [i64; 9] = [100, 101, 102, 103, 104, 105, 106, 107, 108];
+    const RUN_RING: [i64; 8] = [20, 21, 22, 8, 30, 31, 32, 8];
+
+    fn run_stack_with(k: i64, values: &[i64]) -> Machine {
+        run_stack_nine(&RUN_NINE, k, values)
+    }
+
+    fn run_stack_nine(nine: &[i64; 9], k: i64, values: &[i64]) -> Machine {
+        let mut top = nine.to_vec();
+        top.extend(RUN_RING);
+        top.push(k);
+        top.extend(values);
+        run_stack(&top)
+    }
+
+    #[test]
+    fn a_lift_brings_the_top_value_above_the_ring() {
+        let mut machine = run_stack_with(2, &[41, 42]);
+        machine.run(&lift_one());
+        // [V1, nine, ring, k, V2]
+        let mut want = vec![41];
+        want.extend(RUN_NINE);
+        want.extend(RUN_RING);
+        want.extend([2, 42]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_lift_brings_two_values_in_order() {
+        let mut machine = run_stack_with(3, &[41, 42, 43]);
+        machine.run(&lift_two());
+        // [V1, V2, nine, ring, k, V3]
+        let mut want = vec![41, 42];
+        want.extend(RUN_NINE);
+        want.extend(RUN_RING);
+        want.extend([3, 43]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn an_insert_puts_a_value_under_the_register() {
+        // A value on top of the nine, above the ring.
+        let mut top = vec![99];
+        top.extend(RUN_NINE);
+        top.extend(RUN_RING);
+        top.extend([2, 41, 42]);
+        let mut machine = run_stack(&top);
+        machine.run(&insert_top());
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([2, 99, 41, 42]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn the_register_moves_without_disturbing_the_values() {
+        let mut machine = run_stack_with(2, &[41, 42]);
+        machine.run(&k_add(1));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([3, 41, 42]);
+        assert_eq!(run_top_first(&machine), want);
+
+        let mut machine = run_stack_with(2, &[41, 42]);
+        machine.run(&k_add(-1));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([1, 41, 42]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn the_guard_reads_the_register() {
+        for (k, want) in [(0, 0), (1, 1), (3, 1)] {
+            let mut machine = run_stack_with(k, &[41, 42]);
+            machine.run(&guard(1));
+            let mut check = vec![want];
+            check.extend(RUN_NINE);
+            check.extend(RUN_RING);
+            check.extend([k, 41, 42]);
+            assert_eq!(run_top_first(&machine), check, "k {k}");
+        }
+    }
+
+    #[test]
+    fn an_out_char_pops_the_printed_value() {
+        let mut machine = run_stack_with(2, &[65, 66]);
+        machine.run(&run_out(Command::OutChar));
+        assert_eq!(machine.out, "A");
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([1, 66]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn duplicate_leaves_two_values_and_raises_the_register() {
+        let mut machine = run_stack_with(2, &[41, 42]);
+        machine.run(&run_dup());
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([3, 41, 41, 42]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn an_addition_replaces_two_values_with_one() {
+        // 10 4 add: 14
+        let mut machine = run_stack_with(2, &[4, 10]);
+        machine.run(&run_binary(Command::Add));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([1, 14]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_pointer_turns_the_case() {
+        // Right, left chooser: case 0. One turn clockwise is down, case 2.
+        let mut nine = RUN_NINE;
+        nine[2] = 0; // case
+        nine[7] = 0; // cc
+        nine[8] = 0; // dp
+        let mut machine = run_stack_nine(&nine, 1, &[1]);
+        machine.run(&run_pointer());
+        let mut want = nine.to_vec();
+        want[2] = 2;
+        want.extend(RUN_RING);
+        want.push(0);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_switch_toggles_the_chooser_for_an_odd_value() {
+        // Right, left chooser: case 0. An odd value toggles it, case 1.
+        let mut nine = RUN_NINE;
+        nine[2] = 0; // case
+        nine[7] = 0; // cc
+        nine[8] = 0; // dp
+        let mut machine = run_stack_nine(&nine, 1, &[1]);
+        machine.run(&run_switch());
+        let mut want = nine.to_vec();
+        want[2] = 1;
+        want.extend(RUN_RING);
+        want.push(0);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn the_roll_guard_checks_the_depth() {
+        // `d` is the second value, `k` is the register. A roll needs two
+        // operands and `d` values under them.
+        for (k, d, want) in [
+            (5, 3, 1),
+            (5, 2, 1),
+            (5, 4, 0),
+            (5, 1, 0),
+            (3, 3, 0),
+            (2, 2, 0),
+            (200, 64, 1),
+            (200, 65, 0),
+        ] {
+            let mut values = vec![0; k as usize];
+            values[1] = d;
+            let mut machine = run_stack_with(k, &values);
+            machine.run(&roll_guard());
+            let top = run_top_first(&machine);
+            assert_eq!(top[0], want, "k {k} d {d}");
+            assert_eq!(top[1], d, "the depth copy is left for the branch");
+            assert_eq!(top[2], k, "the register copy is left for the branch");
+        }
+    }
+
+    #[test]
+    fn a_roll_rotates_the_top_values() {
+        // 1 3 roll on 10 20 30: the top three rotate by one, and the operands go.
+        let mut machine = run_stack_with(5, &[1, 3, 10, 20, 30]);
+        machine.run(&roll_table(3));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([3, 20, 30, 10]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_roll_of_two_swaps_the_top_two() {
+        let mut machine = run_stack_with(4, &[1, 2, 10, 20]);
+        machine.run(&roll_table(2));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([2, 20, 10]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_not_replaces_the_top_value() {
+        let mut machine = run_stack_with(1, &[0]);
+        machine.run(&run_not());
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([1, 1]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn an_out_number_prints_the_top_value() {
+        let mut machine = run_stack_with(1, &[-42]);
+        machine.run(&run_out(Command::OutNumber));
+        assert_eq!(machine.out, "-42");
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.push(0);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_division_replaces_two_values_with_the_quotient() {
+        // 10 2 divide: 5, and 10 3 modulo: 1.
+        let mut machine = run_stack_with(2, &[2, 10]);
+        machine.run(&run_division());
+        machine.pop(); // the branch consumes the condition
+        machine.run(&run_divide_path(Command::Divide));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([1, 5]);
+        assert_eq!(run_top_first(&machine), want);
+
+        let mut machine = run_stack_with(2, &[3, 10]);
+        machine.run(&run_division());
+        machine.pop();
+        machine.run(&run_divide_path(Command::Modulo));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([1, 1]);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_zero_divisor_consumes_both_operands() {
+        let mut machine = run_stack_with(2, &[0, 10]);
+        machine.run(&run_division());
+        machine.pop();
+        machine.run(&run_zero_division());
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.push(0);
+        assert_eq!(run_top_first(&machine), want);
+    }
+
+    #[test]
+    fn a_valid_roll_dispatches_on_its_depth() {
+        let table_base = 1000;
+        let mut machine = run_stack_with(5, &[0, 3, 10, 20, 30]);
+        machine.run(&roll_guard());
+        assert_eq!(run_top_first(&machine)[0], 1, "the depth is in range");
+        machine.pop(); // the branch consumes the condition
+        machine.run(&[
+            Node::Roll(2, 1),
+            Node::Command(Command::Pop),
+            Node::Const(table_base),
+            Node::Command(Command::Add),
+        ]);
+        let top = run_top_first(&machine);
+        assert_eq!(top[0], table_base + 3, "the table block for depth three");
+        // The two copies are gone and the movement layout is intact.
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.extend([5, 0, 3, 10, 20, 30]);
+        assert_eq!(&top[1..], want);
+    }
+
+    #[test]
+    fn an_invalid_roll_consumes_its_operands() {
+        // Depth two with two values: there are none left to rotate.
+        let mut machine = run_stack_with(2, &[1, 2]);
+        machine.run(&roll_guard());
+        assert_eq!(run_top_first(&machine)[0], 0, "the depth is out of range");
+        machine.pop();
+        // The invalid path: drop the two copies, then the two operands.
+        machine.run(&[Node::Command(Command::Pop), Node::Command(Command::Pop)]);
+        machine.run(&lift_two());
+        machine.run(&[Node::Command(Command::Pop), Node::Command(Command::Pop)]);
+        machine.run(&k_add(-2));
+        let mut want = RUN_NINE.to_vec();
+        want.extend(RUN_RING);
+        want.push(0);
+        assert_eq!(run_top_first(&machine), want);
     }
 }
