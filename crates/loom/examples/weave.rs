@@ -15,8 +15,10 @@
 //! interpreter this example used to build, and is stale if it is still there.
 //!
 //! The third argument is the program's own input. For a straight line it is the
-//! text the program reads; for a graph it is **code points**, one number per
-//! read, because a graph decides which reads happen. A graph's reads must also
+//! text the program reads; for a graph it is **numbers**, one per read, because
+//! a graph decides which reads happen. A number read takes the number; a
+//! character read takes the character's code point, because the stream is
+//! numeric. A graph's reads must also
 //! not run out: nothing in the image can tell a read that happened from one that
 //! did not.
 //!
