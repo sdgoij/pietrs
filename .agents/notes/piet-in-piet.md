@@ -173,7 +173,14 @@ target/debug/pietrs run target/weave/ppm.png < program.ppm
 A second image turns those codes into the ring stream the splitter and the
 movement stages read, so a grid's colours reach the partition without the host
 building the records. `loom::ppm_codes`, `loom::ring_to_stream` and
-`loom::splitter` are the three seams, and each takes and returns text.
+`loom::splitter` are the three seams, and each takes and returns text. The
+splitter's labels then name and size the blocks, so the walker's records are
+sized from the image too.
+
+The graph those records encode is still the host's. Resolving one state in the
+image costs a pass over the ring per attempt — 106 million steps per state on the
+hello world — which is fine for fixtures and out of reach for *Piet's Quest*;
+S10 of the full note has the measurements and the reason.
 
 PNG, GIF, codel size detection and comments are still the host's; the note's S5
 section says exactly where the boundary is.

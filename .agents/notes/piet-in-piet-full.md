@@ -794,6 +794,55 @@ size them and resolve every move. `Blocks` stays for tiling the images themselve
 — any image has to be partitioned to be run — and for the host-resolved graph the
 walker's tests build directly.
 
+### S10. One image from pixels to output (measured, not built)
+
+The last row of S4's table is one program that reads a PPM, partitions it, builds
+the state graph and runs it. Three things are missing, and the measurements say
+only one of them is worth attacking first.
+
+**The graph walk.** A state costs the exit stage a pass over the ring per attempt.
+Measured on the canonical hello world: 25 states, 24 edges, 2 649 541 351
+interpreted steps in total — 105 981 654 per state, 230 528 868 for the worst —
+and 93.8 s in release, against 16 us for `tessera::StateGraph::build`. The cost is
+linear in the ring, because every cell a scan visits rotates the whole ring: a
+uniform 16 x 16 grid (324 ring cells) costs 75 572 318 steps for one state, and
+the hello world's 106 million per state fall on the same line at 230 000 steps per
+ring cell. At that rate *Piet's Quest* — 17 964 states over 478 815 ring cells —
+is of order 10^11 steps *per state*, which is a year, not a session. Even with a
+cell visit at O(1), the eight attempts times every state times every cell is
+10^11 to 10^12 commands. **An image-resolved graph is a demonstration for programs
+of a few dozen states.** That is why the *Piet's Quest* runs take the graph from
+`tessera` and only the records from an image.
+
+**The storage.** The movement stages keep four values per ring cell, so *Piet's
+Quest*'s 478 815 cells are 1 915 260 values — over the runtime's million-value
+default before one record is pushed. Packing a cell into one value, colour and
+label in the two halves, brings it to 478 815; the records are 4 x 62 945 =
+251 780 plus trampolines, and the slots are 61 987, so the whole single image
+lands near 900 000 values. It fits, barely, and only packed. That pack is a change
+to the movement stages themselves, not a new stage bolted on.
+
+**The image.** The stages are already large: the splitter is 82 x 1989 codels and
+27 912 blocks, the start 187 x 1989 and 69 765, the exit 367 x 1989 and 141 513,
+the walker 617 x 246 and 30 260. Their union is roughly 2.5 million codels and a
+quarter of a million blocks; Cranelift took 2.2 s for the walker's 30 260, so the
+merged image would take tens of seconds to JIT.
+
+**What could be extracted alone.** The record assembly — offsets, trampolines,
+the ordering — is the one piece of the host that is pure arithmetic on the graph:
+one pass, one deep roll per edge, 35 ms at *Piet's Quest*'s 19 352 edges (1.79 us
+per roll of depth 17 964). It could be a stage. It would not remove the host,
+though: the host would still walk the graph and print it, which is most of what
+`graph_walker` does, so the stage would trade eighty lines of Rust for a large
+image and a slower pipeline without changing where the work happens.
+
+**The decision.** The single image is blocked on the ring rotation, not on the
+host. A page above the ring (S3) would make a cell visit O(1) and take the hello
+world's graph from 94 s to about a second, which is the change that makes a
+merged program worth attempting. Until then the boundary is the right one:
+`tessera` builds a graph in microseconds, and the images resolve everything a
+program's *execution* needs.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line
@@ -825,3 +874,9 @@ assembles the records. Every fixture agrees with `canvas::Blocks` and `tessera`,
 and the canonical hello world runs through the image-built graph to
 `Hello world!`. The cost is one full image run per state, so the big case is a
 release harness; the small cases are in the default suite.
+
+S7 to S9 then took the last three host streams away: the ring, the splitter's
+labels and the block sizes are all printed by images. What remains of the host is
+the graph itself, and S10 says why it should stay there: resolving one state costs
+the exit stage a rotation of the whole ring per cell, 106 million steps for the
+hello world and of order 10^11 per state for *Piet's Quest*.
