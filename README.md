@@ -60,6 +60,11 @@ pietrs trace program.png --max-steps 200
 pietrs build program.png -o program
 ./program
 
+# The executable takes the same input file `run` does, read before standard
+# input: a walker's record stream comes from the file, the answers from the
+# terminal.
+./program records.txt
+
 # Open the visual editor and debugger.
 pietrs editor program.png
 ```

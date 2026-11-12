@@ -461,6 +461,11 @@ fn allocate(_size: usize) -> Result<*mut u8, String> {
 
 /// The packaged-program entry point.
 pub fn start() -> ExitCode {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Err(error) = install_records(&args) {
+        eprintln!("pietrs-runner: {error}");
+        return ExitCode::FAILURE;
+    }
     let executable = match std::env::current_exe() {
         Ok(executable) => executable,
         Err(error) => {
@@ -564,21 +569,106 @@ fn pop_two(context: &mut Context) -> Option<(i64, i64)> {
     Some((second, top))
 }
 
-fn read_byte() -> Option<u8> {
-    if let Some(byte) = PUSHBACK.lock().ok()?.pop() {
-        return Some(byte);
+/// A byte source: the record stream named on the command line, or the terminal.
+///
+/// Chaining happens per token, not per byte. A number that ends at the end of
+/// the file must not run into the first digit the terminal supplies: the loader
+/// reads `80440 148 1` from a stream with no trailing newline, and a byte-level
+/// hand-over would turn a typed `2` into `12`.
+trait Bytes {
+    /// The next byte, or `None` at the end of the source.
+    fn byte(&mut self) -> Option<u8>;
+
+    /// Hands `byte` back to this source.
+    fn unread(&mut self, byte: u8);
+}
+
+struct RecordFile {
+    reader: io::BufReader<std::fs::File>,
+    pushback: Vec<u8>,
+}
+
+/// The record stream the executable was given, if any.
+static RECORDS: Mutex<Option<RecordFile>> = Mutex::new(None);
+
+struct Records;
+
+impl Bytes for Records {
+    fn byte(&mut self) -> Option<u8> {
+        let mut guard = RECORDS.lock().ok()?;
+        let records = guard.as_mut()?;
+        if let Some(byte) = records.pushback.pop() {
+            return Some(byte);
+        }
+        let mut byte = [0u8; 1];
+        match records.reader.read(&mut byte) {
+            Ok(1) => Some(byte[0]),
+            _ => None,
+        }
     }
-    let mut byte = [0u8; 1];
-    match io::stdin().read(&mut byte) {
-        Ok(1) => Some(byte[0]),
-        _ => None,
+
+    fn unread(&mut self, byte: u8) {
+        if let Ok(mut guard) = RECORDS.lock()
+            && let Some(records) = guard.as_mut()
+        {
+            records.pushback.push(byte);
+        }
     }
 }
 
-fn unread(byte: u8) {
-    if let Ok(mut pushback) = PUSHBACK.lock() {
-        pushback.push(byte);
+struct Terminal;
+
+impl Bytes for Terminal {
+    fn byte(&mut self) -> Option<u8> {
+        if let Some(byte) = PUSHBACK.lock().ok()?.pop() {
+            return Some(byte);
+        }
+        let mut byte = [0u8; 1];
+        match io::stdin().read(&mut byte) {
+            Ok(1) => Some(byte[0]),
+            _ => None,
+        }
     }
+
+    fn unread(&mut self, byte: u8) {
+        if let Ok(mut pushback) = PUSHBACK.lock() {
+            pushback.push(byte);
+        }
+    }
+}
+
+/// Installs the record stream an executable was told to read first.
+fn install_records(args: &[std::ffi::OsString]) -> Result<(), String> {
+    let Some(path) = args.first() else {
+        return Ok(());
+    };
+    if args.len() > 1 {
+        return Err(format!(
+            "expected at most one input file, got {}\nusage: <program> [input-file]",
+            args.len()
+        ));
+    }
+    let path = Path::new(path);
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let mut guard = RECORDS
+        .lock()
+        .map_err(|_| "the input lock is poisoned".to_owned())?;
+    *guard = Some(RecordFile {
+        reader: io::BufReader::new(file),
+        pushback: Vec::new(),
+    });
+    Ok(())
+}
+
+/// Reads a character from the record stream, then from the terminal.
+fn read_char() -> Option<char> {
+    read_char_from(&mut Records).or_else(|| read_char_from(&mut Terminal))
+}
+
+/// Reads a number from the record stream, then from the terminal.
+fn read_number() -> Option<i64> {
+    read_number_from(&mut Records).or_else(|| read_number_from(&mut Terminal))
 }
 
 fn is_space(byte: u8) -> bool {
@@ -588,9 +678,9 @@ fn is_space(byte: u8) -> bool {
 /// Reads a decimal integer the way `runtime::BufferIo` does: leading whitespace
 /// is consumed, a lone sign is handed back, and a value that does not fit is
 /// consumed but not pushed.
-fn read_number() -> Option<i64> {
+fn read_number_from<S: Bytes>(source: &mut S) -> Option<i64> {
     let mut byte = loop {
-        let byte = read_byte()?;
+        let byte = source.byte()?;
         if !is_space(byte) {
             break byte;
         }
@@ -598,8 +688,8 @@ fn read_number() -> Option<i64> {
     let mut text = String::new();
     if byte == b'+' || byte == b'-' {
         text.push(char::from(byte));
-        let Some(next) = read_byte() else {
-            unread(byte);
+        let Some(next) = source.byte() else {
+            source.unread(byte);
             return None;
         };
         byte = next;
@@ -609,22 +699,45 @@ fn read_number() -> Option<i64> {
         if byte.is_ascii_digit() {
             text.push(char::from(byte));
             digits += 1;
-            let Some(next) = read_byte() else {
+            let Some(next) = source.byte() else {
                 break;
             };
             byte = next;
         } else {
-            unread(byte);
+            source.unread(byte);
             break;
         }
     }
     if digits == 0 {
         if let Some(sign) = text.chars().next() {
-            unread(sign as u8);
+            source.unread(sign as u8);
         }
         return None;
     }
     text.parse().ok()
+}
+
+/// Decodes one UTF-8 character, as `runtime::StreamIo` does.
+fn read_char_from<S: Bytes>(source: &mut S) -> Option<char> {
+    let first = source.byte()?;
+    let (mut code, extra) = match first {
+        0x00..=0x7f => (u32::from(first), 0),
+        byte if byte & 0xe0 == 0xc0 => (u32::from(byte & 0x1f), 1),
+        byte if byte & 0xf0 == 0xe0 => (u32::from(byte & 0x0f), 2),
+        byte if byte & 0xf8 == 0xf0 => (u32::from(byte & 0x07), 3),
+        _ => return None,
+    };
+    for _ in 0..extra {
+        let next = source.byte()?;
+        if next & 0xc0 != 0x80 {
+            return None;
+        }
+        code = (code << 6) | u32::from(next & 0x3f);
+    }
+    if code > 0x10ffff || (0xd800..=0xdfff).contains(&code) {
+        return None;
+    }
+    char::from_u32(code)
 }
 
 extern "C" fn piet_out_char(context: *mut Context) {
@@ -658,31 +771,12 @@ extern "C" fn piet_out_number(context: *mut Context) {
 }
 
 extern "C" fn piet_in_char(context: *mut Context) {
-    let Some(first) = read_byte() else {
+    let Some(character) = read_char() else {
         return;
     };
-    let (mut code, extra) = match first {
-        0x00..=0x7f => (u32::from(first), 0),
-        byte if byte & 0xe0 == 0xc0 => (u32::from(byte & 0x1f), 1),
-        byte if byte & 0xf0 == 0xe0 => (u32::from(byte & 0x0f), 2),
-        byte if byte & 0xf8 == 0xf0 => (u32::from(byte & 0x07), 3),
-        _ => return,
-    };
-    for _ in 0..extra {
-        let Some(next) = read_byte() else {
-            return;
-        };
-        if next & 0xc0 != 0x80 {
-            return;
-        }
-        code = (code << 6) | u32::from(next & 0x3f);
-    }
-    if code > 0x10ffff || (0xd800..=0xdfff).contains(&code) {
-        return;
-    }
     // SAFETY: the generated code passes the live context pointer.
     let context = unsafe { &mut *context };
-    push(context, i64::from(code));
+    push(context, i64::from(character as u32));
 }
 
 extern "C" fn piet_in_number(context: *mut Context) {
@@ -723,6 +817,69 @@ extern "C" fn piet_roll(context: *mut Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An in-memory byte source, so the readers can be tested without the
+    /// process's own input.
+    struct Buffer {
+        input: Vec<u8>,
+        at: usize,
+        pushback: Vec<u8>,
+    }
+
+    impl Buffer {
+        fn new(input: &str) -> Self {
+            Self {
+                input: input.as_bytes().to_vec(),
+                at: 0,
+                pushback: Vec::new(),
+            }
+        }
+    }
+
+    impl Bytes for Buffer {
+        fn byte(&mut self) -> Option<u8> {
+            if let Some(byte) = self.pushback.pop() {
+                return Some(byte);
+            }
+            let byte = *self.input.get(self.at)?;
+            self.at += 1;
+            Some(byte)
+        }
+
+        fn unread(&mut self, byte: u8) {
+            self.pushback.push(byte);
+        }
+    }
+
+    #[test]
+    fn a_number_does_not_run_past_the_end_of_its_source() {
+        let mut records = Buffer::new("10");
+        let mut terminal = Buffer::new("3");
+        // The hand-over `read_number` makes: the terminal's first digit must not
+        // continue the file's last number.
+        let first = read_number_from(&mut records).or_else(|| read_number_from(&mut terminal));
+        let second = read_number_from(&mut records).or_else(|| read_number_from(&mut terminal));
+        assert_eq!(first, Some(10));
+        assert_eq!(second, Some(3));
+    }
+
+    #[test]
+    fn a_source_hands_back_the_byte_that_ends_its_number() {
+        let mut records = Buffer::new("12 34");
+        assert_eq!(read_number_from(&mut records), Some(12));
+        assert_eq!(read_number_from(&mut records), Some(34));
+        assert_eq!(records.at, 5);
+    }
+
+    #[test]
+    fn a_character_chain_reads_across_the_hand_over() {
+        let mut records = Buffer::new("a");
+        let mut terminal = Buffer::new("λ");
+        let first = read_char_from(&mut records).or_else(|| read_char_from(&mut terminal));
+        let second = read_char_from(&mut records).or_else(|| read_char_from(&mut terminal));
+        assert_eq!(first, Some('a'));
+        assert_eq!(second, Some('λ'));
+    }
 
     /// A context over `stack`'s live values, with room for `extra` pushes.
     fn context_for(stack: &mut Vec<i64>, extra: usize) -> Context {

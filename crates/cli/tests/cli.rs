@@ -548,6 +548,42 @@ fn a_built_executable_reads_input() {
 
 #[cfg(feature = "codegen")]
 #[test]
+fn a_built_executable_chains_a_record_file_then_stdin() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, CYAN_LIGHT, GREEN_NORMAL]
+        .into_iter()
+        .flatten()
+        .collect();
+    let image = write_png(dir.path(), "chained.png", 5, 1, &rgba);
+    let output = dir.path().join("chained");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max-steps",
+        "4",
+    ]));
+
+    let executable = dir
+        .path()
+        .join(format!("chained{}", std::env::consts::EXE_SUFFIX));
+    // A walker's record stream has no trailing newline, so the tenth of the file
+    // and the third typed at the terminal must stay two numbers.
+    let records = dir.path().join("chained.input");
+    std::fs::write(&records, "10").unwrap();
+    let typed = dir.path().join("chained.typed");
+    std::fs::write(&typed, "3").unwrap();
+    let run = Command::new(&executable)
+        .arg(&records)
+        .stdin(Stdio::from(std::fs::File::open(&typed).unwrap()))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "7");
+}
+
+#[cfg(feature = "codegen")]
+#[test]
 fn a_built_executable_rolls_the_stack() {
     let dir = TempDir::new().unwrap();
     let rgba: Vec<u8> = [
