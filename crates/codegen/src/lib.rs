@@ -24,7 +24,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 #[cfg(feature = "object")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use runtime::{BufferIo, Division, Input, Output};
+use runtime::{Division, Io};
 use tessera::{Command, Edge, State, StateGraph};
 
 mod diagnostics;
@@ -89,9 +89,9 @@ struct Context {
 
 /// The JIT's context: the shared ABI first, then the in-memory I/O.
 #[repr(C)]
-struct JitContext {
+struct JitContext<'io> {
     context: Context,
-    io: *mut BufferIo,
+    io: *mut (dyn Io + 'io),
 }
 
 struct Offsets {
@@ -162,7 +162,7 @@ struct Lowering<'a> {
 }
 
 /// Runs the program through the JIT.
-pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run, Error> {
+pub fn run<'io>(blocks: &Blocks, io: &'io mut dyn Io, options: &Options) -> Result<Run, Error> {
     if std::mem::size_of::<usize>() != 8 {
         return Err(Error::UnsupportedTarget);
     }
@@ -186,7 +186,7 @@ pub fn run(blocks: &Blocks, io: &mut BufferIo, options: &Options) -> Result<Run,
             max_steps: options.max_steps.unwrap_or(u64::MAX),
             reason: REASON_TERMINATED,
         },
-        io: io as *mut BufferIo,
+        io: io as *mut (dyn Io + 'io),
     };
 
     let mut module = build_module()?;
@@ -843,57 +843,57 @@ fn store_field(builder: &mut FunctionBuilder, base: Value, value: Value, offset:
         .store(MemFlagsData::new(), value, base, offset);
 }
 
-fn push(ctx: &mut JitContext, value: i64) {
-    if ctx.context.sp < ctx.context.capacity {
+fn push(context: &mut Context, value: i64) {
+    if context.sp < context.capacity {
         // SAFETY: the context's stack points at a buffer of `capacity` values.
-        unsafe { *ctx.context.stack.add(ctx.context.sp as usize) = value };
-        ctx.context.sp += 1;
+        unsafe { *context.stack.add(context.sp as usize) = value };
+        context.sp += 1;
     } else {
-        ctx.context.reason = REASON_OVERFLOW;
+        context.reason = REASON_OVERFLOW;
     }
 }
 
-fn pop(ctx: &mut JitContext) -> Option<i64> {
-    if ctx.context.sp == 0 {
+fn pop(context: &mut Context) -> Option<i64> {
+    if context.sp == 0 {
         return None;
     }
-    ctx.context.sp -= 1;
+    context.sp -= 1;
     // SAFETY: the context's stack points at a buffer of `capacity` values.
-    Some(unsafe { *ctx.context.stack.add(ctx.context.sp as usize) })
+    Some(unsafe { *context.stack.add(context.sp as usize) })
 }
 
-fn pop_two(ctx: &mut JitContext) -> Option<(i64, i64)> {
-    if ctx.context.sp < 2 {
+fn pop_two(context: &mut Context) -> Option<(i64, i64)> {
+    if context.sp < 2 {
         return None;
     }
-    let top = pop(ctx)?;
-    let second = pop(ctx)?;
+    let top = pop(context)?;
+    let second = pop(context)?;
     Some((second, top))
 }
 
-fn roll(ctx: &mut JitContext, depth: i64, rolls: i64) {
+fn roll(context: &mut Context, depth: i64, rolls: i64) {
     if depth < 0 {
         return;
     }
     let Ok(depth) = usize::try_from(depth) else {
         return;
     };
-    if depth > ctx.context.sp as usize || depth <= 1 {
+    if depth > context.sp as usize || depth <= 1 {
         return;
     }
-    let start = ctx.context.sp as usize - depth;
+    let start = context.sp as usize - depth;
     let shift = rolls.rem_euclid(depth as i64) as usize;
     // SAFETY: the context's stack points at a buffer of `capacity` values and
     // `start..sp` is within it.
-    let values = unsafe { std::slice::from_raw_parts_mut(ctx.context.stack.add(start), depth) };
+    let values = unsafe { std::slice::from_raw_parts_mut(context.stack.add(start), depth) };
     values.rotate_right(shift);
 }
 
 extern "C" fn piet_out_char(context: *mut Context) {
     // SAFETY: `context` points at the first field of the `JitContext` built by
     // `run`; the generated code only sees the shared prefix.
-    let ctx = unsafe { &mut *(context as *mut JitContext) };
-    if let Some(value) = pop(ctx)
+    let ctx = unsafe { &mut *(context as *mut JitContext<'_>) };
+    if let Some(value) = pop(&mut ctx.context)
         && let Ok(code) = u32::try_from(value)
         && let Some(character) = char::from_u32(code)
     {
@@ -903,37 +903,37 @@ extern "C" fn piet_out_char(context: *mut Context) {
 }
 
 extern "C" fn piet_out_number(context: *mut Context) {
-    let ctx = unsafe { &mut *(context as *mut JitContext) };
-    if let Some(value) = pop(ctx) {
+    let ctx = unsafe { &mut *(context as *mut JitContext<'_>) };
+    if let Some(value) = pop(&mut ctx.context) {
         let io = unsafe { &mut *ctx.io };
         io.write_number(value);
     }
 }
 
 extern "C" fn piet_in_char(context: *mut Context) {
-    let ctx = unsafe { &mut *(context as *mut JitContext) };
+    let ctx = unsafe { &mut *(context as *mut JitContext<'_>) };
     let character = {
         let io = unsafe { &mut *ctx.io };
         io.read_char()
     };
     if let Some(character) = character {
-        push(ctx, i64::from(character as u32));
+        push(&mut ctx.context, i64::from(character as u32));
     }
 }
 
 extern "C" fn piet_in_number(context: *mut Context) {
-    let ctx = unsafe { &mut *(context as *mut JitContext) };
+    let ctx = unsafe { &mut *(context as *mut JitContext<'_>) };
     let value = {
         let io = unsafe { &mut *ctx.io };
         io.read_number()
     };
     if let Some(value) = value {
-        push(ctx, value);
+        push(&mut ctx.context, value);
     }
 }
 
 extern "C" fn piet_roll(context: *mut Context) {
-    let ctx = unsafe { &mut *(context as *mut JitContext) };
+    let ctx = unsafe { &mut *context };
     if let Some((depth, rolls)) = pop_two(ctx) {
         roll(ctx, depth, rolls);
     }
@@ -943,23 +943,20 @@ extern "C" fn piet_roll(context: *mut Context) {
 mod tests {
     use super::*;
 
-    fn context(capacity: usize) -> (Vec<i64>, JitContext) {
+    fn context(capacity: usize) -> (Vec<i64>, Context) {
         let mut stack = vec![0i64; capacity];
-        let ctx = JitContext {
-            context: Context {
-                stack: stack.as_mut_ptr(),
-                capacity: capacity as u64,
-                sp: 0,
-                steps: 0,
-                max_steps: u64::MAX,
-                reason: REASON_TERMINATED,
-            },
-            io: std::ptr::null_mut(),
+        let context = Context {
+            stack: stack.as_mut_ptr(),
+            capacity: capacity as u64,
+            sp: 0,
+            steps: 0,
+            max_steps: u64::MAX,
+            reason: REASON_TERMINATED,
         };
-        (stack, ctx)
+        (stack, context)
     }
 
-    fn filled(values: &[i64]) -> (Vec<i64>, JitContext) {
+    fn filled(values: &[i64]) -> (Vec<i64>, Context) {
         let (stack, mut ctx) = context(values.len() + 4);
         for &value in values {
             push(&mut ctx, value);
@@ -967,10 +964,10 @@ mod tests {
         (stack, ctx)
     }
 
-    fn slice(ctx: &JitContext) -> &[i64] {
+    fn slice(ctx: &Context) -> &[i64] {
         // SAFETY: the context's stack points at a buffer of `capacity` values
         // and `sp` never exceeds it.
-        unsafe { std::slice::from_raw_parts(ctx.context.stack, ctx.context.sp as usize) }
+        unsafe { std::slice::from_raw_parts(ctx.stack, ctx.sp as usize) }
     }
 
     #[test]
@@ -990,8 +987,8 @@ mod tests {
         let (_stack, mut ctx) = context(1);
         push(&mut ctx, 1);
         push(&mut ctx, 2);
-        assert_eq!(ctx.context.sp, 1);
-        assert_eq!(ctx.context.reason, REASON_OVERFLOW);
+        assert_eq!(ctx.sp, 1);
+        assert_eq!(ctx.reason, REASON_OVERFLOW);
     }
 
     #[test]

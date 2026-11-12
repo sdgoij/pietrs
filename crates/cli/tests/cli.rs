@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used)]
 //! End-to-end tests for the `pietrs` binary.
 
+use std::io::Write;
 use std::path::Path;
-#[cfg(feature = "codegen")]
 use std::process::Stdio;
 use std::process::{Command, Output};
 
@@ -155,6 +155,28 @@ fn run_prints_a_pushed_character() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "A");
     assert!(!output.status.success(), "the step limit is a failure");
     assert!(String::from_utf8_lossy(&output.stderr).contains("step limit"));
+}
+
+#[test]
+fn run_reads_standard_input_when_no_file_is_given() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("pointer.png");
+    std::fs::write(
+        &path,
+        include_bytes!("../../xtask/fixtures/pointer/program.png"),
+    )
+    .unwrap();
+    let mut child = pietrs()
+        .args(["run", path.to_str().unwrap(), "--max-steps", "5000"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"A0").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "A");
+    assert!(!output.status.success(), "the step limit is a failure");
 }
 
 #[test]

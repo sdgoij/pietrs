@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use canvas::{Blocks, CodelGrid};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use interp::{ExitReason, Options, run, run_traced};
-use runtime::BufferIo;
+use runtime::{BufferIo, Io, StreamIo};
 use tessera::{Start, StateGraph, start};
 
 #[derive(Debug, Parser)]
@@ -101,7 +101,7 @@ struct RunArgs {
     /// Stop after this many transitions.
     #[arg(long)]
     max_steps: Option<u64>,
-    /// Read program input from this file instead of an empty stream.
+    /// Read program input from this file instead of standard input.
     #[arg(long)]
     input: Option<PathBuf>,
     /// How division and modulo round.
@@ -352,24 +352,34 @@ fn trace(args: &TraceArgs) -> Result<(), Error> {
 fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
-    let input = match &args.input {
-        Some(path) => std::fs::read_to_string(path).map_err(|source| Error::Read {
-            path: path.clone(),
-            source,
-        })?,
-        None => String::new(),
+    // With no input file the program reads the terminal, so a menu waits for an
+    // answer instead of seeing an exhausted stream.
+    let mut buffered = match &args.input {
+        Some(path) => Some(BufferIo::new(std::fs::read_to_string(path).map_err(
+            |source| Error::Read {
+                path: path.clone(),
+                source,
+            },
+        )?)),
+        None => None,
     };
-    let mut io = BufferIo::new(input);
+    let mut stream = StreamIo::new();
+    let io: &mut dyn Io = match buffered.as_mut() {
+        Some(io) => io,
+        None => &mut stream,
+    };
     warn_about_termination(&blocks, args.max_steps);
     let options = codegen::Options {
         max_steps: args.max_steps,
         division: args.division.into(),
         ..codegen::Options::default()
     };
-    let result = codegen::run(&blocks, &mut io, &options)?;
-    let mut stdout = std::io::stdout();
-    stdout.write_all(io.output().as_bytes())?;
-    stdout.flush()?;
+    let result = codegen::run(&blocks, io, &options)?;
+    if let Some(io) = &buffered {
+        let mut stdout = std::io::stdout();
+        stdout.write_all(io.output().as_bytes())?;
+        stdout.flush()?;
+    }
     match result.reason {
         codegen::ExitReason::Terminated => Ok(ExitCode::SUCCESS),
         codegen::ExitReason::StepLimit => {
@@ -387,23 +397,31 @@ fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
 fn run_program(args: &RunArgs) -> Result<ExitCode, Error> {
     let grid = load(&args.image)?;
     let blocks = Blocks::partition(grid);
-    let input = match &args.input {
-        Some(path) => std::fs::read_to_string(path).map_err(|source| Error::Read {
-            path: path.clone(),
-            source,
-        })?,
-        None => String::new(),
+    let mut buffered = match &args.input {
+        Some(path) => Some(BufferIo::new(std::fs::read_to_string(path).map_err(
+            |source| Error::Read {
+                path: path.clone(),
+                source,
+            },
+        )?)),
+        None => None,
     };
-    let mut io = BufferIo::new(input);
+    let mut stream = StreamIo::new();
+    let io: &mut dyn Io = match buffered.as_mut() {
+        Some(io) => io,
+        None => &mut stream,
+    };
     let options = Options {
         max_steps: args.max_steps,
         division: args.division.into(),
         ..Options::default()
     };
-    let result = run(&blocks, &mut io, &options)?;
-    let mut stdout = std::io::stdout();
-    stdout.write_all(io.output().as_bytes())?;
-    stdout.flush()?;
+    let result = run(&blocks, io, &options)?;
+    if let Some(io) = &buffered {
+        let mut stdout = std::io::stdout();
+        stdout.write_all(io.output().as_bytes())?;
+        stdout.flush()?;
+    }
     match result.reason {
         ExitReason::Terminated => Ok(ExitCode::SUCCESS),
         ExitReason::StepLimit => {
