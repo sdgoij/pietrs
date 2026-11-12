@@ -60,10 +60,12 @@ pietrs trace program.png --max-steps 200
 pietrs build program.png -o program
 ./program
 
-# The executable takes the same input file `run` does, read before standard
-# input: a walker's record stream comes from the file, the answers from the
-# terminal.
+# The executable takes the input file `run` takes, read before standard input.
 ./program records.txt
+
+# A run is unbounded unless you bound it: `--max-steps N` stops after N
+# transitions, and replaces whatever `build` baked in.
+./program records.txt --max-steps 100000
 
 # Open the visual editor and debugger.
 pietrs editor program.png

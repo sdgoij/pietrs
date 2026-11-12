@@ -584,6 +584,53 @@ fn a_built_executable_chains_a_record_file_then_stdin() {
 
 #[cfg(feature = "codegen")]
 #[test]
+fn a_built_executable_takes_its_step_budget_from_the_command_line() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, BLUE_LIGHT, GREEN_DARK, CYAN_LIGHT, GREEN_NORMAL]
+        .into_iter()
+        .flatten()
+        .collect();
+    let image = write_png(dir.path(), "budget.png", 5, 1, &rgba);
+    let output = dir.path().join("budget");
+    run_ok(pietrs().args([
+        "build",
+        image.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max-steps",
+        "4",
+    ]));
+
+    let executable = dir
+        .path()
+        .join(format!("budget{}", std::env::consts::EXE_SUFFIX));
+    let input = dir.path().join("budget.in");
+    std::fs::write(&input, "10 3").unwrap();
+
+    // The build baked four steps. One stops the run before it can print.
+    let stopped = Command::new(&executable)
+        .args(["--max-steps", "1"])
+        .stdin(Stdio::from(std::fs::File::open(&input).unwrap()))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&stopped.stdout), "");
+    assert!(
+        String::from_utf8_lossy(&stopped.stderr).contains("step limit reached after 1 steps"),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+
+    // A budget beyond the baked one runs to the end.
+    let finished = Command::new(&executable)
+        .arg("--max-steps=100")
+        .stdin(Stdio::from(std::fs::File::open(&input).unwrap()))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&finished.stdout), "7");
+}
+
+#[cfg(feature = "codegen")]
+#[test]
 fn a_built_executable_rolls_the_stack() {
     let dir = TempDir::new().unwrap();
     let rgba: Vec<u8> = [

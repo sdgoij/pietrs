@@ -462,7 +462,18 @@ fn allocate(_size: usize) -> Result<*mut u8, String> {
 /// The packaged-program entry point.
 pub fn start() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    if let Err(error) = install_records(&args) {
+    let invocation = match parse_args(&args) {
+        Ok(invocation) => invocation,
+        Err(error) => {
+            eprintln!("pietrs-runner: {error}\n{USAGE}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if invocation.help {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if let Err(error) = install_records(invocation.input.as_deref()) {
         eprintln!("pietrs-runner: {error}");
         return ExitCode::FAILURE;
     }
@@ -473,7 +484,7 @@ pub fn start() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match run_file(&executable) {
+    match run_file_with(&executable, invocation.max_steps) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("pietrs-runner: {error}");
@@ -482,12 +493,23 @@ pub fn start() -> ExitCode {
     }
 }
 
-/// Runs a packaged executable's embedded payload.
+/// Runs a packaged executable's embedded payload with the step budget its footer
+/// carries.
 pub fn run_file(path: &Path) -> Result<ExitCode, String> {
+    run_file_with(path, None)
+}
+
+/// Runs a packaged executable's embedded payload.
+///
+/// `max_steps` replaces the budget in the footer. The footer's value is fixed at
+/// build time, which suits a single program; a walker is built once and runs
+/// programs of very different lengths, so its budget belongs on the command
+/// line.
+pub fn run_file_with(path: &Path, max_steps: Option<u64>) -> Result<ExitCode, String> {
     let bytes =
         std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    let (payload, max_steps) = split(&bytes)?;
-    let (reason, steps) = execute(payload, max_steps)?;
+    let (payload, baked) = split(&bytes)?;
+    let (reason, steps) = execute(payload, max_steps.unwrap_or(baked))?;
     match reason {
         REASON_TERMINATED => Ok(ExitCode::SUCCESS),
         REASON_STEP_LIMIT => {
@@ -637,18 +659,61 @@ impl Bytes for Terminal {
     }
 }
 
+/// What the command line asked the executable to do.
+#[derive(Default)]
+struct Invocation {
+    /// The record stream to read before the terminal.
+    input: Option<std::path::PathBuf>,
+    /// A step budget that replaces the one baked in at build time.
+    max_steps: Option<u64>,
+    /// Whether `-h` or `--help` was given.
+    help: bool,
+}
+
+const USAGE: &str = "\
+usage: <program> [input-file] [--max-steps N]
+
+The program reads the input file first, then standard input. A step budget given
+here replaces the one baked in when the program was built.";
+
+/// Parses the executable's own arguments.
+fn parse_args(args: &[std::ffi::OsString]) -> Result<Invocation, String> {
+    let mut invocation = Invocation::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let text = arg.to_string_lossy();
+        if text == "-h" || text == "--help" {
+            invocation.help = true;
+        } else if text == "--max-steps" {
+            let Some(value) = rest.next() else {
+                return Err("--max-steps needs a number".to_owned());
+            };
+            invocation.max_steps = Some(parse_steps(&value.to_string_lossy())?);
+        } else if let Some(value) = text.strip_prefix("--max-steps=") {
+            invocation.max_steps = Some(parse_steps(value)?);
+        } else if text != "-" && text.starts_with('-') {
+            return Err(format!("unknown option {text}"));
+        } else if invocation.input.is_some() {
+            return Err("expected at most one input file".to_owned());
+        } else if text != "-" {
+            // A lone `-` names standard input, which is what the runner reads
+            // with no file at all, so it installs nothing.
+            invocation.input = Some(std::path::PathBuf::from(arg));
+        }
+    }
+    Ok(invocation)
+}
+
+fn parse_steps(text: &str) -> Result<u64, String> {
+    text.parse()
+        .map_err(|_| format!("--max-steps needs a whole number, got {text}"))
+}
+
 /// Installs the record stream an executable was told to read first.
-fn install_records(args: &[std::ffi::OsString]) -> Result<(), String> {
-    let Some(path) = args.first() else {
+fn install_records(path: Option<&Path>) -> Result<(), String> {
+    let Some(path) = path else {
         return Ok(());
     };
-    if args.len() > 1 {
-        return Err(format!(
-            "expected at most one input file, got {}\nusage: <program> [input-file]",
-            args.len()
-        ));
-    }
-    let path = Path::new(path);
     let file = std::fs::File::open(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let mut guard = RECORDS
@@ -934,6 +999,51 @@ mod tests {
         assert_eq!(align_up(1, 8).unwrap(), 8);
         assert_eq!(align_up(9, 8).unwrap(), 16);
         assert!(align_up(1, 3).is_err());
+    }
+
+    #[test]
+    fn the_command_line_takes_a_file_and_a_budget() {
+        let invocation = parse_args(&[std::ffi::OsString::from("records.txt")]).unwrap();
+        assert_eq!(invocation.input.as_deref(), Some(Path::new("records.txt")));
+        assert_eq!(invocation.max_steps, None);
+
+        let invocation = parse_args(&[
+            std::ffi::OsString::from("records.txt"),
+            std::ffi::OsString::from("--max-steps"),
+            std::ffi::OsString::from("10"),
+        ])
+        .unwrap();
+        assert_eq!(invocation.input.as_deref(), Some(Path::new("records.txt")));
+        assert_eq!(invocation.max_steps, Some(10));
+
+        let invocation = parse_args(&[std::ffi::OsString::from("--max-steps=7")]).unwrap();
+        assert_eq!(invocation.input, None);
+        assert_eq!(invocation.max_steps, Some(7));
+    }
+
+    #[test]
+    fn a_lone_dash_names_standard_input() {
+        let invocation = parse_args(&[std::ffi::OsString::from("-")]).unwrap();
+        assert_eq!(invocation.input, None);
+    }
+
+    #[test]
+    fn a_bad_command_line_is_a_diagnostic() {
+        let two_files = [
+            std::ffi::OsString::from("a.txt"),
+            std::ffi::OsString::from("b.txt"),
+        ];
+        assert!(parse_args(&two_files).is_err());
+        assert!(parse_args(&[std::ffi::OsString::from("--max-steps")]).is_err());
+        assert!(parse_args(&[std::ffi::OsString::from("--max-steps=nope")]).is_err());
+        assert!(parse_args(&[std::ffi::OsString::from("--wat")]).is_err());
+    }
+
+    #[test]
+    fn help_is_not_a_run() {
+        let invocation = parse_args(&[std::ffi::OsString::from("--help")]).unwrap();
+        assert!(invocation.help);
+        assert_eq!(invocation.max_steps, None);
     }
 
     #[test]
