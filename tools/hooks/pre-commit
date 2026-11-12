@@ -1,0 +1,22 @@
+#!/bin/sh
+# The checks that must hold before a commit lands: formatting, whitespace, and
+# lints.
+#
+# They are the gate's first two cases, reused rather than reimplemented, so a
+# local refusal and a CI refusal read the same. The rest of the gate is slower
+# and belongs to CI: `tools/gates.sh` runs all of it, and `just gate` runs it
+# locally when it is wanted.
+#
+# Installed by `sh tools/install-hooks.sh`, which points core.hooksPath here.
+
+set -u
+
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+
+for case in 01-fmt 02-clippy; do
+    if ! sh "tools/gates/$case.sh"; then
+        printf 'pre-commit: %s failed; nothing was committed\n' "$case"
+        exit 1
+    fi
+done

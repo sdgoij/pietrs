@@ -54,6 +54,14 @@ Windows, and on a `v` tag it also checks the tag against the workspace version,
 builds the release archives, and publishes them. If the two ever disagree, CI is
 the truth.
 
+The gate is the contract, not the inner loop. `sh tools/gates.sh <case>...` runs
+the named cases, and `just fast` is `test features`. Formatting, whitespace, and
+lints are enforced earlier instead: `sh tools/install-hooks.sh` points
+`core.hooksPath` at the checked-in `tools/hooks`, so a commit runs the gate's
+first two cases. A push runs nothing locally; CI is the gate there. The hook is a
+floor, not a substitute: a claim that something is green still means the whole
+gate was run in that session.
+
 Before the first command, refresh editor diagnostics project-wide. A diagnostic
 is a failure just like a compiler warning, in every language the project uses:
 Rust and any fixture tooling. It is cheap; the build is not.

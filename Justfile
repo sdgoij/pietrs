@@ -2,6 +2,15 @@
 gate:
 	sh tools/gates.sh
 
+# The local loop: the suite and the feature shapes, without the long cases.
+# `fmt` and `clippy` come from the pre-commit hook instead.
+fast:
+	sh tools/gates.sh 03-test 05-features
+
+# Point git at the checked-in hooks. Once per clone.
+hooks:
+	sh tools/install-hooks.sh
+
 fmt:
 	sh tools/gates/01-fmt.sh
 
