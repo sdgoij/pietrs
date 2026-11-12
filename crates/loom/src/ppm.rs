@@ -60,7 +60,7 @@ const WIDTH: u32 = 3;
 const HEIGHT: u32 = 4;
 const MAXVAL: u32 = 5;
 const LOOP: u32 = 6;
-const DONE: u32 = 7;
+pub(crate) const DONE: u32 = 7;
 /// The red channel's read block; a channel owns [`PER_CHANNEL`] blocks.
 const CHANNEL: u32 = 8;
 const PER_CHANNEL: u32 = 8;
@@ -73,6 +73,17 @@ const BAD: u32 = EMIT + 1;
 /// The program that reads a P3 PPM and prints the grid's colour codes.
 pub fn ppm_program() -> Result<Program, Error> {
     Program::new(blocks(), ENTRY)
+}
+
+/// Where the parser's output goes.
+#[derive(Clone, Copy)]
+pub(crate) enum Output {
+    /// Print the grid codes: `<width> <height>`, then one code per codel.
+    Print,
+    /// Leave the grid codes on the stack for the next stage: `width` on top,
+    /// then `height`, then the codes with the last pixel on top. That order is
+    /// what a reverse ring builder reads with plain pops.
+    Stack,
 }
 
 /// The same program, laid out as an image.
@@ -158,6 +169,11 @@ fn palette_code(red: u32, green: u32, blue: u32) -> i64 {
 }
 
 fn blocks() -> Vec<Block> {
+    blocks_with(Output::Print)
+}
+
+/// The parser's blocks, with the output either printed or left on the stack.
+pub(crate) fn blocks_with(output: Output) -> Vec<Block> {
     let not = Node::Command(Command::Not);
     let subtract = Node::Command(Command::Subtract);
     let pop = Node::Command(Command::Pop);
@@ -182,20 +198,25 @@ fn blocks() -> Vec<Block> {
         },
     ));
 
-    // The width and the height are printed as they arrive; the height converts
-    // to the number of pixels, which is the loop's counter.
-    blocks.push(Block::new(
-        vec![
+    // The width. The printed form prints it as it arrives; the stack form keeps
+    // it for the header rearrangement.
+    let width = match output {
+        Output::Print => vec![
             Node::Command(Command::InNumber),
             Node::Dup,
             Node::Command(Command::OutNumber),
             bytes(b' '),
             Node::Command(Command::OutChar),
         ],
-        End::Jump(HEIGHT),
-    ));
-    blocks.push(Block::new(
-        vec![
+        Output::Stack => vec![Node::Command(Command::InNumber)],
+    };
+    blocks.push(Block::new(width, End::Jump(HEIGHT)));
+
+    // The height, and the pixel counter. The stack form leaves
+    // `[counter, width, height]` so the channels and the accumulator sit under
+    // the counter and the final `pop` leaves `[width, height, codes ..]`.
+    let height = match output {
+        Output::Print => vec![
             Node::Command(Command::InNumber),
             Node::Dup,
             Node::Command(Command::OutNumber),
@@ -203,8 +224,15 @@ fn blocks() -> Vec<Block> {
             Node::Command(Command::OutChar),
             Node::Command(Command::Multiply),
         ],
-        End::Jump(MAXVAL),
-    ));
+        Output::Stack => vec![
+            Node::Command(Command::InNumber),
+            Node::Roll(2, 1),
+            Node::Dup,
+            Node::DupLocal(3),
+            Node::Command(Command::Multiply),
+        ],
+    };
+    blocks.push(Block::new(height, End::Jump(MAXVAL)));
     // The values are unscaled, so anything but 255 would decode to nonsense.
     blocks.push(Block::new(
         vec![
@@ -227,10 +255,16 @@ fn blocks() -> Vec<Block> {
             otherwise: CHANNEL,
         },
     ));
-    blocks.push(Block::new(
-        vec![bytes(b'\n'), Node::Command(Command::OutChar)],
-        End::Halt,
-    ));
+    // Done: printed as a newline; on the stack the counter goes and the codes
+    // are left for the ring builder.
+    let done = match output {
+        Output::Print => Block::new(
+            vec![bytes(b'\n'), Node::Command(Command::OutChar)],
+            End::Halt,
+        ),
+        Output::Stack => Block::new(vec![pop], End::Halt),
+    };
+    blocks.push(done);
 
     // Each channel: read one component, classify it as 0, 1, 2, or 3, and push
     // the digit. The classification chains through three equality tests; the
@@ -303,17 +337,19 @@ fn blocks() -> Vec<Block> {
         ));
     }
 
-    // The code, its separator, and the lap count.
-    blocks.push(Block::new(
-        vec![
+    // The code. Printed with its separator; on the stack it goes under the
+    // header (`counter, width, height`) and above the codes already collected.
+    let emit = match output {
+        Output::Print => vec![
             Node::Command(Command::OutNumber),
             bytes(b' '),
             Node::Command(Command::OutChar),
             Node::Const(1),
             subtract,
         ],
-        End::Jump(LOOP),
-    ));
+        Output::Stack => vec![Node::Roll(4, 1), Node::Const(1), subtract],
+    };
+    blocks.push(Block::new(emit, End::Jump(LOOP)));
 
     // What the header refusals print: a value no colour code can be.
     blocks.push(Block::new(

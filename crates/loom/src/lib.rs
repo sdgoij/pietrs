@@ -53,6 +53,7 @@
 //! # }
 //! ```
 
+mod compose;
 mod error;
 mod flow;
 mod graph;
@@ -67,6 +68,7 @@ mod ring;
 mod shade;
 mod walker;
 
+pub use compose::{ppm_ring, ppm_ring_grid};
 pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;

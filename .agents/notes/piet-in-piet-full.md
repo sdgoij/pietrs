@@ -900,6 +900,25 @@ and so on), so the arithmetic and the zero-divisor rule are the runtime's. The
 hello world — `push`, `duplicate`, `out char` — prints `Hello world!` from the one
 image, checked against `interp`.
 
+**One image's first seam is done.** `compose::ppm_ring` puts the PPM parser and
+the ring builder in one image. The parser leaves `[width, height, last pixel ..
+first pixel]` on the stack, keeping `[counter, width, height]` above the
+accumulator so each finished code is one fixed `roll(4, 1)` below the header.
+The ring builder walks the ring **backwards**, popping one pixel per interior
+cell: the interior cells in descending order are the pixels in descending order,
+so a plain LIFO pop matches them and the records stream out
+highest-index-first. No FIFO tape and no dynamic-depth roll are needed for this
+seam, which was not obvious before it was built — a forward builder would have
+needed one. It is checked against the two-image chain on the small fixtures and
+the canonical hello world.
+
+The remaining seams are harder. `ring -> splitter` has a draining input (the
+pixels) and a growing output (the ring records) on the one stack, so the two
+cannot both be on top; that is where the dynamic-depth rolls and a FIFO channel
+become necessary. `splitter -> movement` is already one `Program` from the
+`blocks()` loader onward, so having the ring builder hand it the records skips
+the re-read but hits the same two-regions problem once.
+
 ## Recommendation
 
 Everything landed. The image follows a program held in its input — a straight line
