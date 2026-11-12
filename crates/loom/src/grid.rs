@@ -1068,7 +1068,7 @@ fn run_blocks() -> Vec<Block> {
         vec![
             Node::Roll(2, 1),
             Node::Command(Command::Pop),
-            Node::Const(i64::from(table_base)),
+            Node::Base(table_base),
             Node::Command(Command::Add),
         ],
         End::Computed,
@@ -1100,6 +1100,136 @@ fn run_blocks() -> Vec<Block> {
 
     all.extend(extra);
     all
+}
+
+/// The run machine with the start state derived in the image.
+///
+/// [`run_blocks`] takes the state from a host query: [`exit_setup`] reads
+/// `dp`, `cc` and the label after the splitter's loader. Here the splitter's
+/// fixpoint hands over at `DONE` instead, so the start stage finds the state the
+/// way [`crate::start_state`] does — from the upper-left codel — and feeds it to
+/// the same nine the exit stage's setup builds. Everything after the nine is
+/// unchanged: the movement loop, the command handlers and the value stack below
+/// the ring.
+///
+/// This is what makes one image enough: the partition, the start state and the
+/// walk all run on one stack with no host call between them.
+pub(crate) fn run_from_blocks() -> Vec<Block> {
+    let mut all = run_blocks();
+    let base = all.len() as u32 + 1;
+    all[(DONE - 1) as usize] = Block::new(Vec::new(), End::Jump(base));
+    all.extend(start_run_stage(base));
+    all
+}
+
+/// The start stage, ending in the run's nine rather than a printed state.
+///
+/// This is `start_blocks`'s seven-block prologue and fourteen-block slide with
+/// two different tails. A chromatic upper-left codel pushes `(label, right,
+/// left)`; a slide pushes the `(dp, cc)` its case holds. Either way the ring's
+/// head record is underneath, which is where [`run_state_setup`] reads the row
+/// length and the cell count from.
+fn start_run_stage(base: u32) -> Vec<Block> {
+    let black = base + 1;
+    let white = base + 2;
+    let slide_setup = base + 3;
+    let terminate = base + 4;
+    let print = base + 5;
+    let slide = slide_ids(base + 6);
+    let moved = base + 20;
+
+    let run = |start: Vec<Node>| {
+        let mut nodes = start;
+        nodes.extend(run_state_setup());
+        nodes.extend(run_setup());
+        nodes
+    };
+
+    let mut blocks = vec![
+        Block::new(start_setup(), End::Jump(black)),
+        Block::new(
+            colour_is(2, BLACK_CODE),
+            End::If {
+                then: terminate,
+                otherwise: white,
+            },
+        ),
+        Block::new(
+            colour_is(2, WHITE_CODE),
+            End::If {
+                then: slide_setup,
+                otherwise: print,
+            },
+        ),
+        Block::new(start_slide_setup(), End::Jump(slide.dispatch)),
+        // A black upper-left codel terminates the interpreted program.
+        Block::new(Vec::new(), End::Halt),
+        Block::new(run(chromatic_start()), End::Jump(EXIT_ZERO)),
+    ];
+    blocks.extend(slide_blocks(&slide, 9, moved, terminate));
+    blocks.push(Block::new(run(slide_start()), End::Jump(EXIT_ZERO)));
+    blocks
+}
+
+/// `[label, attempt, cc, dp]` from the upper-left codel's head record.
+///
+/// A chromatic upper-left codel starts at the top-left of the grid, so the state
+/// is `(label, right, left)`. The four are pushed in the order
+/// [`run_state_setup`] expects: `dp` deepest and the label on top.
+fn chromatic_start() -> Vec<Node> {
+    vec![
+        Node::Const(0), // dp: right
+        Node::Const(0), // cc: left
+        Node::Const(0), // attempt
+        Node::DupLocal(4),
+    ]
+}
+
+/// `[label, attempt, cc, dp]` from a slide's nine, over the head record.
+///
+/// The slide leaves `[turns best case big row cells label attempt cc dp]` above
+/// the head, with `case = 2 * dp + cc` for the direction it ended on. The state's
+/// label is the head record's — the block the slide reached — not the nine's
+/// placeholder.
+fn slide_start() -> Vec<Node> {
+    let mut nodes = vec![
+        // dp = case / 2
+        Node::DupLocal(3),
+        Node::Const(2),
+        Node::Command(Command::Divide),
+        // cc = case % 2, one deeper now
+        Node::DupLocal(4),
+        Node::Const(2),
+        Node::Command(Command::Modulo),
+        Node::Const(0),     // attempt
+        Node::DupLocal(13), // the head record's label
+    ];
+    // Drop the nine: each roll brings one up from under the four and the pop
+    // takes it, so the four keep their order.
+    for _ in 0..9 {
+        nodes.extend([Node::Roll(5, 4), Node::Command(Command::Pop)]);
+    }
+    nodes
+}
+
+/// The scan's nine from `[label, attempt, cc, dp]` over the ring's head record.
+///
+/// The row length and the cell count come from the record's stride and ring
+/// size, so the start stage does not have to carry them. Then [`case_nodes`]
+/// turns `(dp, cc)` into attempt zero's case, and the scan's two dead slots are
+/// initialised as [`exit_setup`] initialises them.
+fn run_state_setup() -> Vec<Node> {
+    let mut nodes = vec![
+        Node::DupLocal(7),
+        Node::Const(i64::from(PER_CELL)),
+        Node::Command(Command::Divide), // row cells = stride / 4
+        Node::DupLocal(9),
+        Node::Const(i64::from(PER_CELL)),
+        Node::Command(Command::Divide), // big = ring / 4
+    ];
+    nodes.extend(case_nodes());
+    nodes.extend([Node::Const(-1), Node::Const(0)]);
+    nodes
 }
 
 /// `k = 0` below the ring: `[nine | ring]` becomes `[nine | ring | 0]`.
@@ -1916,7 +2046,7 @@ fn scan_blocks(base: u32, done: u32, extra: u32) -> (Scan, Vec<Block>) {
                 let mut nodes = cell_coordinates();
                 nodes.extend([
                     Node::DupLocal(5),
-                    Node::Const(i64::from(ids.cases)),
+                    Node::Base(ids.cases),
                     Node::Command(Command::Add),
                 ]);
                 nodes
@@ -1934,7 +2064,7 @@ fn scan_blocks(base: u32, done: u32, extra: u32) -> (Scan, Vec<Block>) {
 fn dispatch(depth: u32, base: u32) -> Vec<Node> {
     vec![
         Node::DupLocal(depth),
-        Node::Const(i64::from(base)),
+        Node::Base(base),
         Node::Command(Command::Add),
     ]
 }
@@ -2552,6 +2682,7 @@ mod tests {
             for node in nodes {
                 match *node {
                     Node::Const(value) => self.stack.push(value),
+                    Node::Base(id) => self.stack.push(i64::from(id)),
                     Node::Dup => {
                         let value = *self.stack.last().expect("dup of empty");
                         self.stack.push(value);
@@ -2888,6 +3019,43 @@ mod tests {
         assert_eq!(start_vm(&grid), expected);
     }
 
+    /// The output `interp` produces from the grid, and its verdict.
+    fn host_run(grid: &CodelGrid, steps: u64) -> (String, String) {
+        let image = canvas::Blocks::partition(grid.clone());
+        let mut io = BufferIo::new("");
+        let options = Options {
+            max_steps: Some(steps),
+            ..Options::default()
+        };
+        let result = interp::run(&image, &mut io, &options).unwrap();
+        (io.into_output(), format!("{:?}", result.reason))
+    }
+
+    #[test]
+    fn the_start_stage_runs_from_a_host_ring() {
+        // The start -> movement seam without the frontend: the splitter reads the
+        // ring stream, the start stage finds the state, and the run loop takes
+        // over. `interp` on the grid is the oracle, including a program that
+        // loops: the image must not terminate where the host does not.
+        let cases = [
+            vec!["r"],
+            vec!["r#"],
+            vec!["r.", "#."],
+            vec!["rg", "#."],
+            vec!["r", "r"],
+        ];
+        for rows in cases {
+            let grid = grid(&rows);
+            let (want, host_reason) = host_run(&grid, 20_000_000);
+            let program = Program::new(run_from_blocks(), ENTRY).unwrap();
+            let (got, reason) = run(&program, &ring_stream(&grid).unwrap(), 20_000_000);
+            assert_eq!(reason, host_reason, "{rows:?}: the image's verdict");
+            if host_reason == "Terminated" {
+                assert_eq!(got, want, "{rows:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_exit_program_slides_to_the_first_colour() {
         // A slide runs no command, so the fourth field is `nop`.
@@ -3066,6 +3234,41 @@ mod tests {
             machine.stack,
             vec![204, 203, 202, 201, 2, 0, 0, 201, 105, 104, 4, -1, 0]
         );
+    }
+
+    #[test]
+    fn the_chromatic_start_feeds_the_run_s_nine() {
+        // The head record of the upper-left codel sits on top of the ring: label
+        // 5, colour 7, stride 8, ring 8. Red, right, left is attempt zero's case
+        // zero, and the row length and cell count come from the record.
+        let mut machine = run_stack(&[5, 7, 8, 8, 30, 31, 32, 8]);
+        let mut nodes = chromatic_start();
+        nodes.extend(run_state_setup());
+        nodes.extend(run_setup());
+        machine.run(&nodes);
+        let top = run_top_first(&machine);
+        // [index best case big row label attempt cc dp | ring | k]
+        assert_eq!(top[..9], [0, -1, 0, 2, 2, 5, 0, 0, 0]);
+        assert_eq!(top[9..17], [5, 7, 8, 8, 30, 31, 32, 8]);
+        assert_eq!(top[17], 0, "k goes below the ring");
+        assert_eq!(top.len(), 18);
+    }
+
+    #[test]
+    fn the_slide_start_feeds_the_run_s_nine() {
+        // What the slide leaves: turns 3, best -1, case 5 (down and right), and
+        // the placeholder label, over the head record of the cell it reached.
+        // The state's label is that record's, not the placeholder's.
+        let mut machine = run_stack(&[3, -1, 5, 2, 2, 0, 0, 0, 0, 5, 7, 8, 8, 30, 31, 32, 8]);
+        let mut nodes = slide_start();
+        nodes.extend(run_state_setup());
+        nodes.extend(run_setup());
+        machine.run(&nodes);
+        let top = run_top_first(&machine);
+        // [index best case big row label attempt cc dp | ring | k]
+        assert_eq!(top[..9], [0, -1, 5, 2, 2, 5, 0, 1, 2]);
+        assert_eq!(top[9..17], [5, 7, 8, 8, 30, 31, 32, 8]);
+        assert_eq!(top[17], 0, "k goes below the ring");
     }
 
     /// The run machine's stack, top first.

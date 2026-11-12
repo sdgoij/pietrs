@@ -141,6 +141,9 @@ The front end is generated too: a P3 PPM goes in, and the grid's colour codes
 come out, so a picture written as text needs no decoder on the host side. The
 ring the movement stages read is printed from those codes by a second image, so
 the frontend's stages are joined by characters and not by host-built streams.
+The run image goes further: the parser, the ring builder, the splitter, the start
+state and the movement loop are one program, so a PPM goes in and the interpreted
+program's output comes out with nothing carried between the stages.
 
 ```sh
 cargo run -p loom --example ppm -- target/weave/ppm.png
@@ -149,15 +152,13 @@ target/debug/pietrs run target/weave/ppm.png < program.ppm
 # The ring the movement stages read, printed from those colour codes.
 cargo run -p loom --example ring -- program.ppm
 
-# The whole frontend, from the picture to the program's output: the image
-# decodes the PPM, partitions the grid, resolves the moves, and the walker runs
-# it.
+# The whole machine in one image, from the picture to the program's output.
 cargo run -p loom --example run-ppm -- program.ppm "10 3"
 ```
 
 See [`crates/loom/fixtures/hello-world/`](crates/loom/fixtures/hello-world/)
-and [`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md). The host
-carries text between the images and assembles the walker's records; the blocks,
+and [`.agents/notes/piet-in-piet.md`](.agents/notes/piet-in-piet.md). The staged
+images are joined by text; the run image needs no host at all, and the blocks,
 their sizes and every move come from the images. A program that is not linear is
 refused before it runs, naming the block that branches.
 

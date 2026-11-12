@@ -436,7 +436,7 @@ fn program() -> Result<Program, Error> {
         Block::new(
             vec![
                 Node::DupLocal(COMMAND_DEPTH),
-                Node::Const(i64::from(HALT)),
+                Node::Base(HALT),
                 Node::Command(Command::Add),
             ],
             End::Computed,
@@ -495,10 +495,7 @@ fn program() -> Result<Program, Error> {
         Block::new(
             {
                 let mut nodes = dup_size(2, 3);
-                nodes.extend([
-                    Node::Const(i64::from(ROLL_CASE_BASE)),
-                    Node::Command(Command::Add),
-                ]);
+                nodes.extend([Node::Base(ROLL_CASE_BASE), Node::Command(Command::Add)]);
                 nodes
             },
             End::Computed,

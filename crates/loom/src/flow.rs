@@ -51,6 +51,12 @@ const MIN_LANE: u32 = 8;
 pub enum Node {
     /// Push a constant.
     Const(i64),
+    /// Push a block id.
+    ///
+    /// A `Computed` end dispatches to the id a block leaves on the stack, and a
+    /// table's first id is usually a constant. It is a block id all the same, so
+    /// composing programs shifts it with every other id.
+    Base(u32),
     /// Run a command on the stack.
     Command(Command),
     /// Duplicate the top value.
@@ -137,10 +143,12 @@ impl Program {
                 End::Halt => {}
             }
             for node in &block.nodes {
-                if let Node::DupLocal(depth) = node
-                    && *depth == 0
-                {
-                    return Err(Error::LocalDepth);
+                match node {
+                    Node::DupLocal(depth) if *depth == 0 => {
+                        return Err(Error::LocalDepth);
+                    }
+                    Node::Base(id) => check(*id)?,
+                    _ => {}
                 }
             }
         }
@@ -373,6 +381,7 @@ impl Geometry {
 fn node_commands(node: Node, commands: &mut Vec<Command>) {
     match node {
         Node::Const(value) => commands.extend(constant(value)),
+        Node::Base(id) => commands.extend(constant(i64::from(id))),
         Node::Command(command) => commands.push(command),
         Node::Dup => commands.push(Command::Duplicate),
         Node::Swap => commands.extend(roll(2, 1)),

@@ -33,9 +33,10 @@
 //! walker's records.
 //!
 //! [`machine`] is the interpreter's control loop: the movement rule applied again
-//! and again to the state it is in, printing the trace. It is the first slice of
-//! one image that runs a program from its pixels, and the note's S10 says what the
-//! rest of that image needs.
+//! and again to the state it is in, printing the trace. [`run`] adds the commands
+//! and a value stack, so it prints what the interpreted program prints, and
+//! [`ppm_run`] puts the whole frontend in front of it: one image reads a P3 PPM,
+//! partitions the grid, finds the start state and runs the program.
 //!
 //! ```
 //! use canvas::Blocks;
@@ -68,7 +69,9 @@ mod ring;
 mod shade;
 mod walker;
 
-pub use compose::{ppm_ring, ppm_ring_grid, ppm_ring_splitter, ppm_ring_splitter_grid};
+pub use compose::{
+    ppm_ring, ppm_ring_grid, ppm_ring_splitter, ppm_ring_splitter_grid, ppm_run, ppm_run_grid,
+};
 pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;

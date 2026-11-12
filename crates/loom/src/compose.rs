@@ -1,11 +1,16 @@
 //! Composing the frontend into one image: the PPM parser, a reverse ring
-//! builder, and (optionally) the splitter.
+//! builder, the splitter, and (optionally) the machine that runs the program.
 //!
 //! The stages normally talk through the host: [`crate::ppm_codes`] prints the
 //! grid codes and [`crate::ring_to_stream`] reads them back, then the splitter
 //! reads the ring stream. This image removes those hops. The parser leaves the
 //! codes on the stack, the ring builder reads them with plain pops, and the
 //! splitter reads the records the ring builder leaves.
+//!
+//! [`ppm_run`] goes one stage further: the splitter hands the partitioned ring
+//! to the start stage, which finds the state from the upper-left codel, and the
+//! movement loop and the command handlers run from there. A picture goes in and
+//! the interpreted program's output comes out, with no stream in between.
 //!
 //! # PPM to ring
 //!
@@ -80,7 +85,7 @@ fn ppm_ring_program() -> Result<Program, Error> {
 
 /// The ring stream a P3 PPM decodes to, built by the one image.
 pub fn ppm_ring(source: &str) -> Result<String, Error> {
-    run(ppm_ring_grid()?, source)
+    run(ppm_ring_grid()?, source, PARTITION_STEPS)
 }
 
 /// The composed frontend plus the splitter: PPM in, the ring's labels out.
@@ -94,22 +99,44 @@ fn ppm_ring_splitter_program() -> Result<Program, Error> {
 
 /// The labels a P3 PPM's ring partitions to, built by the one image.
 pub fn ppm_ring_splitter(source: &str) -> Result<String, Error> {
-    run(ppm_ring_splitter_grid()?, source)
+    run(ppm_ring_splitter_grid()?, source, PARTITION_STEPS)
 }
 
-fn run(image: CodelGrid, source: &str) -> Result<String, Error> {
-    /// A few thousand cells: the partition is the slow part.
-    const STEPS: u64 = 400_000_000;
+/// The whole machine in one image: a P3 PPM in, the program's output out.
+///
+/// The parser and the ring builder hand the splitter the ring exactly as
+/// [`ppm_ring_splitter`] does; the splitter then derives the start state from
+/// the upper-left codel and loops the movement and the commands, so no stream
+/// and no query leave the image. Anything after the PPM's pixels is the
+/// interpreted program's own input.
+pub fn ppm_run_grid() -> Result<CodelGrid, Error> {
+    ppm_run_program()?.image()
+}
 
+fn ppm_run_program() -> Result<Program, Error> {
+    Program::new(ppm_run_blocks(), 1)
+}
+
+/// The output a P3 PPM's program prints, run by the one image.
+pub fn ppm_run(source: &str) -> Result<String, Error> {
+    run(ppm_run_grid()?, source, RUN_STEPS)
+}
+
+/// A few thousand cells: the partition is the slow part.
+const PARTITION_STEPS: u64 = 400_000_000;
+/// The partition plus the whole walk: a move scans the ring several times.
+const RUN_STEPS: u64 = 2_000_000_000;
+
+fn run(image: CodelGrid, source: &str, steps: u64) -> Result<String, Error> {
     let blocks = Blocks::partition(image);
     let mut io = BufferIo::new(source);
     let options = Options {
-        max_steps: Some(STEPS),
+        max_steps: Some(steps),
         ..Options::default()
     };
     let result = interp::run(&blocks, &mut io, &options)?;
     if result.reason != ExitReason::Terminated {
-        return Err(Error::StepLimit(STEPS));
+        return Err(Error::StepLimit(steps));
     }
     Ok(io.into_output())
 }
@@ -143,11 +170,39 @@ fn ppm_ring_splitter_blocks() -> Vec<Block> {
     all
 }
 
-/// Append `blocks` after `all`, offsetting their ids by `offset`.
+/// The same as [`ppm_ring_splitter_blocks`], with the start stage and the run
+/// loop after the splitter instead of its printed labels.
+fn ppm_run_blocks() -> Vec<Block> {
+    let mut all = ppm::blocks_with(ppm::Output::Stack);
+    let parser_len = all.len() as u32;
+    let run_offset = parser_len + R_COUNT;
+    let handover = R_COUNT + grid::HANDOVER;
+    all[(ppm::DONE - 1) as usize].end = End::Jump(parser_len + R_ENTRY);
+    append(
+        &mut all,
+        ring_blocks(Output::Records { handover }),
+        parser_len,
+    );
+    append(&mut all, grid::run_from_blocks(), run_offset);
+    all
+}
+
+/// Append `blocks` after `all`, offsetting every id they name: the ends' jumps
+/// and the bases a `Computed` end dispatches from.
 fn append(all: &mut Vec<Block>, blocks: Vec<Block>, offset: u32) {
     for block in blocks {
-        all.push(Block::new(block.nodes, offset_end(block.end, offset)));
+        all.push(offset_block(block, offset));
     }
+}
+
+/// Add `offset` to every block id in one block.
+fn offset_block(mut block: Block, offset: u32) -> Block {
+    for node in &mut block.nodes {
+        if let Node::Base(id) = node {
+            *id += offset;
+        }
+    }
+    Block::new(block.nodes, offset_end(block.end, offset))
 }
 
 /// Add `offset` to every block id an end names.
@@ -477,10 +532,41 @@ mod tests {
         assert_eq!(tokens(&got), tokens(&want));
     }
 
+    /// The output `interp` produces from the source grid, the oracle for a run.
+    fn host_output(grid: &CodelGrid, steps: u64) -> String {
+        let blocks = Blocks::partition(grid.clone());
+        let mut io = BufferIo::new("");
+        let options = Options {
+            max_steps: Some(steps),
+            ..Options::default()
+        };
+        let result = interp::run(&blocks, &mut io, &options).unwrap();
+        assert_eq!(
+            result.reason,
+            ExitReason::Terminated,
+            "the oracle must halt"
+        );
+        io.into_output()
+    }
+
+    #[test]
+    fn the_composed_image_runs_the_program() {
+        // Small grids that halt: the start state, the movement and the exit all
+        // happen inside one image, with `interp` as the oracle. A looping
+        // program's image stops at the step budget instead, like the oracle.
+        let cases = [vec!["r"], vec!["r#"], vec!["r.", "#."], vec!["r", "r"]];
+        for rows in cases {
+            let grid = grid(&rows);
+            let want = host_output(&grid, 40_000_000);
+            let got = ppm_run(&ppm_of(&grid)).unwrap();
+            assert_eq!(got, want, "{rows:?}");
+        }
+    }
+
     /// The label per ring cell, from the standalone splitter image.
     fn splitter_labels(grid: &CodelGrid) -> String {
         let (image, stream) = crate::splitter(grid).unwrap();
-        run(image, &stream).unwrap()
+        run(image, &stream, PARTITION_STEPS).unwrap()
     }
 
     fn grid(rows: &[&str]) -> CodelGrid {

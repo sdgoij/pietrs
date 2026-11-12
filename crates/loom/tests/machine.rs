@@ -205,3 +205,25 @@ fn the_hello_world_runs_from_one_image() {
     .unwrap();
     assert_eq!(io.into_output(), want);
 }
+
+/// A P3 PPM of the grid, one codel per pixel.
+fn ppm_of(grid: &CodelGrid) -> String {
+    let mut text = format!("P3\n{} {}\n255\n", grid.width(), grid.height());
+    for color in grid.codels() {
+        let [red, green, blue] = color.rgb();
+        text.push_str(&format!("{red} {green} {blue}\n"));
+    }
+    text
+}
+
+#[test]
+#[ignore = "the canonical hello world from its pixels, ~45 s: cargo test -p loom --release --test machine -- --ignored"]
+fn the_hello_world_runs_from_its_pixels() {
+    // Slice 4: the one image reads the picture, partitions it, finds the start
+    // state and runs the program, with no stream between the stages.
+    let png = include_bytes!("../fixtures/hello-world/program.png");
+    let grid = CodelGrid::from_image(png).unwrap();
+    let want = host_output(&grid);
+    assert_eq!(want, "Hello world!");
+    assert_eq!(loom::ppm_run(&ppm_of(&grid)).unwrap(), want);
+}

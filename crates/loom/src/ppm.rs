@@ -319,7 +319,7 @@ pub(crate) fn blocks_with(output: Output) -> Vec<Block> {
             Node::Const(4),
             Node::Command(Command::Multiply),
             Node::Command(Command::Add),
-            Node::Const(i64::from(TABLE)),
+            Node::Base(TABLE),
             Node::Command(Command::Add),
         ],
         End::Computed,

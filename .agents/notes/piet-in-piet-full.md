@@ -794,11 +794,11 @@ size them and resolve every move. `Blocks` stays for tiling the images themselve
 — any image has to be partitioned to be run — and for the host-resolved graph the
 walker's tests build directly.
 
-### S10. One image from pixels to output (measured, not built)
+### S10. One image from pixels to output (built)
 
 The last row of S4's table is one image that reads a PPM, partitions it and runs
-it. The measurements say where the cost is, and it is not where the staged plan
-assumed.
+it: that image is [`crate::ppm_run`] now. The measurements said where the cost
+is, and it was not where the staged plan assumed.
 
 **Every query re-runs the partition.** Each stage here is "the splitter plus
 something": `edge_program`, `step_program` and `exit_program` all start from
@@ -859,7 +859,7 @@ command handlers on the value stack, so the hello world prints — **done**, as
 [`crate::run`], with a value stack below the ring (below); (3) slides and
 `pointer`/`switch` — **done**, slides in the loop since slice 1 and the two branch
 handlers in the run image; (4) the PPM and partition phases inside the same
-program.
+program — **done**, as [`crate::ppm_run`].
 Each slice is checkable against the stage it replaces, which is how S1 to S9 were
 built.
 
@@ -922,11 +922,27 @@ is a right rotation by one, which lifts the pixel and leaves the registers and
 records in order — no put-back, no second roll. Both images are checked against
 the two-image chain on the small fixtures and the canonical hello world.
 
-The remaining seam is `splitter -> movement`. The splitter is already one
-`Program` from the `blocks()` loader onward, so the ring builder can hand the
-records to `exit_blocks()`'s block four instead; what is left is deriving the
-start state inside the image (the `start_blocks` stage) rather than reading
-`dp cc label` from a host query.
+The last seam was `splitter -> movement`. `start_blocks` already finds the start
+state from the upper-left codel; the run image reuses it with two different
+tails. A chromatic corner pushes `(label, right, left)`, a slide pushes the
+`(dp, cc)` its case ended on, and either way the ring's head record is underneath,
+so `run_state_setup` reads the row length and the cell count from it and builds
+the same nine `exit_setup` builds from a host query. `run_setup` then inserts the
+empty value stack below the ring, and the movement loop starts at `EXIT_ZERO`.
+
+That works because a block is data: the composed image puts the parser, the ring
+builder, the splitter, the start stage and the run loop in one `Program` and lets
+the dispatcher carry every jump. The one thing composition could not do before
+was relocate a `Computed` end: its target id is a value the block pushes, so
+`offset_end` shifted the jumps but left the baked id, and the composed image
+dispatched to the parser's blocks instead of the run's. The fix is `Node::Base`:
+a block id that composition shifts with the ends. The parser's table, the scan's
+case table, the command handlers and the roll table all name their base that way.
+
+`crate::ppm_run` is slice 4: the canonical hello world prints `Hello world!`
+from its pixels in one image, checked against `interp`, and `HANDOFF.md` is gone.
+The image's input is the PPM's pixels; anything after them is the interpreted
+program's own input.
 
 ## Recommendation
 
@@ -936,8 +952,9 @@ states, one 617 x 246 image, nine menus in about 4.5 s for the example case.
 
 The frontend is images too, as far as text goes: a PPM becomes colour codes, and
 the ring the movement stages read is printed from those codes rather than built
-by the host. The only stream a stage still takes from the host is the walker's
-records, which the host assembles from the graph.
+by the host. The run image needs no host text at all: it reads the pixels,
+partitions, starts and loops in one program. The staged walker still takes its
+records from the host, which assembles them from the graph.
 
 What is left is not capability but cost, and it is worth saying which is which.
 
@@ -961,8 +978,8 @@ and the canonical hello world runs through the image-built graph to
 release harness; the small cases are in the default suite.
 
 S7 to S9 then took the last three host streams away: the ring, the splitter's
-labels and the block sizes are all printed by images. What remains of the host is
-the graph, and S10 measures what moving it would take: the eager stages re-run
-the partition on every query, so the hello world's graph costs 94 s where a
-machine that partitions once and then loops would cost about 4 s. The single
-image is worth building, with the lazy loop rather than the graph.
+labels and the block sizes are all printed by images. S10 closes the loop: the
+single image reads a PPM, partitions it once, finds the start state and loops the
+movement and the commands, so the program's output comes out of the picture with
+no stream in between. The eager graph stays in `grid_graph` as the per-state
+image for the smaller cases.
