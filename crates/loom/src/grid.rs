@@ -737,7 +737,12 @@ pub fn machine(
     cc: Chooser,
 ) -> Result<(CodelGrid, String), Error> {
     let stream = with_exit_query(&grid_ring(grid)?, dp, cc, label_of(grid, block)?);
-    Ok((machine_program()?.image()?, stream))
+    Ok((machine_grid()?, stream))
+}
+
+/// The machine image: the same for every program.
+pub fn machine_grid() -> Result<CodelGrid, Error> {
+    machine_program()?.image()
 }
 
 /// The machine image: the exit stage with its two tails looped back.

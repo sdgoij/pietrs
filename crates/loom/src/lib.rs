@@ -71,8 +71,9 @@ pub use error::Error;
 pub use flow::{Block, End, Node, Program};
 pub use graph::compile;
 pub use grid::{
-    Partition, block_edge, exit_state, grid_partition, grid_ring, machine, ring_stream, splitter,
-    splitter_image, start_state, step_state, with_exit_query, with_step_query,
+    Partition, block_edge, exit_state, grid_partition, grid_ring, machine, machine_grid,
+    ring_stream, splitter, splitter_image, start_state, step_state, with_exit_query,
+    with_step_query,
 };
 pub use grid_graph::grid_graph;
 pub use interpreter::interpreter;

@@ -11,6 +11,12 @@ fast:
 hooks:
 	sh tools/install-hooks.sh
 
+# Write the interpreter image: one image, the same for every program.
+# `cargo run -r -p cli -- build target/weave/interpreter.png -o interpreter.exe`
+# turns it into a standalone executable that takes the program on stdin.
+interpreter:
+	cargo run -r -p loom -- target/weave/interpreter.png
+
 fmt:
 	sh tools/gates/01-fmt.sh
 

@@ -132,3 +132,18 @@ fn the_hello_world_trace_is_the_host_s() {
     let grid = CodelGrid::from_image(png).unwrap();
     check(&grid, HELLO_STEPS);
 }
+
+#[test]
+fn there_is_one_image_for_every_program() {
+    // The image is the deliverable, so a program may change only the stream.
+    // `cargo run -p loom` writes this image; nothing about a grid reaches it.
+    let one = loom::machine_grid().unwrap();
+    let (image, _) = loom::machine(
+        &grid(&["rg", "gr"]),
+        canvas::BlockId(1),
+        tessera::Direction::Right,
+        tessera::Chooser::Left,
+    )
+    .unwrap();
+    assert_eq!(image, one);
+}
