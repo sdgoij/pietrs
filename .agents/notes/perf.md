@@ -107,8 +107,9 @@ unchanged within noise, and made the running program 23% slower (1 840 ms
 against 1 340 ms for the same 200 000 000 steps). Setting `opt_level=speed`
 added a second to the compile and bought nothing.
 
-The ring stage (`loom::ring_grid`, 72 x 188 codels, 2 314 blocks) is O(cells
-squared) by design: its counters are rolled over a window four values wider per
-cell. On the canonical hello world's grid (30 x 29, 992 ring cells) it runs
-2 403 295 interpreted steps in 45 ms and prints the stream `ring_stream` builds.
-That is the whole cost of the stage, once per image, not per state.
+The ring stage (`loom::ring_grid`, 72 x 188 codels, 2 314 blocks) is linear in
+the ring: each lap pushes its record under the counters with a fixed seven-value
+roll, so the cost per cell is flat at about 2 400 interpreted steps from 9 to 324
+cells. On the canonical hello world's grid (30 x 29, 992 ring cells) it runs
+2 403 295 steps in 45 ms and prints the stream `ring_stream` builds. That is the
+whole cost of the stage, once per image, not per state.

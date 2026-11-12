@@ -723,14 +723,17 @@ is its index and the label the splitter reads is already in the stream.
 Two pieces of arithmetic do the work. A cell is a guard exactly when
 `row * (row - h - 1) * col * (col - w - 1)` is zero, which is three divisions and
 remainders per lap instead of a chain of comparisons against the borders. And the
-records have to come out highest index first, so the image pushes them in forward
-order and pops them, which reverses them for free; the sentinel `-1` goes in first
-so it ends up under every record, and the print loop halts when it surfaces.
+records have to come out highest index first, so each lap pushes its record
+*below* the counters — one fixed-window roll of seven values — which leaves the
+newest record nearest the top and the sentinel `-1` underneath all of them. The
+print loop halts when the sentinel surfaces.
 
-The price of that reversal is the one S3 predicted. The loop's counters sit above
-the records it has accumulated, so every lap rolls them back over a window that
-grows by four values per cell: a lap is O(cells), the ring is O(cells squared).
-That is why the stage is for small images and why it is not on the per-state path.
+The counters never move relative to the records, so a lap is a fixed number of
+commands and the stage is linear in the ring. Measured from 9 to 324 cells the
+cost is flat at about 2 400 interpreted steps per cell; the growth is the fixed
+prologue, not the loop. `ring_to_stream`'s 20 million-step budget therefore covers
+a few thousand cells, which is the scale this stage is for — *Piet's Quest*'s
+475 667-codel grid is not an input to it.
 
 Measured on 2026-11-12, release, the canonical hello world (30 x 29 grid, 992 ring
 cells): 2 403 295 interpreted steps, 45 ms, matching `ring_stream` token for
