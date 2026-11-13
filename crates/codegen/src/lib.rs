@@ -1,13 +1,20 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-//! The Cranelift lowering: one native function for the reachable state graph.
+//! The Cranelift lowering: native functions for the reachable state graph.
 //!
-//! [`run`] executes it in-process through the JIT; [`emit_object`] writes a
-//! relocatable object that the `aot` crate packages into a standalone
-//! executable.
-//! Each `(block, DP, CC)` state becomes a basic block. The value stack lives in
-//! the shared context; `pointer` and `switch` choose their successor from the
-//! popped value, and the remaining commands are straight-line IR. Host calls
-//! handle I/O and `roll`; the stack itself is inline.
+//! A program whose state graph is small enough is one native function with a
+//! basic block per `(block, DP, CC)` state: [`run`] executes it in-process through
+//! the JIT, and [`emit_object`] writes it as a relocatable object. Above
+//! `WHOLE_FUNCTION_LIMIT` one function stops being practical — its layout and
+//! register allocation grow faster than the state count — so [`run`] switches to
+//! lazy lowering: each state's function is compiled the first time the driver
+//! enters it. The composed machine image (1.2M states, 409k visited) is the
+//! motivating case; the CLI still prefers the interpreter there, because lazy
+//! lowering wins on reachability but not on time (see `.agents/notes/aot.md`).
+//!
+//! In both shapes the value stack lives in the shared context; `pointer` and
+//! `switch` choose their successor from the popped value, and the remaining
+//! commands are straight-line IR. Host calls handle I/O and `roll`; the stack
+//! itself is inline.
 
 use std::collections::HashMap;
 use std::mem::offset_of;
@@ -95,6 +102,10 @@ struct JitContext<'io> {
     io: *mut (dyn Io + 'io),
 }
 
+/// One compiled state: it runs the state's command and returns the successor's
+/// index, or `-1` when the run stops.
+type StateFunction = extern "C" fn(*mut Context) -> i64;
+
 struct Offsets {
     stack: i32,
     capacity: i32,
@@ -155,15 +166,65 @@ struct Frame<'a> {
     overflow: Block,
 }
 
+/// Where a finished state's code goes.
+#[derive(Clone, Copy)]
+enum Leave {
+    /// Jump to another basic block of the same function.
+    Block(Block),
+    /// Return the successor's index: the driver compiles that state if it has not
+    /// been compiled yet.
+    Index(u32),
+}
+
+/// How a state names its successor, which is the one thing the two emitters do
+/// differently.
+enum Successors<'a> {
+    /// One function, one Cranelift block per state.
+    Blocks(&'a HashMap<State, Block>),
+    /// One function per state, compiled the first time it runs.
+    Indices(&'a HashMap<State, u32>),
+}
+
+impl Successors<'_> {
+    fn leave(&self, state: State) -> Leave {
+        match self {
+            Self::Blocks(blocks) => Leave::Block(blocks[&state]),
+            Self::Indices(indices) => Leave::Index(indices[&state]),
+        }
+    }
+}
+
 /// The per-state lowering inputs shared by the emitters.
 struct Lowering<'a> {
-    state_blocks: &'a HashMap<State, Block>,
+    successors: Successors<'a>,
     host: &'a HostRefs,
     frame: Frame<'a>,
 }
 
+/// Above this many states one function with a block per state stops being a
+/// good lowering: its layout and register allocation grow faster than the state
+/// count, and a 62 000-state image already takes about four seconds. Past the
+/// bound [`run`] compiles a state's function the first time it is entered.
+///
+/// The CLI intercepts before this: it runs the interpreter above the same count,
+/// because on the composed machine image the interpreter (44 s) beats lazy
+/// lowering (about seven minutes). The lazy path is still the JIT's answer for an
+/// image the whole-function lowering cannot compile at all.
+const WHOLE_FUNCTION_LIMIT: usize = 100_000;
+
 /// Runs the program through the JIT.
-pub fn run<'io>(blocks: &Blocks, io: &'io mut dyn Io, options: &Options) -> Result<Run, Error> {
+pub fn run(blocks: &Blocks, io: &mut dyn Io, options: &Options) -> Result<Run, Error> {
+    run_with_limit(blocks, io, options, WHOLE_FUNCTION_LIMIT)
+}
+
+/// [`run`], with the whole-function bound exposed so the lazy driver can be
+/// exercised on a small graph.
+fn run_with_limit<'io>(
+    blocks: &Blocks,
+    io: &'io mut dyn Io,
+    options: &Options,
+    whole_function_limit: usize,
+) -> Result<Run, Error> {
     if std::mem::size_of::<usize>() != 8 {
         return Err(Error::UnsupportedTarget);
     }
@@ -193,9 +254,6 @@ pub fn run<'io>(blocks: &Blocks, io: &'io mut dyn Io, options: &Options) -> Resu
     let mut module = build_module()?;
     let signature = pointer_signature(&mut module);
     let frontend_config = module.target_config();
-    let main_id = module
-        .declare_function("piet_main", Linkage::Export, &signature)
-        .map_err(|error| Error::Cranelift(error.to_string()))?;
     let host_ids = declare_hosts(&mut module, &signature)?;
 
     let program = Program {
@@ -208,19 +266,23 @@ pub fn run<'io>(blocks: &Blocks, io: &'io mut dyn Io, options: &Options) -> Resu
         frontend_config,
         division: options.division,
     };
-    define_main(
-        &mut module,
-        main_id,
-        &program,
-        diagnostics::diagnostics().jit_disasm,
-    )?;
-    module
-        .finalize_definitions()
-        .map_err(|error| Error::Cranelift(error.to_string()))?;
+    let disasm = diagnostics::diagnostics().jit_disasm;
 
-    let code = module.get_finalized_function(main_id);
-    let main: extern "C" fn(*mut Context) = unsafe { std::mem::transmute(code) };
-    main(&mut context.context);
+    if graph.states().len() <= whole_function_limit {
+        let main_id = module
+            .declare_function("piet_main", Linkage::Export, &program.signature)
+            .map_err(|error| Error::Cranelift(error.to_string()))?;
+        define_main(&mut module, main_id, &program, disasm)?;
+        module
+            .finalize_definitions()
+            .map_err(|error| Error::Cranelift(error.to_string()))?;
+        let code = module.get_finalized_function(main_id);
+        // SAFETY: `define_main` compiled the signature `pointer_signature` declared.
+        let main: extern "C" fn(*mut Context) = unsafe { std::mem::transmute(code) };
+        main(&mut context.context);
+    } else {
+        run_lazy(&mut module, &program, start, &mut context.context, disasm)?;
+    }
 
     Ok(Run {
         reason: match context.context.reason {
@@ -230,6 +292,65 @@ pub fn run<'io>(blocks: &Blocks, io: &'io mut dyn Io, options: &Options) -> Resu
         },
         steps: context.context.steps,
     })
+}
+
+/// Runs a graph too large for one function: each state is compiled the first
+/// time the driver enters it.
+fn run_lazy(
+    module: &mut JITModule,
+    program: &Program<'_>,
+    start: State,
+    context: &mut Context,
+    disasm: bool,
+) -> Result<(), Error> {
+    let states = program.graph.states();
+    let indices: HashMap<State, u32> = states
+        .iter()
+        .enumerate()
+        .map(|(index, state)| (*state, index as u32))
+        .collect();
+    let mut state_signature = module.make_signature();
+    state_signature.params.push(AbiParam::new(types::I64));
+    state_signature.returns.push(AbiParam::new(types::I64));
+    let mut functions: Vec<Option<StateFunction>> = vec![None; states.len()];
+    let mut current = indices[&start] as usize;
+    loop {
+        let function = match functions[current] {
+            Some(function) => function,
+            None => {
+                let id = module
+                    .declare_function(
+                        &format!("piet_state_{current}"),
+                        Linkage::Local,
+                        &state_signature,
+                    )
+                    .map_err(|error| Error::Cranelift(error.to_string()))?;
+                define_state(
+                    module,
+                    id,
+                    program,
+                    &state_signature,
+                    states[current],
+                    &indices,
+                    disasm,
+                )?;
+                module
+                    .finalize_definitions()
+                    .map_err(|error| Error::Cranelift(error.to_string()))?;
+                let code = module.get_finalized_function(id);
+                // SAFETY: `define_state` compiled this function with this signature.
+                let function: StateFunction = unsafe { std::mem::transmute(code) };
+                functions[current] = Some(function);
+                function
+            }
+        };
+        let next = function(context);
+        let Ok(next) = usize::try_from(next) else {
+            break;
+        };
+        current = next;
+    }
+    Ok(())
 }
 
 /// Emits the program as a relocatable object exporting `piet_main` for the
@@ -405,7 +526,7 @@ fn define_main<M: Module>(
     }
 
     let lowering = Lowering {
-        state_blocks: &state_blocks,
+        successors: Successors::Blocks(&state_blocks),
         host: &host,
         frame: Frame {
             ctx: ctx_ptr,
@@ -497,6 +618,141 @@ fn define_main<M: Module>(
     Ok(())
 }
 
+/// The value that tells the driver the run stopped.
+fn stop(builder: &mut FunctionBuilder) -> Value {
+    builder.ins().iconst(types::I64, -1)
+}
+
+/// One state's function: check the run's reason and budget, run the command, and
+/// return the successor's index.
+///
+/// The driver compiles a state the first time it enters it. An image whose static
+/// state graph is enormous but whose run touches a fraction of it therefore pays
+/// only for the states it reaches, which is what makes the composed machine
+/// image executable through the JIT at all.
+fn define_state<M: Module>(
+    module: &mut M,
+    func_id: FuncId,
+    program: &Program<'_>,
+    signature: &Signature,
+    state: State,
+    indices: &HashMap<State, u32>,
+    disasm: bool,
+) -> Result<(), Error> {
+    let mut context = module.make_context();
+    context.func.signature = signature.clone();
+    let host = HostRefs {
+        out_char: module.declare_func_in_func(program.host_ids.out_char, &mut context.func),
+        out_number: module.declare_func_in_func(program.host_ids.out_number, &mut context.func),
+        in_char: module.declare_func_in_func(program.host_ids.in_char, &mut context.func),
+        in_number: module.declare_func_in_func(program.host_ids.in_number, &mut context.func),
+        roll: module.declare_func_in_func(program.host_ids.roll, &mut context.func),
+    };
+    let mut builder_context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+
+    let overflow_block = builder.create_block();
+    let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+    let params = builder.block_params(entry);
+    let ctx_ptr = params[0];
+    let stack_ptr = load_field(&mut builder, ctx_ptr, types::I64, program.offsets.stack);
+
+    // A failed run stops before the next command, exactly as the whole-function
+    // lowering stops at the start of the next state.
+    let reason = load_field(&mut builder, ctx_ptr, types::I32, program.offsets.reason);
+    let failed = builder.ins().icmp_imm_s(IntCC::NotEqual, reason, 0);
+    let failed_block = builder.create_block();
+    let proceed = builder.create_block();
+    builder.ins().brif(failed, failed_block, &[], proceed, &[]);
+    builder.switch_to_block(failed_block);
+    let value = stop(&mut builder);
+    builder.ins().return_(&[value]);
+    builder.switch_to_block(proceed);
+
+    let steps = load_field(&mut builder, ctx_ptr, types::I64, program.offsets.steps);
+    let max_steps = load_field(&mut builder, ctx_ptr, types::I64, program.offsets.max_steps);
+    let exhausted = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, steps, max_steps);
+    let limit_block = builder.create_block();
+    let work = builder.create_block();
+    builder.ins().brif(exhausted, limit_block, &[], work, &[]);
+    builder.switch_to_block(limit_block);
+    let step_limit = builder
+        .ins()
+        .iconst(types::I32, i64::from(REASON_STEP_LIMIT));
+    store_field(&mut builder, ctx_ptr, step_limit, program.offsets.reason);
+    let value = stop(&mut builder);
+    builder.ins().return_(&[value]);
+    builder.switch_to_block(work);
+
+    let edges: Vec<&Edge> = program.graph.successors(state).collect();
+    if edges.is_empty() {
+        let value = stop(&mut builder);
+        builder.ins().return_(&[value]);
+    } else {
+        let block_size = program
+            .blocks
+            .block(state.block)
+            .map_or(0, |block| block.size() as i64);
+        bump_steps(&mut builder, ctx_ptr, program.offsets);
+        let lowering = Lowering {
+            successors: Successors::Indices(indices),
+            host: &host,
+            frame: Frame {
+                ctx: ctx_ptr,
+                stack: stack_ptr,
+                offsets: program.offsets,
+                overflow: overflow_block,
+            },
+        };
+        emit_command(
+            &mut builder,
+            &lowering,
+            &edges,
+            block_size,
+            program.division,
+        );
+    }
+
+    builder.switch_to_block(overflow_block);
+    let overflow = builder.ins().iconst(types::I32, i64::from(REASON_OVERFLOW));
+    store_field(&mut builder, ctx_ptr, overflow, program.offsets.reason);
+    let value = stop(&mut builder);
+    builder.ins().return_(&[value]);
+
+    builder.seal_all_blocks();
+    builder.finalize(program.frontend_config);
+    context
+        .verify(module.isa())
+        .map_err(|error| Error::Cranelift(error.to_string()))?;
+    if diagnostics::diagnostics().dump_clif {
+        eprintln!("pietrs: clif");
+        eprintln!("{}", context.func.display());
+    }
+    if disasm {
+        context.set_disasm(true);
+    }
+    module
+        .define_function(func_id, &mut context)
+        .map_err(|error| Error::Cranelift(error.to_string()))?;
+    if disasm {
+        match context
+            .compiled_code()
+            .and_then(|code| code.vcode.as_deref())
+        {
+            Some(text) => {
+                eprintln!("pietrs: jit disassembly");
+                eprintln!("{text}");
+            }
+            None => eprintln!("pietrs: no disassembly is available for this target"),
+        }
+    }
+    Ok(())
+}
+
 fn emit_command(
     builder: &mut FunctionBuilder,
     lowering: &Lowering<'_>,
@@ -505,64 +761,97 @@ fn emit_command(
     division: Division,
 ) {
     let frame = lowering.frame;
-    let successor = lowering.state_blocks[&edges[0].to];
+    let next = lowering.successors.leave(edges[0].to);
     match edges[0].command {
         None => {
-            builder.ins().jump(successor, &[]);
+            leave(builder, next);
         }
         Some(Command::Push) => {
             let value = builder.ins().iconst(types::I64, block_size);
             emit_push(builder, frame, value);
-            builder.ins().jump(successor, &[]);
+            leave(builder, next);
         }
-        Some(Command::Pop) => emit_pop(builder, frame, successor),
+        Some(Command::Pop) => emit_pop(builder, frame, next),
         Some(Command::Add) => {
-            emit_binary(builder, frame, successor, |builder, a, b| {
+            emit_binary(builder, frame, next, |builder, a, b| {
                 builder.ins().iadd(a, b)
             });
         }
         Some(Command::Subtract) => {
-            emit_binary(builder, frame, successor, |builder, a, b| {
+            emit_binary(builder, frame, next, |builder, a, b| {
                 builder.ins().isub(a, b)
             });
         }
         Some(Command::Multiply) => {
-            emit_binary(builder, frame, successor, |builder, a, b| {
+            emit_binary(builder, frame, next, |builder, a, b| {
                 builder.ins().imul(a, b)
             });
         }
-        Some(Command::Divide) => emit_divmod(builder, frame, successor, true, division),
-        Some(Command::Modulo) => emit_divmod(builder, frame, successor, false, division),
-        Some(Command::Not) => emit_not(builder, frame, successor),
+        Some(Command::Divide) => emit_divmod(builder, frame, next, true, division),
+        Some(Command::Modulo) => emit_divmod(builder, frame, next, false, division),
+        Some(Command::Not) => emit_not(builder, frame, next),
         Some(Command::Greater) => {
-            emit_binary(builder, frame, successor, |builder, a, b| {
+            emit_binary(builder, frame, next, |builder, a, b| {
                 let comparison = builder.ins().icmp(IntCC::SignedGreaterThan, a, b);
                 builder.ins().uextend(types::I64, comparison)
             });
         }
         Some(Command::Pointer) => emit_pointer(builder, lowering, edges),
         Some(Command::Switch) => emit_switch(builder, lowering, edges),
-        Some(Command::Duplicate) => emit_duplicate(builder, frame, successor),
+        Some(Command::Duplicate) => emit_duplicate(builder, frame, next),
         Some(Command::Roll) => {
             let _ = builder.ins().call(lowering.host.roll, &[frame.ctx]);
-            builder.ins().jump(successor, &[]);
+            leave(builder, next);
         }
         Some(Command::InNumber) => {
             let _ = builder.ins().call(lowering.host.in_number, &[frame.ctx]);
-            builder.ins().jump(successor, &[]);
+            leave(builder, next);
         }
         Some(Command::InChar) => {
             let _ = builder.ins().call(lowering.host.in_char, &[frame.ctx]);
-            builder.ins().jump(successor, &[]);
+            leave(builder, next);
         }
         Some(Command::OutNumber) => {
             let _ = builder.ins().call(lowering.host.out_number, &[frame.ctx]);
-            builder.ins().jump(successor, &[]);
+            leave(builder, next);
         }
         Some(Command::OutChar) => {
             let _ = builder.ins().call(lowering.host.out_char, &[frame.ctx]);
-            builder.ins().jump(successor, &[]);
+            leave(builder, next);
         }
+    }
+}
+
+/// Finish a state: jump inside the function, or return the successor's index.
+fn leave(builder: &mut FunctionBuilder, target: Leave) {
+    match target {
+        Leave::Block(block) => {
+            builder.ins().jump(block, &[]);
+        }
+        Leave::Index(index) => {
+            let value = builder.ins().iconst(types::I64, i64::from(index));
+            builder.ins().return_(&[value]);
+        }
+    }
+}
+
+/// The block an early path branches to for `target`.
+///
+/// A jump target is already a block. A returned index needs one that leaves, and
+/// the block is filled after the work path has been terminated: the builder
+/// does not allow switching away from an unfilled block.
+fn exit_block(builder: &mut FunctionBuilder, target: Leave) -> Block {
+    match target {
+        Leave::Block(block) => block,
+        Leave::Index(_) => builder.create_block(),
+    }
+}
+
+/// Fill the early-exit block once the work path is finished.
+fn fill_exit(builder: &mut FunctionBuilder, target: Leave, exit: Block) {
+    if let Leave::Index(_) = target {
+        builder.switch_to_block(exit);
+        leave(builder, target);
     }
 }
 
@@ -583,29 +872,30 @@ fn emit_push(builder: &mut FunctionBuilder, frame: Frame<'_>, value: Value) {
     store_field(builder, frame.ctx, next, frame.offsets.sp);
 }
 
-fn emit_pop(builder: &mut FunctionBuilder, frame: Frame<'_>, successor: Block) {
+fn emit_pop(builder: &mut FunctionBuilder, frame: Frame<'_>, target: Leave) {
     let sp = load_field(builder, frame.ctx, types::I64, frame.offsets.sp);
     let empty = builder.ins().icmp_imm_s(IntCC::Equal, sp, 0);
     let pop_block = builder.create_block();
-    builder.ins().brif(empty, successor, &[], pop_block, &[]);
+    let exit = exit_block(builder, target);
+    builder.ins().brif(empty, exit, &[], pop_block, &[]);
     builder.switch_to_block(pop_block);
     let next = builder.ins().iadd_imm_s(sp, -1);
     store_field(builder, frame.ctx, next, frame.offsets.sp);
-    builder.ins().jump(successor, &[]);
+    leave(builder, target);
+    fill_exit(builder, target, exit);
 }
 
 fn emit_binary(
     builder: &mut FunctionBuilder,
     frame: Frame<'_>,
-    successor: Block,
+    target: Leave,
     operation: impl FnOnce(&mut FunctionBuilder, Value, Value) -> Value,
 ) {
     let sp = load_field(builder, frame.ctx, types::I64, frame.offsets.sp);
     let short = builder.ins().icmp_imm_s(IntCC::SignedLessThan, sp, 2);
     let operation_block = builder.create_block();
-    builder
-        .ins()
-        .brif(short, successor, &[], operation_block, &[]);
+    let exit = exit_block(builder, target);
+    builder.ins().brif(short, exit, &[], operation_block, &[]);
     builder.switch_to_block(operation_block);
     let second = builder.ins().iadd_imm_s(sp, -2);
     let top = builder.ins().iadd_imm_s(sp, -1);
@@ -615,22 +905,22 @@ fn emit_binary(
     let address = stack_address(builder, frame.stack, second);
     builder.ins().store(MemFlagsData::new(), result, address, 0);
     store_field(builder, frame.ctx, top, frame.offsets.sp);
-    builder.ins().jump(successor, &[]);
+    leave(builder, target);
+    fill_exit(builder, target, exit);
 }
 
 fn emit_divmod(
     builder: &mut FunctionBuilder,
     frame: Frame<'_>,
-    successor: Block,
+    target: Leave,
     divide: bool,
     mode: Division,
 ) {
     let sp = load_field(builder, frame.ctx, types::I64, frame.offsets.sp);
     let short = builder.ins().icmp_imm_s(IntCC::SignedLessThan, sp, 2);
     let operation_block = builder.create_block();
-    builder
-        .ins()
-        .brif(short, successor, &[], operation_block, &[]);
+    let exit = exit_block(builder, target);
+    builder.ins().brif(short, exit, &[], operation_block, &[]);
     builder.switch_to_block(operation_block);
     let second = builder.ins().iadd_imm_s(sp, -2);
     let top = builder.ins().iadd_imm_s(sp, -1);
@@ -661,11 +951,12 @@ fn emit_divmod(
             quotient
         };
         store_binary_result(builder, frame, second, top, result);
-        builder.ins().jump(successor, &[]);
+        leave(builder, target);
 
         builder.switch_to_block(consume);
         store_field(builder, frame.ctx, second, frame.offsets.sp);
-        builder.ins().jump(successor, &[]);
+        leave(builder, target);
+        fill_exit(builder, target, exit);
         return;
     }
 
@@ -689,16 +980,17 @@ fn emit_divmod(
         builder.ins().srem(a, b)
     };
     store_binary_result(builder, frame, second, top, result);
-    builder.ins().jump(successor, &[]);
+    leave(builder, target);
 
     builder.switch_to_block(zero_result);
     let zero_value = builder.ins().iconst(types::I64, 0);
     store_binary_result(builder, frame, second, top, zero_value);
-    builder.ins().jump(successor, &[]);
+    leave(builder, target);
 
     builder.switch_to_block(consume);
     store_field(builder, frame.ctx, second, frame.offsets.sp);
-    builder.ins().jump(successor, &[]);
+    leave(builder, target);
+    fill_exit(builder, target, exit);
 }
 
 /// Whether a truncated remainder needs the floored adjustment: it is non-zero
@@ -725,13 +1017,12 @@ fn store_binary_result(
     store_field(builder, frame.ctx, top, frame.offsets.sp);
 }
 
-fn emit_not(builder: &mut FunctionBuilder, frame: Frame<'_>, successor: Block) {
+fn emit_not(builder: &mut FunctionBuilder, frame: Frame<'_>, target: Leave) {
     let sp = load_field(builder, frame.ctx, types::I64, frame.offsets.sp);
     let empty = builder.ins().icmp_imm_s(IntCC::Equal, sp, 0);
     let operation_block = builder.create_block();
-    builder
-        .ins()
-        .brif(empty, successor, &[], operation_block, &[]);
+    let exit = exit_block(builder, target);
+    builder.ins().brif(empty, exit, &[], operation_block, &[]);
     builder.switch_to_block(operation_block);
     let top = builder.ins().iadd_imm_s(sp, -1);
     let value = load_stack(builder, frame.stack, top);
@@ -741,21 +1032,22 @@ fn emit_not(builder: &mut FunctionBuilder, frame: Frame<'_>, successor: Block) {
     let result = builder.ins().select(is_zero, one, zero);
     let address = stack_address(builder, frame.stack, top);
     builder.ins().store(MemFlagsData::new(), result, address, 0);
-    builder.ins().jump(successor, &[]);
+    leave(builder, target);
+    fill_exit(builder, target, exit);
 }
 
-fn emit_duplicate(builder: &mut FunctionBuilder, frame: Frame<'_>, successor: Block) {
+fn emit_duplicate(builder: &mut FunctionBuilder, frame: Frame<'_>, target: Leave) {
     let sp = load_field(builder, frame.ctx, types::I64, frame.offsets.sp);
     let empty = builder.ins().icmp_imm_s(IntCC::Equal, sp, 0);
     let duplicate_block = builder.create_block();
-    builder
-        .ins()
-        .brif(empty, successor, &[], duplicate_block, &[]);
+    let exit = exit_block(builder, target);
+    builder.ins().brif(empty, exit, &[], duplicate_block, &[]);
     builder.switch_to_block(duplicate_block);
     let top = builder.ins().iadd_imm_s(sp, -1);
     let value = load_stack(builder, frame.stack, top);
     emit_push(builder, frame, value);
-    builder.ins().jump(successor, &[]);
+    leave(builder, target);
+    fill_exit(builder, target, exit);
 }
 
 fn emit_pointer(builder: &mut FunctionBuilder, lowering: &Lowering<'_>, edges: &[&Edge]) {
@@ -772,9 +1064,9 @@ fn emit_pointer(builder: &mut FunctionBuilder, lowering: &Lowering<'_>, edges: &
     store_field(builder, frame.ctx, top, frame.offsets.sp);
     let value = load_stack(builder, frame.stack, top);
     let index = rem_euclid(builder, value, 4);
-    emit_branch_by_index(builder, index, edges, lowering.state_blocks);
+    emit_branch_by_index(builder, index, edges, &lowering.successors);
     builder.switch_to_block(empty_block);
-    builder.ins().jump(lowering.state_blocks[&edges[0].to], &[]);
+    leave(builder, lowering.successors.leave(edges[0].to));
 }
 
 fn emit_switch(builder: &mut FunctionBuilder, lowering: &Lowering<'_>, edges: &[&Edge]) {
@@ -792,29 +1084,51 @@ fn emit_switch(builder: &mut FunctionBuilder, lowering: &Lowering<'_>, edges: &[
     let value = load_stack(builder, frame.stack, top);
     let bit = builder.ins().band_imm_u(value, 1);
     let index = builder.ins().ireduce(types::I32, bit);
-    emit_branch_by_index(builder, index, edges, lowering.state_blocks);
+    emit_branch_by_index(builder, index, edges, &lowering.successors);
     builder.switch_to_block(empty_block);
-    builder.ins().jump(lowering.state_blocks[&edges[0].to], &[]);
+    leave(builder, lowering.successors.leave(edges[0].to));
 }
 
 fn emit_branch_by_index(
     builder: &mut FunctionBuilder,
     index: Value,
     edges: &[&Edge],
-    state_blocks: &HashMap<State, Block>,
+    successors: &Successors<'_>,
 ) {
-    for (position, edge) in edges.iter().enumerate() {
-        let target = state_blocks[&edge.to];
-        if position + 1 == edges.len() {
-            builder.ins().jump(target, &[]);
-            return;
+    match successors {
+        Successors::Blocks(blocks) => {
+            for (position, edge) in edges.iter().enumerate() {
+                let target = blocks[&edge.to];
+                if position + 1 == edges.len() {
+                    builder.ins().jump(target, &[]);
+                    return;
+                }
+                let next = builder.create_block();
+                let matches = builder
+                    .ins()
+                    .icmp_imm_s(IntCC::Equal, index, position as i64);
+                builder.ins().brif(matches, target, &[], next, &[]);
+                builder.switch_to_block(next);
+            }
         }
-        let next = builder.create_block();
-        let matches = builder
-            .ins()
-            .icmp_imm_s(IntCC::Equal, index, position as i64);
-        builder.ins().brif(matches, target, &[], next, &[]);
-        builder.switch_to_block(next);
+        Successors::Indices(indices) => {
+            // The successor index as a value: one `select` per edge but the last,
+            // then a single return. No block has to be left unfilled.
+            let last = edges.len() - 1;
+            let mut selected = builder
+                .ins()
+                .iconst(types::I64, i64::from(indices[&edges[last].to]));
+            for (position, edge) in edges.iter().enumerate().take(last) {
+                let candidate = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(indices[&edge.to]));
+                let matches = builder
+                    .ins()
+                    .icmp_imm_s(IntCC::Equal, index, position as i64);
+                selected = builder.ins().select(matches, candidate, selected);
+            }
+            builder.ins().return_(&[selected]);
+        }
     }
 }
 
@@ -1068,5 +1382,89 @@ mod tests {
         );
         let object = emit_object(&blocks, Division::Floored).unwrap();
         assert!(!object.is_empty());
+    }
+
+    /// The lazy driver is the path above the whole-function bound; the bound is
+    /// zero here so a small program takes it too.
+    #[test]
+    fn the_lazy_driver_agrees_with_the_interpreter() {
+        let blocks = testkit::row(&[
+            Command::Push,
+            Command::Push,
+            Command::Add,
+            Command::OutNumber,
+        ]);
+        assert_lazy_agrees(&blocks, "", 16);
+    }
+
+    #[test]
+    fn the_lazy_driver_honours_the_step_limit() {
+        let blocks = testkit::row(&[Command::Push, Command::Push, Command::Add]);
+        let mut io = runtime::BufferIo::new("");
+        let options = Options {
+            max_steps: Some(0),
+            ..Options::default()
+        };
+        let run = run_with_limit(&blocks, &mut io, &options, 0).unwrap();
+        assert_eq!(run.reason, ExitReason::StepLimit);
+        assert_eq!(run.steps, 0);
+    }
+
+    /// `pointer` and `switch` choose their successor from the stack, so the lazy
+    /// driver has to pick a state index with a `select` rather than a jump.
+    #[test]
+    fn the_lazy_driver_branches_on_pointer() {
+        use canvas::{Color, Hue, Lightness};
+        let blocks = testkit::blocks(
+            vec![
+                Color::chromatic(Hue::Red, Lightness::Normal),
+                Color::chromatic(Hue::Magenta, Lightness::Normal),
+                Color::chromatic(Hue::Cyan, Lightness::Light),
+                Color::chromatic(Hue::Red, Lightness::Normal),
+                Color::chromatic(Hue::Magenta, Lightness::Light),
+                Color::Black,
+                Color::Black,
+                Color::Black,
+                Color::chromatic(Hue::Magenta, Lightness::Dark),
+                Color::Black,
+            ],
+            5,
+        );
+        for input in ["A0", "A1", "A2", "A3"] {
+            assert_lazy_agrees(&blocks, input, 4);
+        }
+    }
+
+    /// Runs both engines over the same blocks and compares what they did.
+    fn assert_lazy_agrees(blocks: &Blocks, input: &str, max_steps: u64) {
+        let mut lazy_io = runtime::BufferIo::new(input);
+        let lazy = run_with_limit(
+            blocks,
+            &mut lazy_io,
+            &Options {
+                max_steps: Some(max_steps),
+                ..Options::default()
+            },
+            0,
+        )
+        .unwrap();
+        let mut interpreter_io = runtime::BufferIo::new(input);
+        let interpreter = interp::run(
+            blocks,
+            &mut interpreter_io,
+            &interp::Options {
+                max_steps: Some(max_steps),
+                ..interp::Options::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(lazy_io.output(), interpreter_io.output(), "{input}");
+        assert_eq!(lazy.steps, interpreter.steps, "{input}");
+        let reason = match lazy.reason {
+            ExitReason::Terminated => interp::ExitReason::Terminated,
+            ExitReason::StepLimit => interp::ExitReason::StepLimit,
+            ExitReason::StackOverflow => panic!("the lazy driver overflowed the stack"),
+        };
+        assert_eq!(reason, interpreter.reason, "{input}");
     }
 }

@@ -34,26 +34,27 @@ diagnostic at build time.
 
 ## The size bound
 
-The JIT and the AOT compiler share one lowering, so they share one cost: one
-native block per state of the image's state graph. That is the right shape for a
-program — the canonical *Hello world!* is 25 states, and the walker image is
-61,987 states and compiles in about four seconds — and the wrong shape for the
-composed machine image, which is 1,224,547 states. A hello-world run through the
-machine visits 409,560 of them.
+The JIT and the AOT compiler share one lowering, so they share one cost: for a
+small graph, one native block per state in a single function. That is the right
+shape for a program — the canonical *Hello world!* is 25 states, and the walker
+image is 61,987 states and compiles in about four seconds — and the wrong shape
+for the composed machine image, which is 1,224,547 states.
 
-`pietrs run` builds the graph before it chooses an engine. Above 100,000 states
-it runs the interpreter instead of lowering: the machine image prints what it
-prints in about 44 s, where lowering would take minutes. `pietrs build` refuses
-with a diagnostic naming the state count, because there is no lazy object
-emitter and the payload would be enormous.
+`codegen::run` therefore has two shapes. Up to `WHOLE_FUNCTION_LIMIT` (100,000
+states) it keeps the single-function lowering. Above it, it compiles a state's
+function the first time the driver enters it, so the image pays only for the
+states a run touches. `emit_object` has no lazy shape: an object is a static
+file, so it lowers the whole graph or not at all.
 
-Lazy lowering — compiling a state's block the first time it is entered — was
-measured and postponed. It would shrink the 1.2M-state graph to the 409k states
-a run reaches, but that is still a third of the graph, so the per-state backend
-would compile hundreds of thousands of small functions and call each one through
-the driver. The interpreter is the better first answer; a machine image that had
-to be packaged would want a runner that walks the image, not a compiled block
-per state.
+Lazy lowering was built and measured. The machine image visits 409,560 of its
+1,224,547 states in a hello-world run (1.33 billion steps): one third of the
+graph, which is 409k small functions to compile plus a call per step. It prints
+`Hello world!` in about seven minutes. The interpreter does the same in 44 s, so
+`pietrs run` builds the graph first and, above 100,000 states, runs the
+interpreter; `pietrs build` refuses above the bound with a diagnostic naming the
+counts. The lazy path stays as the JIT's answer for a graph the single function
+cannot compile at all, and as the place a better lazy scheme — batching states
+into one function so the hot loop keeps direct jumps — would start.
 
 ## Targets
 

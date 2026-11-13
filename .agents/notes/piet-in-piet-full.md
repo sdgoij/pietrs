@@ -946,12 +946,14 @@ program's own input.
 
 Running that image is a separate question from building it. The JIT and the AOT
 compiler lower one native block per state, and the composed image has 1,224,547
-states (a hello-world run visits 409,560 of them). `pietrs run` therefore builds
-the graph first and, above 100,000 states, runs the interpreter: `Hello world!`
-in about 44 s, where lowering would take minutes. Lazy lowering would shrink the
-work to the visited third and was measured, but a third of a graph this size is
-still hundreds of thousands of small functions, so the interpreter stays the
-right engine for the machine image. See `.agents/notes/aot.md`.
+states (a hello-world run visits 409,560 of them). `codegen::run` now has a lazy
+shape above 100,000 states: each state's function is compiled the first time it
+is entered. It prints `Hello world!` in about seven minutes, against the
+interpreter's 44 s, because one third of the graph is still 409k functions and a
+call per step. `pietrs run` therefore builds the graph first and, above 100,000
+states, runs the interpreter; `pietrs build` refuses with a diagnostic. The lazy
+path stays for a graph the single function cannot compile at all and as the
+starting point for a batched scheme. See `.agents/notes/aot.md`.
 
 ## Recommendation
 
