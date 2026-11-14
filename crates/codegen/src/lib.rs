@@ -10,6 +10,8 @@
 //! enters it. The composed machine image (1.2M states, 409k visited) is the
 //! motivating case; the CLI still prefers the interpreter there, because lazy
 //! lowering wins on reachability but not on time (see `.agents/notes/aot.md`).
+//! For packaging, [`graph_payload`] writes the graph as data for the AOT runner
+//! instead, which is practical at every size.
 //!
 //! In both shapes the value stack lives in the shared context; `pointer` and
 //! `switch` choose their successor from the popped value, and the remaining
@@ -19,7 +21,7 @@
 use std::collections::HashMap;
 use std::mem::offset_of;
 
-use canvas::Blocks;
+use canvas::{BlockId, Blocks};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{
     AbiParam, Block, FuncRef, InstBuilder, MemFlagsData, Signature, Value, types,
@@ -351,6 +353,119 @@ fn run_lazy(
         current = next;
     }
     Ok(())
+}
+
+/// The magic the AOT runner recognises as a state-graph payload.
+const GRAPH_MAGIC: [u8; 16] = *b"PIETRS-GRAPH\0\0\0\0";
+/// The graph payload's format version.
+const GRAPH_VERSION: u32 = 1;
+
+/// The graph payload, if the image is too large to compile: `None` means the
+/// caller should emit an object instead.
+///
+/// Above [`WHOLE_FUNCTION_LIMIT`] the object is not practical (one block per
+/// state in one function), but the graph itself is small enough to carry as
+/// data: about fifteen megabytes for the composed machine image, against an
+/// object that would not finish emitting. The AOT runner interprets it.
+pub fn graph_payload(blocks: &Blocks, division: Division) -> Option<Vec<u8>> {
+    let graph = StateGraph::build(blocks);
+    if graph.states().len() <= WHOLE_FUNCTION_LIMIT {
+        return None;
+    }
+    Some(encode_graph(blocks, &graph, division))
+}
+
+/// Encodes the reachable state graph as the data the AOT runner interprets.
+///
+/// One block-size table (so `push` can push the block it left), then one record
+/// per state: its block, its command, and the state indices of its successors.
+/// A `pointer` state has four successors, indexed by the popped value modulo
+/// four; a `switch` state has two, indexed by its parity; every other state has
+/// one, or none when it terminates. The layout and [`command_code`]'s numbers
+/// are repeated in `crates/runner/src/loader.rs`.
+pub fn encode_graph(blocks: &Blocks, graph: &StateGraph, division: Division) -> Vec<u8> {
+    let states = graph.states();
+    let index: HashMap<State, u32> = states
+        .iter()
+        .enumerate()
+        .map(|(position, state)| (*state, position as u32))
+        .collect();
+
+    // `StateGraph::successors` filters every edge per state, which is quadratic
+    // for a graph this size. Group the edges once instead: one count, then one
+    // flat target list, with the command of each state's first edge.
+    let mut counts = vec![0u32; states.len()];
+    for edge in graph.edges() {
+        counts[index[&edge.from] as usize] += 1;
+    }
+    let mut offsets = vec![0u32; states.len() + 1];
+    for (position, count) in counts.iter().enumerate() {
+        offsets[position + 1] = offsets[position] + count;
+    }
+    let mut targets = vec![0u32; graph.edges().len()];
+    let mut commands = vec![0u8; states.len()];
+    let mut cursor = offsets.clone();
+    for edge in graph.edges() {
+        let from = index[&edge.from] as usize;
+        targets[cursor[from] as usize] = index[&edge.to];
+        cursor[from] += 1;
+        commands[from] = command_code(edge.command);
+    }
+
+    let mut bytes =
+        Vec::with_capacity(36 + blocks.len() * 4 + states.len() * 8 + targets.len() * 4);
+    bytes.extend_from_slice(&GRAPH_MAGIC);
+    bytes.extend_from_slice(&GRAPH_VERSION.to_le_bytes());
+    let mode = match division {
+        Division::Floored => 0u32,
+        Division::Truncating => 1u32,
+    };
+    bytes.extend_from_slice(&mode.to_le_bytes());
+    let start = graph.start().map_or(u32::MAX, |state| index[&state]);
+    bytes.extend_from_slice(&start.to_le_bytes());
+    bytes.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+    for id in 0..blocks.len() as u32 {
+        let size = blocks
+            .block(BlockId(id))
+            .map_or(0, |block| block.size() as u32);
+        bytes.extend_from_slice(&size.to_le_bytes());
+    }
+    bytes.extend_from_slice(&(states.len() as u32).to_le_bytes());
+    for (position, state) in states.iter().enumerate() {
+        bytes.extend_from_slice(&state.block.0.to_le_bytes());
+        bytes.push(commands[position]);
+        let from = offsets[position] as usize;
+        let to = offsets[position + 1] as usize;
+        bytes.push((to - from) as u8);
+        for target in &targets[from..to] {
+            bytes.extend_from_slice(&target.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+/// The payload's command numbers, which the runner repeats in `loader.rs`.
+fn command_code(command: Option<Command>) -> u8 {
+    match command {
+        None => 0,
+        Some(Command::Push) => 1,
+        Some(Command::Pop) => 2,
+        Some(Command::Add) => 3,
+        Some(Command::Subtract) => 4,
+        Some(Command::Multiply) => 5,
+        Some(Command::Divide) => 6,
+        Some(Command::Modulo) => 7,
+        Some(Command::Not) => 8,
+        Some(Command::Greater) => 9,
+        Some(Command::Duplicate) => 10,
+        Some(Command::Roll) => 11,
+        Some(Command::InNumber) => 12,
+        Some(Command::InChar) => 13,
+        Some(Command::OutNumber) => 14,
+        Some(Command::OutChar) => 15,
+        Some(Command::Pointer) => 16,
+        Some(Command::Switch) => 17,
+    }
 }
 
 /// Emits the program as a relocatable object exporting `piet_main` for the

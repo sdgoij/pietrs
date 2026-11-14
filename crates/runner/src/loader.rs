@@ -29,6 +29,32 @@ const RELOCATION_ABSOLUTE_64: u8 = 0;
 const RELOCATION_ABSOLUTE_32: u8 = 1;
 const RELOCATION_RELATIVE_32: u8 = 2;
 
+/// The magic of a state-graph payload (`codegen::encode_graph`).
+const GRAPH_MAGIC: [u8; 16] = *b"PIETRS-GRAPH\0\0\0\0";
+const GRAPH_VERSION: u32 = 1;
+/// A graph payload's "the program terminates before it runs".
+const GRAPH_NONE: u32 = u32::MAX;
+
+// The payload's command numbers, as `codegen::command_code` writes them.
+const CMD_NONE: u8 = 0;
+const CMD_PUSH: u8 = 1;
+const CMD_POP: u8 = 2;
+const CMD_ADD: u8 = 3;
+const CMD_SUBTRACT: u8 = 4;
+const CMD_MULTIPLY: u8 = 5;
+const CMD_DIVIDE: u8 = 6;
+const CMD_MODULO: u8 = 7;
+const CMD_NOT: u8 = 8;
+const CMD_GREATER: u8 = 9;
+const CMD_DUPLICATE: u8 = 10;
+const CMD_ROLL: u8 = 11;
+const CMD_IN_NUMBER: u8 = 12;
+const CMD_IN_CHAR: u8 = 13;
+const CMD_OUT_NUMBER: u8 = 14;
+const CMD_OUT_CHAR: u8 = 15;
+const CMD_POINTER: u8 = 16;
+const CMD_SWITCH: u8 = 17;
+
 const REASON_TERMINATED: u32 = 0;
 const REASON_STEP_LIMIT: u32 = 1;
 const REASON_OVERFLOW: u32 = 2;
@@ -327,6 +353,250 @@ impl<'a> Program<'a> {
     }
 }
 
+/// One state in a graph payload: its block, its command, and where its
+/// successors start in the shared edge list.
+struct GraphState {
+    block: u32,
+    command: u8,
+    edges_start: u32,
+    edges_len: u8,
+}
+
+/// A state-graph payload: the same graph the JIT lowers, as data.
+///
+/// The runner walks it with a table lookup per step instead of compiled code.
+/// That is what lets an image too large for one function be packaged at all.
+struct Graph {
+    truncating: bool,
+    start: Option<u32>,
+    blocks: Vec<u32>,
+    states: Vec<GraphState>,
+    edges: Vec<u32>,
+}
+
+impl Graph {
+    fn parse(payload: &[u8]) -> Result<Self, String> {
+        let mut reader = Reader::new(payload);
+        if payload.len() < 36 {
+            return Err("the graph payload is shorter than its header".to_owned());
+        }
+        if reader.take(16)? != GRAPH_MAGIC {
+            return Err("the graph payload does not start with the pietrs magic".to_owned());
+        }
+        if reader.u32()? != GRAPH_VERSION {
+            return Err("the graph payload format version is not supported".to_owned());
+        }
+        let truncating = match reader.u32()? {
+            0 => false,
+            1 => true,
+            other => return Err(format!("unknown graph division mode {other}")),
+        };
+        let start = reader.u32()?;
+        let block_count = reader.u32()? as usize;
+        let mut blocks = Vec::with_capacity(block_count);
+        for _ in 0..block_count {
+            blocks.push(reader.u32()?);
+        }
+        let state_count = reader.u32()? as usize;
+        let mut states = Vec::with_capacity(state_count);
+        let mut edges: Vec<u32> = Vec::new();
+        for _ in 0..state_count {
+            let block = reader.u32()?;
+            let command = reader.u8()?;
+            let count = reader.u8()?;
+            if command > CMD_SWITCH {
+                return Err(format!("a graph state has unknown command {command}"));
+            }
+            if block as usize >= block_count {
+                return Err("a graph state names a missing block".to_owned());
+            }
+            let expected = match command {
+                CMD_POINTER => 4,
+                CMD_SWITCH => 2,
+                _ => 1,
+            };
+            if count != 0 && count as usize != expected {
+                return Err("a graph state has the wrong number of successors".to_owned());
+            }
+            let edges_start = edges.len() as u32;
+            for _ in 0..count {
+                let target = reader.u32()?;
+                if target as usize >= state_count {
+                    return Err("a graph successor names a missing state".to_owned());
+                }
+                edges.push(target);
+            }
+            states.push(GraphState {
+                block,
+                command,
+                edges_start,
+                edges_len: count,
+            });
+        }
+        if reader.offset != payload.len() {
+            return Err("the graph payload has trailing bytes".to_owned());
+        }
+        let start = if start == GRAPH_NONE {
+            None
+        } else if start as usize >= state_count {
+            return Err("the graph start state is missing".to_owned());
+        } else {
+            Some(start)
+        };
+        Ok(Self {
+            truncating,
+            start,
+            blocks,
+            states,
+            edges,
+        })
+    }
+
+    fn execute(&self, max_steps: u64) -> Result<(u32, u64), String> {
+        let Some(mut state) = self.start else {
+            return Ok((REASON_TERMINATED, 0));
+        };
+        let mut stack = Vec::new();
+        if let Err(error) = stack.try_reserve_exact(STACK_CAPACITY) {
+            return Err(format!("cannot allocate the stack: {error}"));
+        }
+        stack.resize(STACK_CAPACITY, 0);
+        let mut context = Context {
+            stack: stack.as_mut_ptr(),
+            capacity: STACK_CAPACITY as u64,
+            sp: 0,
+            steps: 0,
+            max_steps,
+            reason: REASON_TERMINATED,
+        };
+        while context.steps < max_steps {
+            let record = &self.states[state as usize];
+            // A state with no successors terminates without running a command.
+            if record.edges_len == 0 {
+                return Ok((REASON_TERMINATED, context.steps));
+            }
+            context.steps += 1;
+            let first = self.edges[record.edges_start as usize];
+            let next = match record.command {
+                CMD_NONE => first,
+                CMD_PUSH => {
+                    push(&mut context, i64::from(self.blocks[record.block as usize]));
+                    first
+                }
+                CMD_POP => {
+                    pop(&mut context);
+                    first
+                }
+                CMD_ADD => {
+                    binary(&mut context, |a, b| Some(a.wrapping_add(b)));
+                    first
+                }
+                CMD_SUBTRACT => {
+                    binary(&mut context, |a, b| Some(a.wrapping_sub(b)));
+                    first
+                }
+                CMD_MULTIPLY => {
+                    binary(&mut context, |a, b| Some(a.wrapping_mul(b)));
+                    first
+                }
+                CMD_DIVIDE => {
+                    binary(&mut context, |a, b| divide(self.truncating, a, b));
+                    first
+                }
+                CMD_MODULO => {
+                    binary(&mut context, |a, b| modulo(self.truncating, a, b));
+                    first
+                }
+                CMD_NOT => {
+                    if let Some(value) = pop(&mut context) {
+                        push(&mut context, i64::from(value == 0));
+                    }
+                    first
+                }
+                CMD_GREATER => {
+                    binary(&mut context, |a, b| Some(i64::from(a > b)));
+                    first
+                }
+                CMD_DUPLICATE => {
+                    if let Some(value) = peek(&context) {
+                        push(&mut context, value);
+                    }
+                    first
+                }
+                CMD_ROLL => {
+                    piet_roll(&mut context);
+                    first
+                }
+                CMD_IN_NUMBER => {
+                    piet_in_number(&mut context);
+                    first
+                }
+                CMD_IN_CHAR => {
+                    piet_in_char(&mut context);
+                    first
+                }
+                CMD_OUT_NUMBER => {
+                    piet_out_number(&mut context);
+                    first
+                }
+                CMD_OUT_CHAR => {
+                    piet_out_char(&mut context);
+                    first
+                }
+                CMD_POINTER => {
+                    let turns = pop(&mut context).unwrap_or(0).rem_euclid(4) as usize;
+                    self.edges[record.edges_start as usize + turns]
+                }
+                CMD_SWITCH => {
+                    let toggles = pop(&mut context).unwrap_or(0).rem_euclid(2) as usize;
+                    self.edges[record.edges_start as usize + toggles]
+                }
+                _ => unreachable!("the command was checked when parsing"),
+            };
+            if context.reason != REASON_TERMINATED {
+                return Ok((context.reason, context.steps));
+            }
+            state = next;
+        }
+        Ok((REASON_STEP_LIMIT, context.steps))
+    }
+}
+
+/// A binary command: pop two, push the result when the command has one.
+fn binary(context: &mut Context, operation: impl Fn(i64, i64) -> Option<i64>) {
+    let Some((second, top)) = pop_two(context) else {
+        return;
+    };
+    if let Some(value) = operation(second, top) {
+        push(context, value);
+    }
+}
+
+fn divide(truncating: bool, a: i64, b: i64) -> Option<i64> {
+    if b == 0 || (a == i64::MIN && b == -1) {
+        return None;
+    }
+    Some(if truncating { a / b } else { a.div_euclid(b) })
+}
+
+fn modulo(truncating: bool, a: i64, b: i64) -> Option<i64> {
+    if b == 0 {
+        return None;
+    }
+    if a == i64::MIN && b == -1 {
+        return Some(0);
+    }
+    Some(if truncating { a % b } else { a.rem_euclid(b) })
+}
+
+fn peek(context: &Context) -> Option<i64> {
+    if context.sp == 0 {
+        return None;
+    }
+    // SAFETY: `sp` slots starting at the stack pointer are initialised.
+    Some(unsafe { *context.stack.add(context.sp as usize - 1) })
+}
+
 #[cfg(target_arch = "aarch64")]
 fn flush_instruction_cache(base: *mut u8, size: usize) {
     use std::arch::asm;
@@ -526,7 +796,11 @@ pub fn run_file_with(path: &Path, max_steps: Option<u64>) -> Result<ExitCode, St
 
 /// Loads and runs a payload, returning its reason and step count.
 pub fn execute(payload: &[u8], max_steps: u64) -> Result<(u32, u64), String> {
-    Program::parse(payload)?.execute(max_steps)
+    if payload.starts_with(&GRAPH_MAGIC) {
+        Graph::parse(payload)?.execute(max_steps)
+    } else {
+        Program::parse(payload)?.execute(max_steps)
+    }
 }
 
 fn split(bytes: &[u8]) -> Result<(&[u8], u64), String> {

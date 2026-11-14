@@ -7,6 +7,10 @@
 //! that target, and lays out the runner, the payload, and a footer. The runner
 //! maps the payload and executes it; no compiler or linker runs when a program
 //! is built.
+//!
+//! An image too large to compile carries its state graph as data instead
+//! (`codegen::graph_payload`), and the runner interprets it. The same runner,
+//! footer, and file layout carry both payloads; the magic tells them apart.
 
 use std::path::Path;
 
@@ -69,8 +73,13 @@ pub fn build(
         .find(|(name, _)| *name == runner_target)
         .map(|(_, bytes)| *bytes)
         .ok_or_else(|| Error::NoRunner(runner_target.to_owned()))?;
-    let object = codegen::emit_object_for(blocks, division, codegen_target)?;
-    let (payload, arch) = payload::encode(&object).map_err(Error::Payload)?;
+    let (payload, arch) = match codegen::graph_payload(blocks, division) {
+        Some(payload) => (payload, arch_of(runner_target)),
+        None => {
+            let object = codegen::emit_object_for(blocks, division, codegen_target)?;
+            payload::encode(&object).map_err(Error::Payload)?
+        }
+    };
     let footer = payload::footer(payload.len() as u64, max_steps.unwrap_or(u64::MAX), arch);
     let mut bytes = Vec::with_capacity(runner.len() + payload.len() + footer.len());
     bytes.extend_from_slice(runner);
@@ -95,6 +104,20 @@ fn set_executable(path: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+/// The architectures the runner and the footer name.
+const ARCH_X86_64: u32 = 0;
+const ARCH_AARCH64: u32 = 1;
+
+/// The architecture for a target triple. The graph payload is the same bytes on
+/// every architecture, but the footer still names the runner's.
+fn arch_of(target: &str) -> u32 {
+    if target.contains("aarch64") {
+        ARCH_AARCH64
+    } else {
+        ARCH_X86_64
+    }
 }
 
 /// Maps a user-facing target to the runner and codegen triples.
@@ -205,5 +228,39 @@ mod tests {
 
         let mode = std::fs::metadata(&output).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "the shell must be able to run it");
+    }
+
+    /// The graph payload is the runner's other input: a program encoded as data
+    /// parses and runs with the interpreter's step count and verdict.
+    #[test]
+    fn the_graph_payload_runs_in_the_runner() {
+        use tessera::Command;
+
+        let blocks = testkit::row(&[
+            Command::Push,
+            Command::Push,
+            Command::Add,
+            Command::OutNumber,
+        ]);
+        let graph = tessera::StateGraph::build(&blocks);
+        let payload = codegen::encode_graph(&blocks, &graph, Division::Floored);
+        let (reason, steps) = runner::execute(&payload, 1000).unwrap();
+
+        let mut io = runtime::BufferIo::new("");
+        let want = interp::run(
+            &blocks,
+            &mut io,
+            &interp::Options {
+                max_steps: Some(1000),
+                ..interp::Options::default()
+            },
+        )
+        .unwrap();
+        let want_reason = match want.reason {
+            interp::ExitReason::Terminated => 0,
+            interp::ExitReason::StepLimit => 1,
+        };
+        assert_eq!(reason, want_reason);
+        assert_eq!(steps, want.steps);
     }
 }

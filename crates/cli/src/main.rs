@@ -56,8 +56,8 @@ enum Commands {
     Run(RunArgs),
     /// Write a standalone executable, with no external tools.
     ///
-    /// Images above 100,000 states are refused: the AOT compiler lowers one
-    /// native block per state.
+    /// Above 100,000 states the executable carries the state graph and interprets
+    /// it, rather than one compiled block per state.
     Build(BuildArgs),
     /// Run every corpus case through each execution path and compare them.
     Selftest(SelftestArgs),
@@ -188,12 +188,6 @@ enum Error {
 
     #[error("no .png cases in {0}")]
     NoCases(PathBuf),
-
-    #[cfg(feature = "codegen")]
-    #[error(
-        "the image has {states} states, and the AOT compiler lowers one block per state: above {limit} it is not practical. Run it with `pietrs run`, which uses the interpreter at this size."
-    )]
-    TooManyStates { states: usize, limit: usize },
 }
 
 fn main() -> ExitCode {
@@ -754,12 +748,6 @@ fn build_program(args: &BuildArgs) -> Result<(), Error> {
     let target = args.target.as_deref().unwrap_or(aot::HOST_TARGET);
     let graph = StateGraph::build(&blocks);
     warn_about_termination(&graph, args.max_steps);
-    if engine(graph.states().len()) == Engine::Interpreter {
-        return Err(Error::TooManyStates {
-            states: graph.states().len(),
-            limit: JIT_STATE_LIMIT,
-        });
-    }
     let output = executable_path(
         args.output
             .clone()

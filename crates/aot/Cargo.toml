@@ -14,6 +14,7 @@ runtime.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+interp.workspace = true
 runner.workspace = true
 tempfile.workspace = true
 tessera.workspace = true

@@ -951,12 +951,20 @@ shape above 100,000 states: each state's function is compiled the first time it
 is entered. It prints `Hello world!` in about seven minutes, against the
 interpreter's 44 s, because one third of the graph is still 409k functions and a
 call per step. `pietrs run` therefore builds the graph first and, above 100,000
-states, runs the interpreter; `pietrs build` refuses with a diagnostic. Batching
-states into one function was tried three ways — contiguous, breadth-first and
-trace-driven — and all are worse: a batch that is entered compiles its unvisited
-members, and a loop longer than a batch still returns across it. The trace-driven
-version took 13m39s. Trace-driven grouping was the last idea worth trying, and it
-is closed. See `.agents/notes/aot.md`.
+states, runs the interpreter.
+
+`pietrs build` needed no such excuse: above the bound it writes the state graph
+as data and the runner interprets it. The machine image's payload is 14.9 MB, the
+build takes 2.4 s, and the packaged executable prints `Hello world!` in 16.5 s —
+faster than the in-process interpreter, because a step is a table lookup rather
+than an edge-codel search. The picture is now a standalone executable without a
+compiled block per state.
+
+Batching states into one function was tried three ways — contiguous,
+breadth-first and trace-driven — and all are worse: a batch that is entered
+compiles its unvisited members, and a loop longer than a batch still returns
+across it. The trace-driven version took 13m39s and that line is closed. See
+`.agents/notes/aot.md`.
 
 ## Recommendation
 

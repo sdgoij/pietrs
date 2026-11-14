@@ -225,6 +225,7 @@ version = "0.1.0"
 dependencies = [
  "canvas",
  "codegen",
+ "interp",
  "object",
  "runner",
  "runtime",

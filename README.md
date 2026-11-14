@@ -73,7 +73,11 @@ pietrs editor program.png
 
 `pietrs build` writes the whole executable: the program, plus a runner that is
 compiled into `pietrs` itself and embedded at build time. Nothing is linked when
-you build a program, which is why a cross build needs no target toolchain.
+you build a program, which is why a cross build needs no target toolchain. A
+program small enough to compile carries compiled code; a larger one carries its
+state graph as data and the same runner interprets it. The composed machine
+image — all 1,224,547 states of it — is a 14.9 MB executable that prints
+`Hello world!` in 16.5 s.
 
 ### Commands
 
@@ -82,8 +86,8 @@ you build a program, which is why a cross build needs no target toolchain.
 | `editor` | opens the visual editor and debugger; compiled in by default, absent from a `--no-default-features` build |
 | `check` | decodes, partitions, and builds the state graph without executing; reports whether any reachable state terminates |
 | `trace` | runs the reference interpreter and prints every transition |
-| `run` | runs the program through the JIT and prints its output |
-| `build` | writes a standalone executable for the host or `--target` |
+| `run` | runs the program (the JIT below 100,000 states, the interpreter above) and prints its output |
+| `build` | writes a standalone executable for the host or `--target`; larger images carry their state graph as data |
 | `selftest` | runs a corpus through every execution path and compares them |
 
 ### Editor

@@ -43,17 +43,39 @@ for the composed machine image, which is 1,224,547 states.
 `codegen::run` therefore has two shapes. Up to `WHOLE_FUNCTION_LIMIT` (100,000
 states) it keeps the single-function lowering. Above it, it compiles a state's
 function the first time the driver enters it, so the image pays only for the
-states a run touches. `emit_object` has no lazy shape: an object is a static
-file, so it lowers the whole graph or not at all.
+states a run touches.
 
 Lazy lowering was built and measured. The machine image visits 409,560 of its
 1,224,547 states in a hello-world run (1.33 billion steps): one third of the
 graph, which is 409k small functions to compile plus a call per step. It prints
 `Hello world!` in about seven minutes. The interpreter does the same in 44 s, so
 `pietrs run` builds the graph first and, above 100,000 states, runs the
-interpreter; `pietrs build` refuses above the bound with a diagnostic naming the
-counts. The lazy path stays as the JIT's answer for a graph the single function
-cannot compile at all.
+interpreter. The lazy path stays as the JIT's answer for a graph the single
+function cannot compile at all.
+
+### The graph payload
+
+An object has no lazy shape: it is a static file, so it lowers the whole graph or
+nothing. `pietrs build` above `WHOLE_FUNCTION_LIMIT` therefore writes the state
+graph as *data* and lets the runner interpret it (`codegen::encode_graph`): a
+block-size table, then one record per state — its block, its command, and the
+indices of its successors. A `pointer` state has four successors indexed by the
+popped value modulo four, a `switch` two indexed by its parity, every other state
+one, and a terminating state none.
+
+The machine image's payload is 14.9 MB in a 2.4 s build. The packaged executable
+prints `Hello world!` in **16.5 s**, against 44 s for the in-process interpreter:
+with the graph, a step is a table lookup instead of an edge-codel search. Small
+programs keep the object payload — the canonical hello world is a 184 KB
+executable that runs in 0.09 s — so the two shapes meet at the same bound.
+
+The runner recognizes the payload by its magic (`PIETRS-GRAPH`) and has two
+executors: the object loader and the graph interpreter. The footer's architecture
+still names the runner; the graph bytes themselves are portable.
+
+The batching experiments below were attempts to make the *JIT* run the machine
+image quickly. They are separate from the graph payload, which is the AOT
+answer.
 
 ### Batching (tried, worse)
 
