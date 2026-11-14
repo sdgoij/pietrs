@@ -142,6 +142,17 @@ async fn service(request: FileRequest) -> IoResult {
                 path: Some(PathBuf::from(name)),
             }
         }
+        FileRequest::Input => {
+            let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else {
+                return IoResult::Cancelled;
+            };
+            let name = file.file_name();
+            let bytes = file.read().await;
+            IoResult::InputFile {
+                bytes,
+                path: Some(PathBuf::from(name)),
+            }
+        }
         FileRequest::Save { path, bytes } => {
             // No dialog: a Blob URL with `download` is the browser's save, and
             // it completes without waiting for another click.

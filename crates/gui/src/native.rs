@@ -120,6 +120,21 @@ impl NativeApp {
                 self.app.apply_io(result);
                 true
             }
+            Some(FileRequest::Input) => {
+                let Some(path) = rfd::FileDialog::new().pick_file() else {
+                    self.app.apply_io(IoResult::Cancelled);
+                    return true;
+                };
+                let result = match read_path(&path) {
+                    Ok(bytes) => IoResult::InputFile {
+                        bytes,
+                        path: Some(path),
+                    },
+                    Err(error) => IoResult::Failed(error.to_string()),
+                };
+                self.app.apply_io(result);
+                true
+            }
             Some(FileRequest::Save { path, bytes }) => {
                 let Some(path) = path.or_else(|| self.save_dialog()) else {
                     self.app.apply_io(IoResult::Cancelled);

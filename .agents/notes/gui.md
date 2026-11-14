@@ -465,8 +465,12 @@ Panels:
   collapsed. Read via `Machine::stack`.
 - **Output**: the stdout buffer, selectable and copyable; a count of characters
   written.
-- **Input**: an editable string, applied on reset only. Live stdin while paused
-  would need a different `Io` contract; it is not in v1.
+- **Input**: an editable string, applied on reset only, or loaded from a text
+  file with the picker that sits next to the field. A load replaces the text,
+  keeps the file name as its source, and restarts the session; typing into the
+  field clears the source name. A file that is not UTF-8 is reported and leaves
+  the text alone. Live stdin while paused would need a different `Io` contract;
+  it is not in v1.
 - **History**: the last N recorded steps in `Step` form, newest last; clicking
   a row selects the block it ran in. It is a log, not a time machine.
 

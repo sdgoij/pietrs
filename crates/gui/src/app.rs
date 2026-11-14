@@ -94,6 +94,9 @@ enum Pending {
 pub enum FileRequest {
     /// Pick an image and hand its bytes back through [`EditorApp::apply_io`].
     Open,
+    /// Pick a program-input text file and hand its bytes back through
+    /// [`EditorApp::apply_io`].
+    Input,
     /// Write these bytes; `path` is the current file, if there is one.
     Save {
         path: Option<PathBuf>,
@@ -105,6 +108,11 @@ pub enum FileRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IoResult {
     Opened {
+        bytes: Vec<u8>,
+        path: Option<PathBuf>,
+    },
+    /// A program-input file; the bytes are decoded as UTF-8 before use.
+    InputFile {
         bytes: Vec<u8>,
         path: Option<PathBuf>,
     },
@@ -163,6 +171,7 @@ pub struct EditorApp {
     session: Option<Session>,
     breakpoints: Breakpoints,
     input: String,
+    input_path: Option<PathBuf>,
     running: bool,
     selected: Option<BlockId>,
     overlay: Option<TextureHandle>,
@@ -209,6 +218,7 @@ impl EditorApp {
             session: None,
             breakpoints: Breakpoints::default(),
             input: String::new(),
+            input_path: None,
             running: false,
             selected: None,
             overlay: None,
@@ -545,6 +555,19 @@ impl EditorApp {
                 Ok(()) => self.last_error = None,
                 Err(error) => self.last_error = Some(error.to_string()),
             },
+            IoResult::InputFile { bytes, path } => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    self.input = text;
+                    self.input_path = path;
+                    self.debug_reset();
+                }
+                Err(error) => {
+                    let name = path
+                        .as_ref()
+                        .map_or_else(|| "input".to_owned(), |path| path.display().to_string());
+                    self.last_error = Some(format!("{name} is not UTF-8: {error}"));
+                }
+            },
             IoResult::Saved { path } => {
                 self.path = path;
                 self.dirty = false;
@@ -618,6 +641,14 @@ impl EditorApp {
         } else {
             self.request = Some(FileRequest::Open);
         }
+    }
+
+    /// Asks the shell to pick a text file with the program's input.
+    fn request_input_file(&mut self) {
+        if self.io_pending {
+            return;
+        }
+        self.request = Some(FileRequest::Input);
     }
 
     fn save(&mut self) {
@@ -1147,12 +1178,30 @@ impl EditorApp {
     fn debugger(&mut self, ui: &mut egui::Ui) {
         ui.heading("Debugger");
 
+        ui.label("Input");
+        let editing = ui.add(
+            egui::TextEdit::multiline(&mut self.input)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Monospace),
+        );
+        if editing.changed() {
+            self.input_path = None;
+        }
         ui.horizontal(|ui| {
-            ui.label("Input");
-            ui.add(egui::TextEdit::singleline(&mut self.input).desired_width(150.0));
+            if ui
+                .add_enabled(!self.io_pending, egui::Button::new("From file…"))
+                .on_hover_text("Load program input from a text file")
+                .clicked()
+            {
+                self.request_input_file();
+            }
+            if ui.button("Apply input and reset").clicked() {
+                self.debug_reset();
+            }
         });
-        if ui.button("Apply input and reset").clicked() {
-            self.debug_reset();
+        if let Some(path) = &self.input_path {
+            ui.label(format!("from {}", path.display()));
         }
 
         let mut action: Option<DebugAction> = None;
@@ -2111,6 +2160,61 @@ mod tests {
             Some(FileRequest::Save { path, .. }) => assert_eq!(path, None),
             other => panic!("expected a save request, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_input_file_replaces_the_input_and_restarts_the_session() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        app.set_input("stale");
+        app.debug_step().unwrap();
+        assert!(app.session().is_some());
+
+        app.apply_io(IoResult::InputFile {
+            bytes: b"42\n7".to_vec(),
+            path: Some(PathBuf::from("input.txt")),
+        });
+
+        assert_eq!(app.input(), "42\n7");
+        assert_eq!(app.input_path, Some(PathBuf::from("input.txt")));
+        assert!(app.session().is_none(), "the new input needs a new session");
+        assert!(!app.io_pending());
+        assert_eq!(app.last_error, None);
+    }
+
+    #[test]
+    fn a_non_utf8_input_file_is_reported_and_keeps_the_text() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        app.set_input("keep");
+
+        app.apply_io(IoResult::InputFile {
+            bytes: vec![0xff, 0xfe],
+            path: Some(PathBuf::from("bad.bin")),
+        });
+
+        assert_eq!(app.input(), "keep");
+        assert!(!app.io_pending());
+        assert!(
+            app.last_error
+                .as_deref()
+                .is_some_and(|message| message.contains("bad.bin")),
+            "{:?}",
+            app.last_error
+        );
+    }
+
+    #[test]
+    fn the_input_file_picker_asks_the_shell_once() {
+        let mut app =
+            EditorApp::new(small_document(&["rg"]), Some(PathBuf::from("x.png"))).unwrap();
+        app.request_input_file();
+        assert_eq!(app.take_request(), Some(FileRequest::Input));
+        assert!(app.io_pending());
+
+        app.request_input_file();
+        assert_eq!(app.take_request(), None);
+
+        app.apply_io(IoResult::Cancelled);
+        assert!(!app.io_pending());
     }
 
     #[test]

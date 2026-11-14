@@ -149,6 +149,8 @@ back.
 pub enum FileRequest {
     /// Pick an image and hand back its bytes.
     Open,
+    /// Pick a text file with the program's input and hand back its bytes.
+    Input,
     /// Write these bytes; `path` is the current file, if there is one.
     ///
     /// The PNG is encoded when the request is made, not when the dialog
@@ -160,6 +162,8 @@ pub enum FileRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IoResult {
     Opened { bytes: Vec<u8>, path: Option<PathBuf> },
+    /// A program-input file; the app decodes the bytes as UTF-8.
+    InputFile { bytes: Vec<u8>, path: Option<PathBuf> },
     Saved { path: Option<PathBuf> },
     /// The user dismissed the dialog; the document is unchanged.
     Cancelled,
@@ -173,8 +177,9 @@ two methods:
 - `take_request() -> Option<FileRequest>` — drained by the shell each frame;
   sets `io_pending`. `Save` carries the encoded PNG.
 - `apply_io(IoResult)` — routes `Opened` through the existing `open_bytes`,
-  `Saved` through the existing "this is the current file and it is clean" path,
-  `Failed` into `last_error`; clears `io_pending`.
+  `InputFile` into the debugger's input field (UTF-8 decoded, then the session
+  restarted), `Saved` through the existing "this is the current file and it is
+  clean" path, `Failed` into `last_error`; clears `io_pending`.
 
 A failed encode while building a `Save` request becomes `last_error` and no
 request is emitted.
@@ -199,6 +204,7 @@ fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
     self.app.ui_on(ui);
     match self.app.take_request() {
         Some(FileRequest::Open) => { /* rfd::FileDialog::pick_file + open_file */ }
+        Some(FileRequest::Input) => { /* pick_file + read_path, then InputFile */ }
         Some(FileRequest::Save { path, bytes }) => {
             /* `path`, or `FileDialog::save_file()`; then write_to + note_saved */
         }
@@ -262,6 +268,14 @@ async fn service(request: FileRequest) -> IoResult {
             let name = file.file_name();
             let bytes = file.read().await;
             IoResult::Opened { bytes, path: Some(name.into()) }
+        }
+        FileRequest::Input => {
+            let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else {
+                return IoResult::Cancelled;
+            };
+            let name = file.file_name();
+            let bytes = file.read().await;
+            IoResult::InputFile { bytes, path: Some(name.into()) }
         }
         FileRequest::Save { path, bytes } => {
             let name = /* the path's file name, or "program.png" */;
@@ -466,7 +480,7 @@ The output is `target/web/index.html` plus `pietrs.js`, `pietrs_bg.wasm`, and
 | Layer | Home | Cases |
 |---|---|---|
 | Unit | `editor` | the existing budget cases still stop on steps and on time; the import swap is invisible to them |
-| Unit | `gui` | `request_open` yields `FileRequest::Open` when clean, `Pending::Open` when dirty; `save` yields `Save { path: Some(_), bytes }` for a named document and `Save { path: None, .. }` otherwise, with bytes that decode back to the document; `apply_io` handles `Opened`, `Saved`, and `Failed` |
+| Unit | `gui` | `request_open` yields `FileRequest::Open` when clean, `Pending::Open` when dirty; `save` yields `Save { path: Some(_), bytes }` for a named document and `Save { path: None, .. }` otherwise, with bytes that decode back to the document; `request_input_file` yields `FileRequest::Input`; `apply_io` handles `Opened`, `InputFile` (including a non-UTF-8 file), `Saved`, and `Failed` |
 | Integration | `gui`, `Context::run_ui` | a frame exposes a pending request; a result replaces the document, sets the title, and clears `dirty`; an edit is ignored while `io_pending` |
 | Integration | `gui/native.rs` | the temp-file write/open round trip (moved from `app.rs`) |
 | Build | gate | `cargo build -p gui --no-default-features --features web --target wasm32-unknown-unknown` (debug profile: the gate proves the target links, and a release build adds minutes to every leg for no extra coverage) |
