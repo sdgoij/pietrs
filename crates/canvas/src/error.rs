@@ -37,7 +37,10 @@ pub enum Error {
     #[error("GIF decoding failed: {0}")]
     Gif(String),
 
-    #[error("the image is neither PNG nor GIF")]
+    #[error("PPM decoding failed: {0}")]
+    Ppm(String),
+
+    #[error("the image is not a PNG, GIF, or PPM")]
     UnknownFormat,
 
     #[error("PNG bit depth {0} is not supported after normalisation")]

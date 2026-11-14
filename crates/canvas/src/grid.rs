@@ -2,6 +2,15 @@
 
 use crate::{Color, Error};
 
+/// How a PPM is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpmFormat {
+    /// Binary P6: compact, and what an image tool expects.
+    Binary,
+    /// ASCII P3: readable, and easy to diff or compare by eye.
+    Ascii,
+}
+
 /// A position in the codel grid, in codels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Point {
@@ -235,6 +244,54 @@ impl CodelGrid {
         }
         debug_assert_eq!(rgba.len(), length);
         Ok(rgba)
+    }
+
+    /// Encodes the grid as a binary PPM (P6).
+    ///
+    /// The image is `width * codel_size` by `height * codel_size` pixels, the
+    /// same as [`Self::encode_png`]. PPM has no alpha channel, but every codel
+    /// pixel is opaque after [`Self::to_rgba`], so nothing is lost.
+    pub fn encode_ppm(&self) -> Result<Vec<u8>, Error> {
+        self.encode_ppm_as(PpmFormat::Binary)
+    }
+
+    /// Encodes the grid as a PPM in the chosen form.
+    pub fn encode_ppm_as(&self, format: PpmFormat) -> Result<Vec<u8>, Error> {
+        let pixel_width = self
+            .width
+            .checked_mul(self.codel_size)
+            .ok_or(Error::ImageTooLarge)?;
+        let pixel_height = self
+            .height
+            .checked_mul(self.codel_size)
+            .ok_or(Error::ImageTooLarge)?;
+        let rgba = self.to_rgba()?;
+        let magic = match format {
+            PpmFormat::Binary => 6,
+            PpmFormat::Ascii => 3,
+        };
+        let header = format!("P{magic}\n{pixel_width} {pixel_height}\n255\n");
+        match format {
+            PpmFormat::Binary => {
+                let mut out = Vec::with_capacity(header.len() + rgba.len() / 4 * 3);
+                out.extend_from_slice(header.as_bytes());
+                for pixel in rgba.as_chunks::<4>().0 {
+                    out.extend_from_slice(&pixel[..3]);
+                }
+                Ok(out)
+            }
+            PpmFormat::Ascii => {
+                use std::fmt::Write as _;
+                let mut text = String::with_capacity(header.len() + rgba.len() * 3);
+                text.push_str(&header);
+                for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
+                    let _ = write!(text, "{} {} {}", pixel[0], pixel[1], pixel[2]);
+                    let end_of_row = (index + 1) % pixel_width as usize == 0;
+                    text.push(if end_of_row { '\n' } else { ' ' });
+                }
+                Ok(text.into_bytes())
+            }
+        }
     }
 
     /// Encodes the grid as an 8-bit RGBA PNG.

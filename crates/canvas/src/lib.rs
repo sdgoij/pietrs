@@ -11,8 +11,9 @@ mod color;
 mod decode;
 mod error;
 mod grid;
+mod ppm;
 
 pub use blocks::{Block, BlockId, Blocks};
 pub use color::{Color, Hue, Lightness};
 pub use error::Error;
-pub use grid::{CodelGrid, Point};
+pub use grid::{CodelGrid, Point, PpmFormat};

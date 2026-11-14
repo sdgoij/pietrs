@@ -56,6 +56,17 @@ pietrs run adder.png --input numbers.txt --max-steps 100000
 # One line per transition, for debugging or diffing.
 pietrs trace program.png --max-steps 200
 
+# Convert between PNG and PPM (binary P6); the output extension picks the format.
+pietrs convert program.png program.ppm
+pietrs convert program.ppm program.png
+
+# --ascii writes the PPM as readable P3 instead.
+pietrs convert program.png program.ppm --ascii
+
+# Rewrite the same codels at a different codel size. The input size is
+# detected; --from-codel-size overrides it.
+pietrs scale program.png program-big.png --codel-size 10
+
 # Compile it to a standalone executable.
 pietrs build program.png -o program
 ./program
@@ -88,6 +99,8 @@ image — all 1,224,547 states of it — is a 14.9 MB executable that prints
 | `trace` | runs the reference interpreter and prints every transition |
 | `run` | runs the program (the JIT below 100,000 states, the interpreter above) and prints its output |
 | `build` | writes a standalone executable for the host or `--target`; larger images carry their state graph as data |
+| `convert` | rewrites an image as PNG or PPM, chosen by the output extension; the PPM is binary P6, or ASCII P3 with `--ascii` |
+| `scale` | writes the same codels at `--codel-size N`; the input size is detected, and `--from-codel-size M` overrides it. `--ascii` writes P3 |
 | `selftest` | runs a corpus through every execution path and compares them |
 
 ### Editor
@@ -168,10 +181,13 @@ refused before it runs, naming the block that branches.
 
 ### Images
 
-PNG and GIF (the first frame) are decoded, at any codel size: the size is
-detected from the image, and `--codel-size N` overrides it. A colour outside the
-twenty is reported on stderr and treated as white, as the specification suggests —
-an image whose palette has been mangled otherwise looks like a program that loops.
+PNG, GIF (the first frame), and PPM (binary P6 or ASCII P3) are decoded, at any
+codel size: the size is detected from the image, and `--codel-size N` overrides
+it. `convert` and `scale` write PNG or PPM, again chosen by the output
+extension; a PPM is binary P6 unless `--ascii` asks for P3. A colour outside the
+twenty is reported on stderr and treated as white, as the specification
+suggests — an image whose palette has been mangled otherwise looks like a
+program that loops.
 
 ### Cross-compiling
 

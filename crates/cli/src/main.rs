@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "codegen")]
 use std::time::{Duration, Instant};
 
-use canvas::{Blocks, CodelGrid};
+use canvas::{Blocks, CodelGrid, PpmFormat};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use interp::{ExitReason, Options, run, run_traced};
 use runtime::{BufferIo, ChainIo, Io, StreamIo};
@@ -59,6 +59,10 @@ enum Commands {
     /// Above 100,000 states the executable carries the state graph and interprets
     /// it, rather than one compiled block per state.
     Build(BuildArgs),
+    /// Convert an image between PNG and PPM.
+    Convert(ConvertArgs),
+    /// Write the image again at a different codel size.
+    Scale(ScaleArgs),
     /// Run every corpus case through each execution path and compare them.
     Selftest(SelftestArgs),
 }
@@ -137,6 +141,34 @@ struct BuildArgs {
 }
 
 #[derive(Debug, Args)]
+struct ConvertArgs {
+    #[command(flatten)]
+    image: ImageArgs,
+    /// Where to write the image; `.png` or `.ppm` selects the format.
+    output: PathBuf,
+    /// Write the PPM as ASCII (P3) instead of binary (P6).
+    #[arg(long)]
+    ascii: bool,
+}
+
+#[derive(Debug, Args)]
+struct ScaleArgs {
+    /// The Piet program image.
+    input: PathBuf,
+    /// Where to write the image; `.png` or `.ppm` selects the format.
+    output: PathBuf,
+    /// The codel size to write.
+    #[arg(long)]
+    codel_size: u32,
+    /// Override the detected codel size of the input.
+    #[arg(long)]
+    from_codel_size: Option<u32>,
+    /// Write the PPM as ASCII (P3) instead of binary (P6).
+    #[arg(long)]
+    ascii: bool,
+}
+
+#[derive(Debug, Args)]
 struct SelftestArgs {
     /// Directory of `.png` or `.gif` cases; a sibling `.in` file supplies input.
     corpus: PathBuf,
@@ -166,6 +198,19 @@ enum Error {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("cannot write {path}: {source}")]
+    WriteFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("{0} has no output format; use a .png or .ppm extension")]
+    OutputFormat(PathBuf),
+
+    #[error("--ascii writes a PPM; {0} is not a .ppm path")]
+    AsciiNeedsPpm(PathBuf),
 
     #[error("cannot write stdout: {0}")]
     Write(#[from] std::io::Error),
@@ -200,6 +245,8 @@ fn main() -> ExitCode {
         Commands::Trace(args) => trace(&args).map(|()| ExitCode::SUCCESS),
         Commands::Run(args) => run_program(&args),
         Commands::Build(args) => build_program(&args).map(|()| ExitCode::SUCCESS),
+        Commands::Convert(args) => convert(&args).map(|()| ExitCode::SUCCESS),
+        Commands::Scale(args) => scale(&args).map(|()| ExitCode::SUCCESS),
         Commands::Selftest(args) => selftest(&args),
     };
     match result {
@@ -249,6 +296,54 @@ fn load(image: &ImageArgs) -> Result<CodelGrid, Error> {
     };
     warn_about_unknown_colours(&grid);
     Ok(grid)
+}
+
+/// Converts an image between the formats named by the file extensions.
+fn convert(args: &ConvertArgs) -> Result<(), Error> {
+    let grid = load(&args.image)?;
+    write_grid(&grid, &args.output, args.ascii)
+}
+
+/// Writes the same codels at a different codel size.
+fn scale(args: &ScaleArgs) -> Result<(), Error> {
+    let image = ImageArgs {
+        image: args.input.clone(),
+        codel_size: args.from_codel_size,
+    };
+    let grid = load(&image)?;
+    let scaled = CodelGrid::from_colors_with_codel_size(
+        grid.width(),
+        grid.height(),
+        args.codel_size,
+        grid.codels().to_vec(),
+    )?;
+    write_grid(&scaled, &args.output, args.ascii)
+}
+
+/// Encodes a grid in the format named by the output extension.
+fn write_grid(grid: &CodelGrid, output: &Path, ascii: bool) -> Result<(), Error> {
+    let extension = output.extension().and_then(|extension| extension.to_str());
+    let encoded = match extension {
+        Some(extension) if extension.eq_ignore_ascii_case("png") => {
+            if ascii {
+                return Err(Error::AsciiNeedsPpm(output.to_path_buf()));
+            }
+            grid.encode_png()?
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("ppm") => {
+            let format = if ascii {
+                PpmFormat::Ascii
+            } else {
+                PpmFormat::Binary
+            };
+            grid.encode_ppm_as(format)?
+        }
+        _ => return Err(Error::OutputFormat(output.to_path_buf())),
+    };
+    std::fs::write(output, encoded).map_err(|source| Error::WriteFile {
+        path: output.to_path_buf(),
+        source,
+    })
 }
 
 /// The specification maps a non-standard colour to white. Say so, because that

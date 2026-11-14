@@ -12,14 +12,17 @@ const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 
 /// Decodes an image into an 8-bit RGBA buffer.
 ///
-/// PNG and GIF are recognised by their signatures. A GIF contributes its first
-/// frame; the samples published for Piet include several that exist only as
-/// GIFs, including the canonical hello world.
+/// PNG, GIF, and PPM are recognised by their signatures. A GIF contributes its
+/// first frame; the samples published for Piet include several that exist only
+/// as GIFs, including the canonical hello world. Both the binary (P6) and the
+/// ASCII (P3) PPM are accepted.
 pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), Error> {
     if bytes.starts_with(&PNG_MAGIC) {
         decode_png(bytes)
     } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         decode_gif(bytes)
+    } else if bytes.starts_with(b"P6") || bytes.starts_with(b"P3") {
+        super::ppm::decode_ppm(bytes)
     } else {
         Err(Error::UnknownFormat)
     }

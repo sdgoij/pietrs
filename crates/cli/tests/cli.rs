@@ -289,7 +289,7 @@ fn a_malformed_image_is_a_diagnostic() {
     std::fs::write(&truncated, b"\x89PNG\r\n\x1a\nnot a png").unwrap();
 
     for (path, expected) in [
-        (&garbage, "neither PNG nor GIF"),
+        (&garbage, "not a PNG, GIF, or PPM"),
         (&truncated, "PNG decoding failed"),
     ] {
         let output = pietrs()
@@ -819,4 +819,161 @@ fn editor_without_the_feature_is_a_diagnostic() {
         stderr.contains("built without the editor feature"),
         "{stderr}"
     );
+}
+
+#[test]
+fn convert_writes_a_binary_ppm() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, GREEN].into_iter().flatten().collect();
+    let source = write_png(dir.path(), "two.png", 2, 1, &rgba);
+    let output = dir.path().join("two.ppm");
+
+    run_ok(pietrs().args([
+        "convert",
+        source.to_str().unwrap(),
+        output.to_str().unwrap(),
+    ]));
+
+    let mut expected = b"P6\n2 1\n255\n".to_vec();
+    expected.extend_from_slice(&[RED[0], RED[1], RED[2], GREEN[0], GREEN[1], GREEN[2]]);
+    assert_eq!(std::fs::read(&output).unwrap(), expected);
+}
+
+#[test]
+fn convert_turns_a_ppm_back_into_a_png() {
+    let dir = TempDir::new().unwrap();
+    let ppm = dir.path().join("two.ppm");
+    std::fs::write(&ppm, b"P6\n2 1\n255\n\xff\x00\x00\x00\xff\x00").unwrap();
+    let png = dir.path().join("two.png");
+
+    run_ok(pietrs().args(["convert", ppm.to_str().unwrap(), png.to_str().unwrap()]));
+
+    let output = run_ok(pietrs().args(["check", png.to_str().unwrap()]));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("grid: 2x1 codels (codel size 1)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("blocks: 2"), "{stdout}");
+}
+
+#[test]
+fn convert_refuses_an_unknown_extension() {
+    let dir = TempDir::new().unwrap();
+    let source = write_png(dir.path(), "one.png", 1, 1, &RED);
+    let output = dir.path().join("one.bmp");
+
+    let result = pietrs()
+        .args([
+            "convert",
+            source.to_str().unwrap(),
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("use a .png or .ppm extension"), "{stderr}");
+}
+
+#[test]
+fn scale_writes_the_requested_codel_size() {
+    let dir = TempDir::new().unwrap();
+    let mut rgba = Vec::new();
+    for y in 0..4 {
+        for x in 0..4 {
+            let pixel = match (x / 2, y / 2) {
+                (0, 0) => RED,
+                (1, 0) => GREEN,
+                (0, 1) => BLUE,
+                _ => WHITE,
+            };
+            rgba.extend_from_slice(&pixel);
+        }
+    }
+    let source = write_png(dir.path(), "four.png", 4, 4, &rgba);
+    let output = dir.path().join("four-3.png");
+
+    run_ok(pietrs().args([
+        "scale",
+        source.to_str().unwrap(),
+        output.to_str().unwrap(),
+        "--codel-size",
+        "3",
+    ]));
+
+    let checked = run_ok(pietrs().args(["check", output.to_str().unwrap()]));
+    let stdout = String::from_utf8_lossy(&checked.stdout);
+    assert!(
+        stdout.contains("grid: 2x2 codels (codel size 3)"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn scale_honours_the_input_codel_size_override() {
+    let dir = TempDir::new().unwrap();
+    let rgba = [RED; 16].concat();
+    let source = write_png(dir.path(), "red.png", 4, 4, &rgba);
+    let output = dir.path().join("red-1.png");
+
+    // Detection sees one 4x4 codel. Read as four 2x2 codels and write them at
+    // codel size 3: the image becomes 6x6 pixels, which is what the check
+    // reports as a single codel of size 6.
+    run_ok(pietrs().args([
+        "scale",
+        source.to_str().unwrap(),
+        output.to_str().unwrap(),
+        "--codel-size",
+        "3",
+        "--from-codel-size",
+        "2",
+    ]));
+
+    let checked = run_ok(pietrs().args(["check", output.to_str().unwrap()]));
+    let stdout = String::from_utf8_lossy(&checked.stdout);
+    assert!(
+        stdout.contains("grid: 1x1 codels (codel size 6)"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn convert_ascii_writes_a_p3() {
+    let dir = TempDir::new().unwrap();
+    let rgba: Vec<u8> = [RED, GREEN].into_iter().flatten().collect();
+    let source = write_png(dir.path(), "two.png", 2, 1, &rgba);
+    let output = dir.path().join("two.ppm");
+
+    run_ok(pietrs().args([
+        "convert",
+        source.to_str().unwrap(),
+        output.to_str().unwrap(),
+        "--ascii",
+    ]));
+
+    let text = std::fs::read_to_string(&output).unwrap();
+    assert_eq!(text, "P3\n2 1\n255\n255 0 0 0 255 0\n");
+}
+
+#[test]
+fn ascii_needs_a_ppm_output() {
+    let dir = TempDir::new().unwrap();
+    let source = write_png(dir.path(), "one.png", 1, 1, &RED);
+    let output = dir.path().join("one.png");
+
+    let result = pietrs()
+        .args([
+            "convert",
+            source.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "--ascii",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("--ascii writes a PPM"), "{stderr}");
 }
