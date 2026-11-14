@@ -221,7 +221,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "aot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "codegen",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "canvas"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gif",
  "png",
@@ -745,7 +745,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aot",
  "canvas",
@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "codegen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "cranelift-codegen",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "editor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "interp",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aot",
  "canvas",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "interp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "runtime",
@@ -2203,7 +2203,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "loom"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "interp",
@@ -2787,7 +2787,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "perf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "codegen",
@@ -3207,11 +3207,11 @@ dependencies = [
 
 [[package]]
 name = "runner"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "tessera"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "proptest",
@@ -3601,7 +3601,7 @@ dependencies = [
 
 [[package]]
 name = "testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas",
  "png",
@@ -4655,7 +4655,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aot",
  "canvas",

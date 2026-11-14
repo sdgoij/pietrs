@@ -179,6 +179,35 @@ images are joined by text; the run image needs no host at all, and the blocks,
 their sizes and every move come from the images. A program that is not linear is
 refused before it runs, naming the block that branches.
 
+### The machine image
+
+![The generated machine image, 1,532 x 2,004 codels](interpreter.png)
+
+`loom` also weaves one image that reads a program and runs it. It is 1,532 x
+2,004 codels at codel size 1: 610,442 colour blocks and 1,224,547 states. One
+program, three phases, one stack — a P3 PPM decoder, the ring builder with the
+splitter's fixpoint, and the loop that scans, steps, slides, and runs each
+command. The picture is generated rather than drawn: the generator fixes a
+colour walk and solves for the colours, so at this size it reads as fine
+vertical stripes.
+
+Write it and run it like any other image:
+
+```sh
+just interpreter
+pietrs run target/weave/interpreter.png < program.ppm
+```
+
+Package it and the machine needs nothing at run time:
+
+```sh
+pietrs build target/weave/interpreter.png -o interpreter.exe
+./interpreter.exe < program.ppm
+```
+
+The executable is 14.9 MB and prints the interpreted program's output; the
+canonical *Hello world!* run takes 16.5 s.
+
 ### Images
 
 PNG, GIF (the first frame), and PPM (binary P6 or ASCII P3) are decoded, at any
