@@ -21,6 +21,11 @@ const MAX_STACK_ROWS: usize = 16;
 const MAX_OUTPUT_CHARS: usize = 2_000;
 /// Trail points drawn; older points are still recorded for the session.
 const MAX_TRAIL_POINTS: usize = 512;
+/// Zoom limits, in points per codel.
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 64.0;
+/// Points of a zoomed image that stay inside the canvas when it is panned.
+const KEEP_VISIBLE: f32 = 32.0;
 
 /// Which theme the editor asks egui for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +72,7 @@ enum DebugAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
+    Pan,
     Pencil,
     Rectangle,
     Fill,
@@ -995,6 +1001,10 @@ impl EditorApp {
 
     fn tools(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.tool, Tool::Pan, "Pan")
+                .on_hover_text(
+                    "Drag to move the view; middle-drag or space-drag works with any tool",
+                );
             ui.selectable_value(&mut self.tool, Tool::Pencil, "Pencil");
             ui.selectable_value(&mut self.tool, Tool::Rectangle, "Rect");
             ui.selectable_value(&mut self.tool, Tool::Fill, "Fill");
@@ -1359,35 +1369,39 @@ impl EditorApp {
             let available = response.rect.size();
             let zoom_x = (available.x - 24.0) / self.document.width() as f32;
             let zoom_y = (available.y - 24.0) / self.document.height() as f32;
-            self.zoom = zoom_x.min(zoom_y).clamp(0.5, 64.0);
+            self.zoom = zoom_x.min(zoom_y).clamp(MIN_ZOOM, MAX_ZOOM);
             self.pan = egui::Vec2::ZERO;
             self.fit_requested = false;
         }
 
-        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-        if response.hovered() && scroll != 0.0 {
-            self.zoom = (self.zoom * (scroll * 0.001).exp()).clamp(0.5, 64.0);
-        }
-
-        let space = ui.input(|input| input.key_down(egui::Key::Space));
-        let panning = response.dragged_by(egui::PointerButton::Secondary)
-            || response.dragged_by(egui::PointerButton::Middle)
-            || (space && response.dragged_by(egui::PointerButton::Primary));
-        if panning {
-            self.pan += response.drag_delta();
-        }
-
-        let size = egui::vec2(
-            self.document.width() as f32 * self.zoom,
-            self.document.height() as f32 * self.zoom,
-        );
-        let center = response.rect.center() + self.pan;
-        let image_rect = egui::Rect::from_center_size(center, size);
-        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-
+        let canvas = response.rect;
         let pointer = response
             .interact_pointer_pos()
             .or_else(|| response.hover_pos());
+
+        if response.hovered() {
+            let (scroll, zoom) = ui.input(|input| (input.smooth_scroll_delta, input.zoom_delta()));
+            let anchor = pointer.unwrap_or_else(|| canvas.center());
+            let factor = zoom * (scroll.y * 0.001).exp();
+            if factor != 1.0 {
+                self.zoom_at(canvas, anchor, factor);
+            }
+        }
+
+        let space = ui.input(|input| input.key_down(egui::Key::Space));
+        let dragging = response.dragged_by(egui::PointerButton::Primary);
+        let panning = (self.tool == Tool::Pan && dragging)
+            || response.dragged_by(egui::PointerButton::Secondary)
+            || response.dragged_by(egui::PointerButton::Middle)
+            || (space && dragging);
+        if panning {
+            self.pan += response.drag_delta();
+        }
+        self.pan = clamp_pan(self.pan, canvas.size(), self.image_size());
+
+        let image_rect = self.image_rect(canvas);
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+
         let hovered = pointer.and_then(|pointer| {
             codel_at(
                 image_rect,
@@ -1398,12 +1412,22 @@ impl EditorApp {
             )
         });
 
-        if let Some(point) = hovered
+        let response = response.on_hover_cursor(if panning {
+            egui::CursorIcon::Grabbing
+        } else if self.tool == Tool::Pan || space {
+            egui::CursorIcon::Grab
+        } else {
+            egui::CursorIcon::Default
+        });
+
+        if !space
+            && self.tool != Tool::Pan
+            && let Some(point) = hovered
             && (response.clicked() || response.drag_started_by(egui::PointerButton::Primary))
         {
             self.selected = self.analysis.blocks().block_id_at(point);
         }
-        if !panning {
+        if !panning && !space {
             self.handle_tool(&response, hovered);
         }
 
@@ -1454,9 +1478,34 @@ impl EditorApp {
         }
     }
 
+    /// The image's size on screen, in points.
+    fn image_size(&self) -> egui::Vec2 {
+        egui::vec2(
+            self.document.width() as f32 * self.zoom,
+            self.document.height() as f32 * self.zoom,
+        )
+    }
+
+    fn image_rect(&self, canvas: egui::Rect) -> egui::Rect {
+        egui::Rect::from_center_size(canvas.center() + self.pan, self.image_size())
+    }
+
+    /// Zooms by `factor` about `pointer`, so the codel under the cursor stays
+    /// put and the neighbourhood being worked on does not slide away.
+    fn zoom_at(&mut self, canvas: egui::Rect, pointer: egui::Pos2, factor: f32) {
+        let zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        if zoom == self.zoom {
+            return;
+        }
+        let unit = (pointer - self.image_rect(canvas).min) / self.zoom;
+        self.zoom = zoom;
+        self.pan = pointer - unit * zoom + self.image_size() / 2.0 - canvas.center();
+    }
+
     fn handle_tool(&mut self, response: &egui::Response, hovered: Option<Point>) {
         let primary = egui::PointerButton::Primary;
         match self.tool {
+            Tool::Pan => {}
             Tool::Pencil => {
                 if response.drag_started_by(primary) {
                     self.begin_edit();
@@ -1628,6 +1677,24 @@ fn compare_jit(blocks: &canvas::Blocks, input: &str) -> Result<String, String> {
             "JIT differs: interpreter {interp_reason:?}, JIT {jit_reason:?}"
         )),
     }
+}
+
+/// Keeps the image reachable: a fitting image stays fully inside the canvas,
+/// and a zoomed one keeps [`KEEP_VISIBLE`] points on screen on each axis.
+fn clamp_pan(pan: egui::Vec2, canvas: egui::Vec2, image: egui::Vec2) -> egui::Vec2 {
+    let limit = |canvas: f32, image: f32| {
+        if image <= canvas {
+            (canvas - image) * 0.5
+        } else {
+            ((canvas + image) * 0.5 - KEEP_VISIBLE).max(0.0)
+        }
+    };
+    egui::vec2(
+        pan.x
+            .clamp(-limit(canvas.x, image.x), limit(canvas.x, image.x)),
+        pan.y
+            .clamp(-limit(canvas.y, image.y), limit(canvas.y, image.y)),
+    )
 }
 
 fn codel_at(
@@ -1905,6 +1972,78 @@ mod tests {
         assert_eq!(app.colour(), red());
         app.pick_at(Point::new(1, 0));
         assert_eq!(app.colour(), green());
+    }
+
+    #[test]
+    fn the_wheel_zooms_the_viewport() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.ui_on(ui));
+        output.textures_delta.clear();
+        app.zoom = 8.0;
+
+        let mut input = egui::RawInput::default();
+        input
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(500.0, 400.0)));
+        input.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 6.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::default(),
+        });
+        let mut output = ctx.run_ui(input, |ui| app.ui_on(ui));
+        output.textures_delta.clear();
+
+        assert!(
+            app.zoom > 8.0,
+            "the wheel should zoom the view: {}",
+            app.zoom
+        );
+    }
+
+    #[test]
+    fn zooming_keeps_the_codel_under_the_pointer() {
+        let mut app = EditorApp::new(small_document(&["rg"]), None).unwrap();
+        app.fit_requested = false;
+        app.zoom = 4.0;
+        app.pan = egui::Vec2::ZERO;
+
+        let canvas = egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(400.0, 300.0));
+        let pointer = canvas.center() + egui::vec2(6.0, 2.0);
+        let under = (pointer - app.image_rect(canvas).min) / app.zoom;
+
+        app.zoom_at(canvas, pointer, 2.0);
+
+        assert_eq!(app.zoom, 8.0);
+        let after = (pointer - app.image_rect(canvas).min) / app.zoom;
+        assert!(
+            (under - after).length() < 1e-3,
+            "the point under the cursor moved: {under:?} -> {after:?}"
+        );
+    }
+
+    #[test]
+    fn panning_keeps_the_image_reachable() {
+        let canvas = egui::vec2(400.0, 300.0);
+        let image = egui::vec2(800.0, 600.0);
+
+        // At least KEEP_VISIBLE points stay on each axis for a zoomed image.
+        let far = clamp_pan(egui::vec2(10_000.0, -10_000.0), canvas, image);
+        assert_eq!(far, egui::vec2(568.0, -418.0));
+
+        // A fitting image stays fully inside the canvas.
+        let small = clamp_pan(
+            egui::vec2(10_000.0, -10_000.0),
+            canvas,
+            egui::vec2(100.0, 50.0),
+        );
+        assert_eq!(small, egui::vec2(150.0, -125.0));
+
+        // A pan that is already visible passes through unchanged.
+        let near = egui::vec2(10.0, -20.0);
+        assert_eq!(clamp_pan(near, canvas, image), near);
     }
 
     #[test]

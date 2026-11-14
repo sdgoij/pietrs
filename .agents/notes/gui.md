@@ -383,7 +383,7 @@ in the test, because egui insists the backend consume it.
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ File  Edit  View  Run  Help                                             │
-│ [New] [Open] [Save] [Export PNG] │ [Pencil] [Rect] [Fill] [Pick]        │
+│ [New] [Open] [Save] [Export PNG] │ [Pan] [Pencil] [Rect] [Fill] [Pick]  │
 │ [Undo] [Redo] │ 20 swatches │ [System] [Light] [Dark]                   │
 ├──────────────┬───────────────────────────────────────┬──────────────────┤
 │ Document     │                                       │ Check            │
@@ -408,9 +408,12 @@ use the unified `egui::Panel`; older examples use `SidePanel` and
 - One `egui::ColorImage` at one texel per codel, `TextureOptions::NEAREST`,
   rebuilt and uploaded only when `Document::revision` changes. Scaling one
   texture avoids the seams that adjacent per-codel quads produce.
-- Zoom is points per codel. Wheel zooms around the pointer; middle-drag or
-  space-drag pans; `0` fits the document. Grid lines are drawn only when a
-  codel is at least 8 points, so a large image stays readable.
+- Zoom is points per codel. The wheel and a pinch zoom around the pointer;
+  middle-drag, space-drag, or the Pan tool moves the view; `Fit` frames the
+  document. A pan cannot push the image out of reach: a fitting image stays
+  fully visible, and a zoomed one keeps 32 points on screen per axis. Grid
+  lines are drawn only when a codel is at least 8 points, so a large image
+  stays readable.
 - A frame around the canvas in both themes: white codels on a light panel are
   otherwise invisible.
 - Overlays, each a toggle in View:
@@ -434,10 +437,11 @@ use the unified `egui::Panel`; older examples use `SidePanel` and
 | Rectangle | left drag, preview | one edit |
 | Fill | left click, 4-connected | one edit |
 | Eyedropper | left click, right click in Pencil | none |
+| Pan | left drag | none |
 
-`Left` paints, `Middle`/`Space+Left` pans, wheel zooms. Palette shortcuts select
-the current colour; `E` picks. Resize and codel size are dialogs with explicit
-Apply, one undo entry each.
+`Left` paints; `Middle`, `Space+Left`, and the Pan tool pan; the wheel and a
+pinch zoom. Palette shortcuts select the current colour; `E` picks. Resize
+and codel size are dialogs with explicit Apply, one undo entry each.
 
 Warnings, not errors, because each is a legal program:
 
