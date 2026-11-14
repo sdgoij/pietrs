@@ -26,6 +26,8 @@ const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 64.0;
 /// Points of a zoomed image that stay inside the canvas when it is panned.
 const KEEP_VISIBLE: f32 = 32.0;
+/// A gap kept around the executing block when the view follows it.
+const FOLLOW_MARGIN: f32 = 24.0;
 
 /// Which theme the editor asks egui for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +176,8 @@ pub struct EditorApp {
     input_path: Option<PathBuf>,
     running: bool,
     selected: Option<BlockId>,
+    /// The block the viewport last followed.
+    followed: Option<BlockId>,
     overlay: Option<TextureHandle>,
     overlay_state: Option<State>,
     overlay_revision: u64,
@@ -221,6 +225,7 @@ impl EditorApp {
             input_path: None,
             running: false,
             selected: None,
+            followed: None,
             overlay: None,
             overlay_state: None,
             overlay_revision: 0,
@@ -1447,6 +1452,7 @@ impl EditorApp {
             self.pan += response.drag_delta();
         }
         self.pan = clamp_pan(self.pan, canvas.size(), self.image_size());
+        self.follow_active(canvas, panning);
 
         let image_rect = self.image_rect(canvas);
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
@@ -1549,6 +1555,29 @@ impl EditorApp {
         let unit = (pointer - self.image_rect(canvas).min) / self.zoom;
         self.zoom = zoom;
         self.pan = pointer - unit * zoom + self.image_size() / 2.0 - canvas.center();
+    }
+
+    /// Moves the view when the executing block leaves it.
+    ///
+    /// Only the pan changes, and only when the block actually moves (so a pan
+    /// made while paused survives until the next step) or the program is
+    /// running (so a run keeps its block on screen). Dragging the view is never
+    /// overruled.
+    fn follow_active(&mut self, canvas: egui::Rect, panning: bool) {
+        let active = self
+            .session
+            .as_ref()
+            .and_then(|session| session.state())
+            .map(|state| state.block);
+        if !panning
+            && (self.running || active != self.followed)
+            && let Some(block) = active.and_then(|block| self.analysis.blocks().block(block))
+        {
+            let rect = block_rect(self.image_rect(canvas), block.codels(), self.zoom);
+            let pan = self.pan + follow_delta(rect, canvas);
+            self.pan = clamp_pan(pan, canvas.size(), self.image_size());
+        }
+        self.followed = active;
     }
 
     fn handle_tool(&mut self, response: &egui::Response, hovered: Option<Point>) {
@@ -1744,6 +1773,40 @@ fn clamp_pan(pan: egui::Vec2, canvas: egui::Vec2, image: egui::Vec2) -> egui::Ve
         pan.y
             .clamp(-limit(canvas.y, image.y), limit(canvas.y, image.y)),
     )
+}
+
+/// How far to move the image so `target` sits inside `view`, with a margin.
+fn follow_delta(target: egui::Rect, view: egui::Rect) -> egui::Vec2 {
+    egui::vec2(
+        axis_delta(target.min.x, target.max.x, view.min.x, view.max.x),
+        axis_delta(target.min.y, target.max.y, view.min.y, view.max.y),
+    )
+}
+
+/// One axis of [`follow_delta`].
+///
+/// A target that fits is moved just enough to clear the margin. A target larger
+/// than the view is left alone while it overlaps, and comes back by its nearer
+/// edge when it is entirely gone.
+fn axis_delta(min: f32, max: f32, view_min: f32, view_max: f32) -> f32 {
+    let margin = FOLLOW_MARGIN.min((view_max - view_min) * 0.25);
+    let inside_min = view_min + margin;
+    let inside_max = view_max - margin;
+    if max - min <= inside_max - inside_min {
+        if min < inside_min {
+            inside_min - min
+        } else if max > inside_max {
+            inside_max - max
+        } else {
+            0.0
+        }
+    } else if max < inside_min {
+        inside_min - max
+    } else if min > inside_max {
+        inside_max - min
+    } else {
+        0.0
+    }
 }
 
 fn codel_at(
@@ -2013,6 +2076,63 @@ mod tests {
         assert_eq!(app.document().color(Point::new(2, 0)), Some(Color::Black));
         assert_eq!(app.document().color(Point::new(2, 1)), Some(Color::Black));
         assert_eq!(app.document().color(Point::new(1, 1)), Some(green()));
+    }
+
+    #[test]
+    fn a_block_out_of_view_is_pulled_back() {
+        let view = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(400.0, 300.0));
+
+        let inside = egui::Rect::from_min_size(egui::pos2(200.0, 200.0), egui::vec2(20.0, 20.0));
+        assert_eq!(follow_delta(inside, view), egui::Vec2::ZERO);
+
+        let left = egui::Rect::from_min_size(egui::pos2(0.0, 200.0), egui::vec2(20.0, 20.0));
+        assert_eq!(
+            follow_delta(left, view),
+            egui::vec2(100.0 + FOLLOW_MARGIN, 0.0)
+        );
+
+        // A block larger than the view that still overlaps it is not yanked.
+        let huge = egui::Rect::from_min_max(egui::pos2(-500.0, -500.0), egui::pos2(500.0, 500.0));
+        assert_eq!(follow_delta(huge, view), egui::Vec2::ZERO);
+    }
+
+    #[test]
+    fn the_view_follows_the_executing_block() {
+        let mut app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+        app.debug_step().unwrap();
+        let block = app.session().unwrap().state().unwrap().block;
+
+        let canvas = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+        app.zoom = 32.0;
+        app.pan = egui::vec2(-2_000.0, -2_000.0);
+
+        app.follow_active(canvas, false);
+
+        let codels = app.analysis.blocks().block(block).unwrap().codels();
+        let rect = block_rect(app.image_rect(canvas), codels, app.zoom);
+        assert!(
+            canvas.contains_rect(rect),
+            "{rect:?} left the canvas {canvas:?}"
+        );
+    }
+
+    #[test]
+    fn the_view_is_left_alone_while_paused() {
+        let mut app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+        app.debug_step().unwrap();
+
+        let canvas = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+        app.zoom = 32.0;
+        app.pan = egui::vec2(-2_000.0, -2_000.0);
+
+        // The first frame after the step follows the block...
+        app.follow_active(canvas, false);
+        let followed = app.pan;
+        // ...then a pan made while paused is not undone.
+        app.pan = egui::vec2(-2_000.0, -2_000.0);
+        app.follow_active(canvas, false);
+        assert_ne!(app.pan, followed);
+        assert_eq!(app.pan, egui::vec2(-2_000.0, -2_000.0));
     }
 
     #[test]

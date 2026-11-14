@@ -414,6 +414,11 @@ use the unified `egui::Panel`; older examples use `SidePanel` and
   fully visible, and a zoomed one keeps 32 points on screen per axis. Grid
   lines are drawn only when a codel is at least 8 points, so a large image
   stays readable.
+- The view follows execution: when the executing block leaves the canvas it is
+  panned back inside with a 24-point margin, and only the pan is touched, never
+  the zoom. A pan made while paused survives until the next step; a running
+  program keeps its block on screen; dragging the view is never overruled; a
+  block larger than the canvas is not yanked while it overlaps.
 - A frame around the canvas in both themes: white codels on a light panel are
   otherwise invisible.
 - Overlays, each a toggle in View:
