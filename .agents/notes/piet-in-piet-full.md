@@ -951,9 +951,11 @@ shape above 100,000 states: each state's function is compiled the first time it
 is entered. It prints `Hello world!` in about seven minutes, against the
 interpreter's 44 s, because one third of the graph is still 409k functions and a
 call per step. `pietrs run` therefore builds the graph first and, above 100,000
-states, runs the interpreter; `pietrs build` refuses with a diagnostic. The lazy
-path stays for a graph the single function cannot compile at all and as the
-starting point for a batched scheme. See `.agents/notes/aot.md`.
+states, runs the interpreter; `pietrs build` refuses with a diagnostic. Batching
+states into one function was tried two ways and is worse: a batch that is entered
+compiles its unvisited members, and the hot loop crosses batch boundaries, so it
+had printed `Hello` and was still running after ten minutes. Trace-driven
+grouping is the design that could work. See `.agents/notes/aot.md`.
 
 ## Recommendation
 

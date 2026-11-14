@@ -53,8 +53,32 @@ graph, which is 409k small functions to compile plus a call per step. It prints
 `pietrs run` builds the graph first and, above 100,000 states, runs the
 interpreter; `pietrs build` refuses above the bound with a diagnostic naming the
 counts. The lazy path stays as the JIT's answer for a graph the single function
-cannot compile at all, and as the place a better lazy scheme — batching states
-into one function so the hot loop keeps direct jumps — would start.
+cannot compile at all.
+
+### Batching (tried, worse)
+
+The obvious next step was to compile states in batches, so that a hot loop keeps
+direct jumps instead of returning to the driver at every state. It was built two
+ways and measured on the same image.
+
+- **Contiguous indices, 1024 states per batch.** No locality: the graph's order is
+  traversal order, not execution order, and a batch also compiles the unvisited
+  states that happen to share it.
+- **Breadth-first claiming, 1024 states per batch.** Each batch gathered the entry
+  state's nearest unclaimed successors, so graph locality was real, but not run
+  locality: entering a batch still compiles up to 1023 states the run never
+  visits, and the machine's hot loop spans batch boundaries.
+
+The breadth-first version had printed `Hello` and was still running after ten
+minutes. The numbers explain it: a run visits one third of the graph, and any
+batch that is entered pays for all of its members. That is 409k visited states
+becoming 1.2M compiled ones, with the per-step calls still there at the
+boundaries. One function per state at 6m46s remains the better lazy shape, and
+the interpreter at 44 s remains the engine `pietrs run` picks for this image.
+
+Trace-driven grouping is the shape that could work: collect a short interpreter
+trace first, then batch only the states that trace actually touches. That is a
+different design, not a tuning of this one, and it has not been built.
 
 ## Targets
 
