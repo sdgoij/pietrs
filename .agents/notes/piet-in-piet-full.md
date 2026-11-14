@@ -952,10 +952,11 @@ is entered. It prints `Hello world!` in about seven minutes, against the
 interpreter's 44 s, because one third of the graph is still 409k functions and a
 call per step. `pietrs run` therefore builds the graph first and, above 100,000
 states, runs the interpreter; `pietrs build` refuses with a diagnostic. Batching
-states into one function was tried two ways and is worse: a batch that is entered
-compiles its unvisited members, and the hot loop crosses batch boundaries, so it
-had printed `Hello` and was still running after ten minutes. Trace-driven
-grouping is the design that could work. See `.agents/notes/aot.md`.
+states into one function was tried three ways — contiguous, breadth-first and
+trace-driven — and all are worse: a batch that is entered compiles its unvisited
+members, and a loop longer than a batch still returns across it. The trace-driven
+version took 13m39s. Trace-driven grouping was the last idea worth trying, and it
+is closed. See `.agents/notes/aot.md`.
 
 ## Recommendation
 

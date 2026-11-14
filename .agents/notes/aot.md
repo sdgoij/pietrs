@@ -76,9 +76,19 @@ becoming 1.2M compiled ones, with the per-step calls still there at the
 boundaries. One function per state at 6m46s remains the better lazy shape, and
 the interpreter at 44 s remains the engine `pietrs run` picks for this image.
 
-Trace-driven grouping is the shape that could work: collect a short interpreter
-trace first, then batch only the states that trace actually touches. That is a
-different design, not a tuning of this one, and it has not been built.
+Trace-driven grouping was built next. The driver runs the interpreter for a
+bounded prefix with a null sink, collects the states it touches in first-visit
+order, and groups consecutive traced states into batches; a state the trace
+misses is compiled on its own, so the trace is a hint and never a correctness
+input. It printed `Hello world!` in **13 m 39 s** — worse than one function per
+state (6 m 46 s) and far worse than the interpreter (44 s). The 120M-step
+warm-up is a few seconds; the rest is the batch compiles and the cross-batch
+returns that remain whenever a loop is longer than a batch. Batching loses at
+the compile end and at the call end, and the trace does not change that.
+
+The interpreter stays the engine for the machine image. The lazy lowerings are
+still useful as the JIT's answer for a graph the single function cannot compile
+at all, but they are not a faster one.
 
 ## Targets
 
