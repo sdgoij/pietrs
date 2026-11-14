@@ -419,6 +419,10 @@ use the unified `egui::Panel`; older examples use `SidePanel` and
   the zoom. A pan made while paused survives until the next step; a running
   program keeps its block on screen; dragging the view is never overruled; a
   block larger than the canvas is not yanked while it overlaps.
+- The executing block is marked twice, because a tint alone disappears in a
+  busy image: the block overlay, and an outline with a white rim over a dark
+  shadow plus an accent ring that grows outward and fades. The pulse keeps
+  redrawing at 30 Hz while there is a state, and stops when the session ends.
 - A frame around the canvas in both themes: white codels on a light panel are
   otherwise invisible.
 - Overlays, each a toggle in View:
@@ -460,7 +464,11 @@ Warnings, not errors, because each is a legal program:
 ### Debugger
 
 Controls: Step (F10), Run/Pause (F5), Run to step limit, Reset (Ctrl+R), step
-limit field, division mode (`Floored`/`Truncating`), stack capacity.
+limit field, division mode (`Floored`/`Truncating`), stack capacity, and a
+Slow down slider. The slider sets milliseconds between transitions while
+running, 0-100 in 5 ms steps; 0 runs flat out, and the rate is time-based, so
+it does not follow the frame rate. `Focus`, next to `Fit`, centres the view on
+the executing block.
 
 Panels:
 

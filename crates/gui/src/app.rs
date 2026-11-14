@@ -28,6 +28,10 @@ const MAX_ZOOM: f32 = 64.0;
 const KEEP_VISIBLE: f32 = 32.0;
 /// A gap kept around the executing block when the view follows it.
 const FOLLOW_MARGIN: f32 = 24.0;
+/// The most transitions a throttled frame may run to catch up after a stall.
+const MAX_SLOW_STEPS: u64 = 600;
+/// How often the active-block pulse redraws while the program is paused.
+const PULSE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 /// Which theme the editor asks egui for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +179,14 @@ pub struct EditorApp {
     input: String,
     input_path: Option<PathBuf>,
     running: bool,
+    /// Milliseconds between transitions while running; 0 is full speed.
+    slowdown: f32,
+    /// Seconds banked toward the next transition at the current slowdown.
+    carry: f64,
+    /// The egui time of the previous throttled frame.
+    last_run: Option<f64>,
+    /// Whether the next frame should centre the executing block.
+    focus_requested: bool,
     selected: Option<BlockId>,
     /// The block the viewport last followed.
     followed: Option<BlockId>,
@@ -224,6 +236,10 @@ impl EditorApp {
             input: String::new(),
             input_path: None,
             running: false,
+            slowdown: 0.0,
+            carry: 0.0,
+            last_run: None,
+            focus_requested: false,
             selected: None,
             followed: None,
             overlay: None,
@@ -289,6 +305,16 @@ impl EditorApp {
     }
 
     pub fn set_running(&mut self, running: bool) {
+        if running && !self.running {
+            // Bank one interval so a slow run still takes its first transition
+            // at once instead of after a silent delay.
+            self.carry = f64::from(self.slowdown) / 1000.0;
+            self.last_run = None;
+        }
+        if !running {
+            self.carry = 0.0;
+            self.last_run = None;
+        }
         self.running = running;
     }
 
@@ -324,6 +350,34 @@ impl EditorApp {
 
     /// Runs until a breakpoint, a final stop, or the frame budget.
     pub fn debug_run(&mut self, ctx: &egui::Context) -> Option<Stop> {
+        self.run_budget(ctx, Budget::default())
+    }
+
+    /// How many transitions this frame may run at the current slowdown.
+    ///
+    /// `None` means none are due yet. With a zero delay the whole frame budget
+    /// runs, which is the unlocked run; otherwise time is banked and spent at
+    /// the chosen interval, so the rate does not follow the frame rate.
+    fn frame_budget(&mut self, now: f64) -> Option<Budget> {
+        let delay = f64::from(self.slowdown) / 1000.0;
+        if delay <= 0.0 {
+            self.carry = 0.0;
+            self.last_run = None;
+            return Some(Budget::default());
+        }
+        let last = self.last_run.replace(now);
+        let elapsed = last.map_or(0.0, |last| (now - last).max(0.0));
+        self.carry += elapsed;
+        let due = (self.carry / delay).floor();
+        self.carry -= due * delay;
+        let steps = (due as u64).min(MAX_SLOW_STEPS);
+        (steps > 0).then_some(Budget {
+            steps,
+            time: Budget::default().time,
+        })
+    }
+
+    fn run_budget(&mut self, ctx: &egui::Context, budget: Budget) -> Option<Stop> {
         if !self.running {
             return None;
         }
@@ -332,7 +386,7 @@ impl EditorApp {
             return None;
         }
         let result = match &mut self.session {
-            Some(session) => session.run_until(&self.breakpoints, Budget::default()),
+            Some(session) => session.run_until(&self.breakpoints, budget),
             None => {
                 self.running = false;
                 return None;
@@ -886,7 +940,20 @@ impl EditorApp {
         }
 
         if self.running {
-            self.debug_run(ui.ctx());
+            if self.ensure_session() {
+                let now = ui.input(|input| input.time);
+                match self.frame_budget(now) {
+                    Some(budget) => {
+                        self.run_budget(ui.ctx(), budget);
+                    }
+                    None => ui.ctx().request_repaint(),
+                }
+            } else {
+                self.set_running(false);
+            }
+        } else {
+            self.last_run = None;
+            self.carry = 0.0;
         }
 
         egui::Panel::left("tools")
@@ -900,6 +967,14 @@ impl EditorApp {
 
         if self.running {
             ui.ctx().request_repaint();
+        } else if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.state().is_some())
+        {
+            // The active-block pulse is animated; keep drawing while a block is
+            // there to point at.
+            ui.ctx().request_repaint_after(PULSE_INTERVAL);
         }
         self.confirm_discard(ui.ctx());
         self.show_new_dialog(ui.ctx());
@@ -981,6 +1056,13 @@ impl EditorApp {
             if ui.button("Fit").clicked() {
                 self.fit_requested = true;
             }
+            if ui
+                .button("Focus")
+                .on_hover_text("Centre the view on the executing block")
+                .clicked()
+            {
+                self.focus_requested = true;
+            }
         });
 
         if ui.input(|input| input.key_pressed(egui::Key::F10)) {
@@ -1021,7 +1103,7 @@ impl EditorApp {
             self.last_error = Some(error.to_string());
         }
         if toggle_run {
-            self.running = !self.running;
+            self.set_running(!self.running);
         }
         if reset {
             self.debug_reset();
@@ -1209,6 +1291,19 @@ impl EditorApp {
             ui.label(format!("from {}", path.display()));
         }
 
+        ui.separator();
+        ui.label("Slow down");
+        let slowdown = ui.add(
+            egui::Slider::new(&mut self.slowdown, 0.0..=100.0)
+                .step_by(5.0)
+                .suffix(" ms/step"),
+        );
+        if slowdown.changed() {
+            self.carry = 0.0;
+            self.last_run = None;
+        }
+        slowdown.on_hover_text("Delay between transitions while running; 0 runs at full speed");
+
         let mut action: Option<DebugAction> = None;
 
         if let Some(session) = &self.session {
@@ -1392,7 +1487,7 @@ impl EditorApp {
                 }
             }
             Some(DebugAction::ToggleRun) => {
-                self.running = !self.running;
+                self.set_running(!self.running);
             }
             Some(DebugAction::Reset) => {
                 self.debug_reset();
@@ -1429,6 +1524,10 @@ impl EditorApp {
         }
 
         let canvas = response.rect;
+        if self.focus_requested {
+            self.focus_requested = false;
+            self.focus_active(canvas);
+        }
         let pointer = response
             .interact_pointer_pos()
             .or_else(|| response.hover_pos());
@@ -1531,6 +1630,20 @@ impl EditorApp {
                 previous = Some(current);
             }
         }
+
+        if let Some(block) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.state())
+            .map(|state| state.block)
+            .and_then(|block| self.analysis.blocks().block(block))
+        {
+            active_highlight(
+                &painter,
+                block_rect(image_rect, block.codels(), self.zoom),
+                ui,
+            );
+        }
     }
 
     /// The image's size on screen, in points.
@@ -1555,6 +1668,22 @@ impl EditorApp {
         let unit = (pointer - self.image_rect(canvas).min) / self.zoom;
         self.zoom = zoom;
         self.pan = pointer - unit * zoom + self.image_size() / 2.0 - canvas.center();
+    }
+
+    /// Centres the view on the executing block, without changing the zoom.
+    fn focus_active(&mut self, canvas: egui::Rect) {
+        let Some(block) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.state())
+            .map(|state| state.block)
+            .and_then(|block| self.analysis.blocks().block(block))
+        else {
+            return;
+        };
+        let rect = block_rect(self.image_rect(canvas), block.codels(), self.zoom);
+        let pan = self.pan + (canvas.center() - rect.center());
+        self.pan = clamp_pan(pan, canvas.size(), self.image_size());
     }
 
     /// Moves the view when the executing block leaves it.
@@ -1807,6 +1936,25 @@ fn axis_delta(min: f32, max: f32, view_min: f32, view_max: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Draws the executing block so it reads on any image: a crisp white rim over
+/// a dark shadow, and an accent ring that grows outward and fades.
+fn active_highlight(painter: &egui::Painter, rect: egui::Rect, ui: &egui::Ui) {
+    let time = ui.input(|input| input.time) as f32;
+    let pulse = ((time * std::f32::consts::TAU).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+
+    let rim = rect.expand(1.5);
+    outline(
+        painter,
+        rim,
+        egui::Stroke::new(4.0, egui::Color32::from_black_alpha(140)),
+    );
+    outline(painter, rim, egui::Stroke::new(2.0, egui::Color32::WHITE));
+
+    let ring = rect.expand(3.0 + 12.0 * pulse);
+    let accent = ui.visuals().selection.bg_fill.gamma_multiply(1.0 - pulse);
+    outline(painter, ring, egui::Stroke::new(2.0, accent));
 }
 
 fn codel_at(
@@ -2133,6 +2281,75 @@ mod tests {
         app.follow_active(canvas, false);
         assert_ne!(app.pan, followed);
         assert_eq!(app.pan, egui::vec2(-2_000.0, -2_000.0));
+    }
+
+    #[test]
+    fn the_slowdown_throttles_the_run_to_its_rate() {
+        let mut app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+
+        // Zero delay: a whole frame budget, every frame.
+        assert_eq!(app.frame_budget(10.0), Some(Budget::default()));
+
+        app.slowdown = 100.0;
+        assert_eq!(
+            app.frame_budget(20.0),
+            None,
+            "the first frame has no elapsed time"
+        );
+        assert_eq!(app.frame_budget(20.05), None, "half a step is not a step");
+        assert_eq!(
+            app.frame_budget(20.10),
+            Some(Budget {
+                steps: 1,
+                ..Budget::default()
+            })
+        );
+        assert_eq!(app.frame_budget(20.15), None);
+    }
+
+    #[test]
+    fn a_stall_does_not_bank_unbounded_steps() {
+        let mut app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+        app.slowdown = 1.0;
+        assert_eq!(app.frame_budget(0.0), None);
+        let budget = app.frame_budget(10.0).unwrap();
+        assert_eq!(budget.steps, MAX_SLOW_STEPS);
+    }
+
+    #[test]
+    fn a_slow_run_takes_its_first_step_at_once() {
+        let mut app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+        app.slowdown = 100.0;
+        app.set_running(true);
+        assert_eq!(
+            app.frame_budget(0.0),
+            Some(Budget {
+                steps: 1,
+                ..Budget::default()
+            })
+        );
+    }
+
+    #[test]
+    fn focusing_centres_the_executing_block() {
+        let mut app = EditorApp::new(small_document(&["rg", "gg"]), None).unwrap();
+        app.debug_step().unwrap();
+        let block = app.session().unwrap().state().unwrap().block;
+
+        let canvas = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+        app.zoom = 32.0;
+        app.pan = egui::vec2(-2_000.0, -2_000.0);
+
+        app.focus_active(canvas);
+
+        let codels = app.analysis.blocks().block(block).unwrap().codels();
+        let rect = block_rect(app.image_rect(canvas), codels, app.zoom);
+        assert!(
+            (rect.center() - canvas.center()).length() < 1e-3,
+            "the block centre {:?} is not the canvas centre {:?}",
+            rect.center(),
+            canvas.center()
+        );
     }
 
     #[test]
